@@ -7,10 +7,11 @@ import { AppearanceView } from "./views/AppearanceView";
 import { ThemeUndoBar } from "./ThemeUndoBar";
 import { WatchView } from "./views/WatchView";
 import { QuarantineView } from "./views/QuarantineView";
+import { HistoryView } from "./views/HistoryView";
 import { SimulatorView } from "./views/SimulatorView";
 import { StatusBar, type Shortcut } from "./StatusBar";
 
-type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine" | "appearance" | "watch";
+type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine" | "history" | "appearance" | "watch";
 const views: { id: ViewId; label: string; enabled: boolean }[] = [
   { id: "sessions", label: "Installations", enabled: true },
   { id: "watch", label: "Watch an install", enabled: flags.watchView },
@@ -18,6 +19,7 @@ const views: { id: ViewId; label: string; enabled: boolean }[] = [
   { id: "provenance", label: "Provenance", enabled: true },
   { id: "simulator", label: "Cleanup simulator", enabled: true },
   { id: "quarantine", label: "Quarantine", enabled: flags.quarantineView },
+  { id: "history", label: "History", enabled: true },
   { id: "appearance", label: "Appearance", enabled: flags.themes },
 ];
 
@@ -100,6 +102,7 @@ export function App() {
         {view === "provenance" && <ProvenanceView />}
         {view === "simulator" && <SimulatorView />}
         {view === "quarantine" && <QuarantineView />}
+        {view === "history" && <HistoryView />}
         {view === "appearance" && <AppearanceView />}
       </main>
       <StatusBar shortcuts={shortcuts} />

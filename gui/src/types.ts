@@ -129,3 +129,11 @@ export interface UninstallRun {
   exit_code: number | null;
   summary: string;
 }
+
+export interface HistoryRow {
+  id: number;
+  when: string | null;
+  path: string;
+  what: string;
+  session_id: number | null;
+}

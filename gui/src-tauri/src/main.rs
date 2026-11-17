@@ -439,6 +439,39 @@ async fn quarantine_leftovers(
 }
 
 #[derive(Serialize)]
+struct HistoryRow {
+    id: i64,
+    when: Option<String>,
+    path: String,
+    what: String,
+    session_id: Option<i64>,
+}
+
+/// Newest recorded changes, optionally limited to paths containing `filter`.
+#[tauri::command]
+fn history(
+    state: State<'_, AppState>,
+    filter: Option<String>,
+    limit: usize,
+) -> Result<Vec<HistoryRow>, String> {
+    let store = lock(&state)?;
+    let f = filter.as_deref().map(str::trim).filter(|f| !f.is_empty());
+    let rows = store
+        .ledger_recent(limit.clamp(1, 1000), f)
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|e| HistoryRow {
+            id: e.entry_id,
+            when: e.observed_at,
+            path: e.entry.path,
+            what: e.entry.change_kind.as_str().to_string(),
+            session_id: e.entry.session_id,
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
 struct SessionItem {
     path: String,
     node_type: String,
@@ -758,6 +791,7 @@ fn run() -> Result<(), String> {
             restore_quarantine,
             purge_quarantine,
             list_programs,
+            history,
             run_uninstaller,
             find_leftovers,
             quarantine_leftovers,

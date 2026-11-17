@@ -479,6 +479,29 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Newest ledger entries first, at most `limit`. `path_contains` filters case-insensitively.
+    pub fn ledger_recent(
+        &self,
+        limit: usize,
+        path_contains: Option<&str>,
+    ) -> Result<Vec<LedgerEntry>> {
+        let like = path_contains
+            .map(|f| {
+                let esc = f
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                format!("%{esc}%")
+            })
+            .unwrap_or_else(|| "%".to_string());
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {LEDGER_COLS} FROM change_ledger WHERE path LIKE ?1 ESCAPE '\\' ORDER BY entry_id DESC LIMIT ?2"
+        ))?;
+        Ok(st
+            .query_map(params![like, limit as i64], ledger_row)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Ledger of a path, oldest first.
     pub fn ledger_for_path(&self, path: &str) -> Result<Vec<LedgerEntry>> {
         let mut st = self.conn.prepare(&format!(
