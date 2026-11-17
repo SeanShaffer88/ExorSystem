@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { ProgramRow, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
+import type { Leftover, UninstallRun, ProgramRow, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -16,6 +16,10 @@ export const api = {
   restoreQuarantine: (quarantineId: string) => invoke<number>("restore_quarantine", { quarantineId }),
   purgeQuarantine: (quarantineId: string) => invoke<number>("purge_quarantine", { quarantineId }),
   listPrograms: (includeSystem: boolean) => invoke<ProgramRow[]>("list_programs", { includeSystem }),
+  runUninstaller: (programId: string, quiet: boolean) => invoke<UninstallRun>("run_uninstaller", { programId, quiet }),
+  findLeftovers: (programId: string) => invoke<Leftover[]>("find_leftovers", { programId }),
+  quarantineLeftovers: (programId: string, folders: string[], sessionId: number | null) =>
+    invoke<QuarantineResult>("quarantine_leftovers", { programId, folders, sessionId }),
   sessionItems: (sessionId: number) => invoke<SessionItems>("session_items", { sessionId }),
   beginWatch: (appName: string, installerPath: string | null, folders: string[]) =>
     invoke<number>("begin_watch", { appName, installerPath, folders }),

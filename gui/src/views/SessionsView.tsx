@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { InstalledProgram, ProgramRow, Session, SessionItems } from "../types";
+import type { InstalledProgram, Leftover, ProgramRow, Session, SessionItems } from "../types";
 
 /** One row in the left pane: an installed program, or a recorded install Windows does not list. */
 interface Entry {
@@ -34,6 +34,10 @@ export function SessionsView() {
   const [confirm, setConfirm] = useState(false);
   const [done, setDone] = useState("");
   const [busy, setBusy] = useState(false);
+  const [leftovers, setLeftovers] = useState<Leftover[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [confirmUn, setConfirmUn] = useState(false);
+  const [note, setNote] = useState("");
   const listRef = useRef<HTMLUListElement>(null);
 
   useEffect(() => {
@@ -75,11 +79,15 @@ export function SessionsView() {
     setDetailError("");
     setConfirm(false);
     setDone("");
+    setLeftovers(null);
+    setPicked(new Set());
+    setConfirmUn(false);
+    setNote("");
     if (sessionId === null) return;
     let live = true;
     api.sessionItems(sessionId).then((i) => live && setItems(i)).catch((e: unknown) => live && setDetailError(String(e)));
     return () => { live = false; };
-  }, [sessionId]);
+  }, [sessionId, selected]);
 
   const move = (delta: number | "first" | "last") => {
     if (shown.length === 0) return;
@@ -186,21 +194,60 @@ export function SessionsView() {
       </div>
       <div className="pane pane-actions">
         <h2>Actions</h2>
-        {sessionId === null ? (
-          <p>{current ? "Actions need a recorded install. Use Watch an install first." : "Select a program."}</p>
+        {!current ? (
+          <p>Select a program.</p>
         ) : (
           <>
-            <button type="button" disabled={busy} title="Dry run. Nothing is changed." onClick={() => { setBusy(true); setDone(""); api.simulate(sessionId, "standard").then((r) => setDone(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
-              Preview cleanup
-            </button>
-            {items && items.shared > 0 && <p>{items.shared} item(s) may be shared. They are kept unless you choose otherwise.</p>}
-            <label className="check">
-              <input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} /> I understand items are moved to quarantine
-            </label>
-            <button type="button" disabled={!confirm || busy} title="Move this installation's items to quarantine. You can restore them." onClick={() => { setBusy(true); setDone(""); api.quarantineSession(sessionId, "standard").then((r) => { setDone(r.summary); setConfirm(false); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
-              Quarantine items
-            </button>
-            {done && <p role="status">{done}</p>}
+            {p && p.uninstall_command && (
+              <>
+                <h3>Uninstall</h3>
+                <label className="check">
+                  <input type="checkbox" checked={confirmUn} onChange={(e) => setConfirmUn(e.target.checked)} /> Run this program's own uninstaller
+                </label>
+                <button type="button" disabled={!confirmUn || busy} title="Starts the uninstaller Windows has on file. You may see its own prompts." onClick={() => { setBusy(true); setNote(""); api.runUninstaller(p.id, false).then((r) => setNote(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => { setBusy(false); setConfirmUn(false); }); }}>
+                  Uninstall
+                </button>
+                <button type="button" disabled={busy} title="Look for folders the uninstaller left behind. Nothing is changed." onClick={() => { setBusy(true); api.findLeftovers(p.id).then((l) => { setLeftovers(l); setPicked(new Set(l.filter((x) => x.confidence >= 0.7).map((x) => x.path))); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                  Find leftovers
+                </button>
+              </>
+            )}
+            {note && <p role="status">{note}</p>}
+            {leftovers && (
+              <fieldset className="themes">
+                <legend>Leftover folders</legend>
+                {leftovers.length === 0 && <p>No leftovers found.</p>}
+                {leftovers.map((l) => (
+                  <label key={l.path} className="check">
+                    <input type="checkbox" checked={picked.has(l.path)} onChange={(e) => setPicked((s0) => { const n = new Set(s0); if (e.target.checked) n.add(l.path); else n.delete(l.path); return n; })} />
+                    <span>{l.path}<small> {l.reason} {sure(l.confidence)}.</small></span>
+                  </label>
+                ))}
+                {leftovers.length > 0 && (
+                  <button type="button" disabled={picked.size === 0 || busy} title="Moves the files in the chosen folders to quarantine. You can restore them." onClick={() => { if (!p) return; setBusy(true); api.quarantineLeftovers(p.id, [...picked], sessionId).then((r) => { setNote(r.summary); setLeftovers(null); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                    Quarantine chosen folders
+                  </button>
+                )}
+              </fieldset>
+            )}
+            {sessionId !== null && (
+              <>
+                <h3>Recorded install</h3>
+                <button type="button" disabled={busy} title="Dry run. Nothing is changed." onClick={() => { setBusy(true); setDone(""); api.simulate(sessionId, "standard").then((r) => setDone(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                  Preview cleanup
+                </button>
+                {items && items.shared > 0 && <p>{items.shared} item(s) may be shared. They are kept unless you choose otherwise.</p>}
+                <label className="check">
+                  <input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} /> I understand items are moved to quarantine
+                </label>
+                <button type="button" disabled={!confirm || busy} title="Move this installation's items to quarantine. You can restore them." onClick={() => { setBusy(true); setDone(""); api.quarantineSession(sessionId, "standard").then((r) => { setDone(r.summary); setConfirm(false); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                  Quarantine items
+                </button>
+                {done && <p role="status">{done}</p>}
+              </>
+            )}
+            {!p && sessionId === null && <p>No actions are available for this entry.</p>}
+            {detailError && sessionId === null && <p role="alert" className="error">{detailError}</p>}
           </>
         )}
       </div>
