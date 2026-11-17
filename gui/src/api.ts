@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { Leftover, UninstallRun, ProgramRow, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
+import type { HistoryRow, Leftover, UninstallRun, ProgramRow, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -20,6 +20,7 @@ export const api = {
   findLeftovers: (programId: string) => invoke<Leftover[]>("find_leftovers", { programId }),
   quarantineLeftovers: (programId: string, folders: string[], sessionId: number | null) =>
     invoke<QuarantineResult>("quarantine_leftovers", { programId, folders, sessionId }),
+  history: (filter: string | null, limit: number) => invoke<HistoryRow[]>("history", { filter, limit }),
   sessionItems: (sessionId: number) => invoke<SessionItems>("session_items", { sessionId }),
   beginWatch: (appName: string, installerPath: string | null, folders: string[]) =>
     invoke<number>("begin_watch", { appName, installerPath, folders }),

@@ -453,3 +453,29 @@ fn backup_before_upgrade_is_a_working_old_version_database() {
         "rolling back means copying the .bak over the db"
     );
 }
+
+#[test]
+fn ledger_recent_is_newest_first_and_filters_by_path() {
+    let s = Store::open_in_memory().unwrap();
+    for p in ["C:\\a\\One.txt", "C:\\b\\two_%.txt", "C:\\a\\three.txt"] {
+        s.append_ledger(&NewLedgerEntry {
+            session_id: None,
+            node_id: None,
+            path: p.into(),
+            change_kind: ChangeKind::Created,
+            old_hash: None,
+            new_hash: None,
+            source: ChangeSource::Policy,
+        })
+        .unwrap();
+    }
+    let all = s.ledger_recent(10, None).unwrap();
+    assert_eq!(all.len(), 3);
+    assert!(all[0].entry.path.ends_with("three.txt"));
+    assert_eq!(s.ledger_recent(2, None).unwrap().len(), 2);
+    assert_eq!(s.ledger_recent(10, Some("one")).unwrap().len(), 1);
+    // wildcards in the filter are literal
+    assert_eq!(s.ledger_recent(10, Some("%")).unwrap().len(), 1);
+    assert_eq!(s.ledger_recent(10, Some("_")).unwrap().len(), 1);
+    assert_eq!(s.ledger_recent(10, Some("zzz")).unwrap().len(), 0);
+}
