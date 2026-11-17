@@ -246,6 +246,9 @@ export function SessionsView() {
                 <button type="button" disabled={busy} title="Save a plain-language report of this installation to your Documents folder." onClick={() => { setBusy(true); api.exportReport(sessionId, "standard").then((f) => setDone(`Report saved to ${f}`)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
                   Save report
                 </button>
+                <button type="button" disabled={busy} title="Copy this installation's files into a new folder in Documents. The installed program is not changed." onClick={() => { setBusy(true); api.makePortable(sessionId).then((r) => setDone(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                  Make portable copy
+                </button>
                 {done && <p role="status">{done}</p>}
               </>
             )}

@@ -498,6 +498,61 @@ fn export_report(
 }
 
 #[derive(Serialize)]
+struct PortableView {
+    folder: String,
+    copied: usize,
+    missing: usize,
+    registry_keys: usize,
+    unsupported: usize,
+    summary: String,
+}
+
+/// Copy a recorded installation's files into a new portable folder in Documents.
+#[tauri::command]
+fn make_portable(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<PortableView, String> {
+    let store = lock(&state)?;
+    let name = store
+        .session(session_id)
+        .map_err(|e| e.to_string())?
+        .map(|s| s.app_name)
+        .unwrap_or_default();
+    let nodes = store
+        .nodes_for_session(session_id)
+        .map_err(|e| e.to_string())?;
+    let plan = exor_engine::portable::plan_portable(&nodes);
+    let base = format!("ExorSystem portable - {}", safe_name(&name));
+    let dir = reports_dir();
+    let mut dest = dir.join(&base);
+    let mut n = 2;
+    while dest.exists() {
+        dest = dir.join(format!("{base} ({n})"));
+        n += 1;
+    }
+    let r = exor_engine::portable::build_portable(&plan, &dest).map_err(|e| e.to_string())?;
+    let folder = dest.to_string_lossy().into_owned();
+    let summary = format!(
+        "Copied {} file(s) to {folder}. {} listed file(s) were missing. {} registry key(s) and {} item(s) that cannot be portable are listed in portable-plan.json. Your installed program was not changed.",
+        r.copied,
+        r.missing.len(),
+        plan.export_registry.len(),
+        plan.unsupported.len()
+    );
+    dock::log(&app, "info", summary.clone());
+    Ok(PortableView {
+        folder,
+        copied: r.copied,
+        missing: r.missing.len(),
+        registry_keys: plan.export_registry.len(),
+        unsupported: plan.unsupported.len(),
+        summary,
+    })
+}
+
+#[derive(Serialize)]
 struct HistoryRow {
     id: i64,
     when: Option<String>,
@@ -852,6 +907,7 @@ fn run() -> Result<(), String> {
             list_programs,
             history,
             export_report,
+            make_portable,
             run_uninstaller,
             find_leftovers,
             quarantine_leftovers,
