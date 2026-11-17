@@ -137,3 +137,12 @@ export interface HistoryRow {
   what: string;
   session_id: number | null;
 }
+
+export interface PortableView {
+  folder: string;
+  copied: number;
+  missing: number;
+  registry_keys: number;
+  unsupported: number;
+  summary: string;
+}

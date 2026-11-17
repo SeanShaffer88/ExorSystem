@@ -4,6 +4,7 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased] - 0.1.0 in progress
 ### Added
+- Make portable copy: copies a recorded installation's files into a new folder with `portable-plan.json` (registry keys to replay, unsupported items); sources untouched. `portable::build_portable`, command `make_portable`.
 - Save report: writes a plain-language Markdown report of a recorded installation to Documents (never overwrites); `report::session_report`, command `export_report`.
 - History tab lists recorded changes (newest first, path filter) from the append-only ledger; storage `ledger_recent`, command `history`.
 - Guided uninstall: Uninstall runs the program's own registered uninstaller (no shell; command read from the registry, never from the UI), then Find leftovers suggests folders (recorded install folder 0.7, name match 0.3; publisher folders never match) and quarantines the chosen ones, reversibly. `exor-engine::leftovers`; commands `run_uninstaller`, `find_leftovers`, `quarantine_leftovers` (only suggested folders are accepted; roots and `\\Windows` refused).
