@@ -146,3 +146,13 @@ export interface PortableView {
   unsupported: number;
   summary: string;
 }
+
+export interface RiskRow {
+  name: string;
+  why: string;
+}
+export interface RiskView {
+  low: RiskRow[];
+  medium: RiskRow[];
+  high: RiskRow[];
+}
