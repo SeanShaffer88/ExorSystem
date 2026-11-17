@@ -8,7 +8,7 @@ Every file, registry key, service and task is recorded as a node in a directed a
 
 | Layer | Path | Tech | Status |
 |---|---|---|---|
-| GUI | `gui/` | Tauri v2 + React/TypeScript, keyboard-first, plain-language reports | shell: 3 views, type-checked |
+| GUI | `gui/` | Tauri v2 + React/TypeScript, keyboard-first, plain-language reports | tabs, three-pane programs list, status bar, slide-out log; type-checked |
 | User-space engine | `crates/exor-engine` | Rust + tokio, BLAKE3 | implemented, 100% safe Rust, tested |
 | Storage | `crates/exor-storage` | SQLite, WAL | implemented, tested |
 | Windows sources | `crates/exor-win` | windows-rs: USN journal, driver client | type-checked, not run on Windows |

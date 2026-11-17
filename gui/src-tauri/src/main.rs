@@ -1,15 +1,18 @@
 //! ExorSystem desktop shell: thin Tauri commands over `exor-storage` and `exor-engine`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use exor_engine::programs::{self, InstalledProgram};
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
 use exor_engine::watch::{InstallWatch, SystemProbe, WatchSummary};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
 use exor_storage::{Edge, LedgerEntry, Session, Store};
 use serde::Serialize;
+mod dock;
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::State;
 use tauri::ipc::Channel;
+use tauri::{Manager, State, WindowEvent};
 
 struct AppState {
     store: Arc<Mutex<Store>>,
@@ -129,6 +132,7 @@ struct QuarantineResult {
 /// Move the files a policy marks `quarantine` into a manifest-backed quarantine. Reversible.
 #[tauri::command]
 fn quarantine_session(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: i64,
     template: String,
@@ -142,6 +146,11 @@ fn quarantine_session(
     let out = execute::quarantine_decided(&store, &state.quarantine_root, session_id, &report)
         .map_err(|e| e.to_string())?;
     let moved = out.manifest.items.len();
+    dock::log(
+        &app,
+        "info",
+        format!("Quarantined {moved} item(s) from installation #{session_id}."),
+    );
     Ok(QuarantineResult {
         quarantine_id: out.manifest.quarantine_id,
         moved,
@@ -180,20 +189,157 @@ fn list_quarantines(state: State<'_, AppState>) -> Result<Vec<QuarantineRow>, St
 
 /// Put quarantined files back. Never overwrites a file that has reappeared.
 #[tauri::command]
-fn restore_quarantine(state: State<'_, AppState>, quarantine_id: String) -> Result<usize, String> {
+fn restore_quarantine(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    quarantine_id: String,
+) -> Result<usize, String> {
     let store = lock(&state)?;
-    execute::restore_by_id(&store, &quarantine_id, false)
+    let r = execute::restore_by_id(&store, &quarantine_id, false)
         .map(|m| m.items.len())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    match &r {
+        Ok(n) => dock::log(
+            &app,
+            "info",
+            format!("Restored {n} item(s) from quarantine."),
+        ),
+        Err(e) => dock::log(&app, "error", format!("Restore failed: {e}")),
+    }
+    r
 }
 
 /// Permanently delete quarantined files. The UI asks for a second confirmation first.
 #[tauri::command]
-fn purge_quarantine(state: State<'_, AppState>, quarantine_id: String) -> Result<usize, String> {
+fn purge_quarantine(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    quarantine_id: String,
+) -> Result<usize, String> {
     let store = lock(&state)?;
-    execute::purge_by_id(&store, &quarantine_id)
+    let r = execute::purge_by_id(&store, &quarantine_id)
         .map(|m| m.items.len())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    match &r {
+        Ok(n) => dock::log(
+            &app,
+            "warn",
+            format!("Permanently deleted {n} quarantined item(s)."),
+        ),
+        Err(e) => dock::log(&app, "error", format!("Delete failed: {e}")),
+    }
+    r
+}
+
+#[derive(Serialize)]
+struct ProgramRow {
+    program: InstalledProgram,
+    /// Recorded installation sessions that belong to this program.
+    session_ids: Vec<i64>,
+}
+
+/// Programs Windows lists as installed, tidied, each linked to any recorded sessions.
+/// Empty off Windows (the list comes from the registry).
+#[tauri::command]
+async fn list_programs(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    include_system: bool,
+) -> Result<Vec<ProgramRow>, String> {
+    #[cfg(windows)]
+    let raw = tauri::async_runtime::spawn_blocking(exor_win::enumerate_programs)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    let raw: Vec<InstalledProgram> = Vec::new();
+    let sessions = lock(&state)?.sessions().map_err(|e| e.to_string())?;
+    let listed = programs::visible(raw, include_system);
+    dock::log(
+        &app,
+        "info",
+        format!("Listed {} installed program(s).", listed.len()),
+    );
+    Ok(listed
+        .into_iter()
+        .map(|program| {
+            let session_ids = programs::match_sessions(&program, &sessions)
+                .iter()
+                .map(|s| s.session_id)
+                .collect();
+            ProgramRow {
+                program,
+                session_ids,
+            }
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+struct SessionItem {
+    path: String,
+    node_type: String,
+    confidence: f64,
+    shared: bool,
+}
+
+#[derive(Serialize)]
+struct SessionItems {
+    total: usize,
+    shared: usize,
+    by_type: std::collections::BTreeMap<String, usize>,
+    /// First 500 items, least certain last.
+    items: Vec<SessionItem>,
+}
+
+/// Everything one recorded installation left behind, with how sure we are about each item.
+#[tauri::command]
+fn session_items(state: State<'_, AppState>, session_id: i64) -> Result<SessionItems, String> {
+    let store = lock(&state)?;
+    let cands = policy::candidates_for_session(&store, session_id).map_err(|e| e.to_string())?;
+    let mut by_type = std::collections::BTreeMap::new();
+    let mut shared = 0;
+    let mut items: Vec<SessionItem> = cands
+        .iter()
+        .map(|c| {
+            let node_type = serde_json::to_value(c.node_type)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            *by_type.entry(node_type.clone()).or_insert(0) += 1;
+            let is_shared = c
+                .attrs
+                .get("shared")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if is_shared {
+                shared += 1;
+            }
+            SessionItem {
+                path: c.path.clone(),
+                node_type,
+                confidence: c
+                    .attrs
+                    .get("confidence")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.3),
+                shared: is_shared,
+            }
+        })
+        .collect();
+    items.sort_by(|a, b| {
+        b.confidence
+            .total_cmp(&a.confidence)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    let total = items.len();
+    items.truncate(500);
+    Ok(SessionItems {
+        total,
+        shared,
+        by_type,
+        items,
+    })
 }
 
 /// Real service and task listings on Windows; elsewhere the engine's "not available" probe.
@@ -234,6 +380,7 @@ fn watch_slot<'a>(
 /// Take the "before" picture of the watched folders, services and tasks. Run the installer next.
 #[tauri::command]
 async fn begin_watch(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     app_name: String,
     installer_path: Option<String>,
@@ -256,6 +403,11 @@ async fn begin_watch(
         .as_deref()
         .map(str::trim)
         .filter(|p| !p.is_empty());
+    dock::log(
+        &app,
+        "info",
+        format!("Taking the 'before' picture for {name}…"),
+    );
     let w = InstallWatch::begin(
         Arc::clone(&state.store),
         name,
@@ -267,6 +419,11 @@ async fn begin_watch(
     .await
     .map_err(|e| e.to_string())?;
     let id = w.session_id();
+    dock::log(
+        &app,
+        "info",
+        format!("Watching {name}. Run the installer, then finish."),
+    );
     let mut slot = watch_slot(&state)?;
     if slot.is_some() {
         let _ = w.abandon();
@@ -278,18 +435,28 @@ async fn begin_watch(
 
 /// Take the "after" picture and record every difference in one session.
 #[tauri::command]
-async fn finish_watch(state: State<'_, AppState>) -> Result<WatchSummary, String> {
+async fn finish_watch(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<WatchSummary, String> {
     let w = watch_slot(&state)?
         .take()
         .ok_or_else(|| "no installation is being watched".to_string())?;
-    w.finish(&Cancel::new()).await.map_err(|e| e.to_string())
+    dock::log(&app, "info", "Taking the 'after' picture and comparing…");
+    let r = w.finish(&Cancel::new()).await.map_err(|e| e.to_string());
+    match &r {
+        Ok(_) => dock::log(&app, "info", "Installation recorded."),
+        Err(e) => dock::log(&app, "error", format!("Recording failed: {e}")),
+    }
+    r
 }
 
 /// Stop watching without recording anything.
 #[tauri::command]
-fn cancel_watch(state: State<'_, AppState>) -> Result<(), String> {
+fn cancel_watch(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     if let Some(w) = watch_slot(&state)?.take() {
         w.abandon().map_err(|e| e.to_string())?;
+        dock::log(&app, "info", "Stopped watching. Nothing was recorded.");
     }
     Ok(())
 }
@@ -297,6 +464,7 @@ fn cancel_watch(state: State<'_, AppState>) -> Result<(), String> {
 /// Snapshot a folder without blocking the UI: progress streams over `on_event`.
 #[tauri::command]
 async fn scan(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     root: String,
     on_event: Channel<ScanEvent>,
@@ -312,6 +480,7 @@ async fn scan(
         }
         *slot = Some(cancel.clone());
     }
+    dock::log(&app, "info", format!("Scanning {root}…"));
     let progress = on_event.clone();
     let result = capture_with_progress(
         std::path::Path::new(&root),
@@ -325,6 +494,15 @@ async fn scan(
     .await;
     if let Ok(mut slot) = state.scan_cancel.lock() {
         *slot = None;
+    }
+    match &result {
+        Ok(snap) => dock::log(
+            &app,
+            "info",
+            format!("Scan finished: {} file(s).", snap.trie.len()),
+        ),
+        Err(EngineError::Cancelled) => dock::log(&app, "warn", "Scan cancelled."),
+        Err(e) => dock::log(&app, "error", format!("Scan failed: {e}")),
     }
     let event = match result {
         Ok(snap) => ScanEvent::Done {
@@ -377,14 +555,36 @@ fn run() -> Result<(), String> {
         Err(e) => eprintln!("ExorSystem: quarantine recovery failed: {e}"),
     }
     tauri::Builder::default()
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_denylist(&["log"])
+                .build(),
+        )
+        .manage(dock::Dock::default())
         .manage(AppState {
             store: Arc::new(Mutex::new(store)),
             watch: Mutex::new(None),
             scan_cancel: Mutex::new(None),
             quarantine_root,
         })
+        .setup(|app| {
+            let handle = app.handle().clone();
+            if let Some(main) = app.get_webview_window("main") {
+                main.on_window_event(move |e| match e {
+                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => dock::follow(&handle),
+                    // the hidden log window must not keep the app alive
+                    WindowEvent::CloseRequested { .. } => handle.exit(0),
+                    _ => {}
+                });
+            }
+            dock::log(app.handle(), "info", "ExorSystem started.");
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            dock::get_log,
+            dock::clear_log,
+            dock::set_log_open,
+            dock::log_is_open,
             list_sessions,
             provenance,
             simulate,
@@ -394,6 +594,8 @@ fn run() -> Result<(), String> {
             list_quarantines,
             restore_quarantine,
             purge_quarantine,
+            list_programs,
+            session_items,
             begin_watch,
             finish_watch,
             cancel_watch

@@ -34,3 +34,6 @@ GUI (Tauri v2 + React)  --invoke-->  exorsystem-gui (src-tauri)
 
 ## Known limitations
 See `AUDIT.md`.
+
+## Window layout
+Main window: tab bar, view, status bar. A second borderless window (`log`, fixed 420x380 logical px, not resizable, hidden by default) is positioned by `gui/src-tauri/src/dock.rs` against the main window's right edge. Closed, it sits inside the main window's footprint and is hidden. Opening shows it behind the main window, then steps its x position outward (14 steps, eased); closing reverses and hides. Move, resize and minimize events on the main window keep it attached. Log lines live in a 1000-line ring buffer and are pushed to the window by a `log` event.
