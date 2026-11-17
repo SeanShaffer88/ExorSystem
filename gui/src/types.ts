@@ -84,3 +84,38 @@ export interface WatchSummary {
   warnings: string[];
   summary: string;
 }
+
+export interface InstalledProgram {
+  id: string;
+  name: string;
+  version: string | null;
+  publisher: string | null;
+  install_location: string | null;
+  uninstall_command: string | null;
+  quiet_uninstall_command: string | null;
+  install_date: string | null;
+  size_kb: number | null;
+  scope: "machine" | "machine32" | "user";
+  system_component: boolean;
+  parent_key: string | null;
+  windows_installer: boolean;
+}
+
+export interface ProgramRow {
+  program: InstalledProgram;
+  session_ids: number[];
+}
+
+export interface SessionItem {
+  path: string;
+  node_type: string;
+  confidence: number;
+  shared: boolean;
+}
+
+export interface SessionItems {
+  total: number;
+  shared: number;
+  by_type: Record<string, number>;
+  items: SessionItem[];
+}

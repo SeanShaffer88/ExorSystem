@@ -13,6 +13,7 @@ pub mod monitor;
 pub mod noise;
 pub mod policy;
 pub mod portable;
+pub mod programs;
 pub mod quarantine;
 pub mod report;
 pub mod risk;
