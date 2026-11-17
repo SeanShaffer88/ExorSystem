@@ -6,7 +6,8 @@
   "license": "MIT",
   "scripts": {
     "dev": "vite --port 1420 --strictPort",
-    "build": "tsc --noEmit && vite build",
+    "build": "node scripts/check-themes.mjs && tsc --noEmit && vite build",
+    "check:themes": "node scripts/check-themes.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

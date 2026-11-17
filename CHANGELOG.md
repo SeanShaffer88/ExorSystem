@@ -4,6 +4,7 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased] - 0.1.0 in progress
 ### Added
+- Optional themes: 36 palettes (dark and light) in `gui/src/themes.json`, Appearance view with live preview on selection, Apply / Cancel preview, and a temporary 30 s Undo after applying. Choice persists; the default look is unchanged. `npm run check:themes` enforces WCAG AA contrast and runs in `npm run build` and CI.
 - Service and scheduled-task collectors: snapshot diffing, task XML parsing (UTF-8/UTF-16), SCM enumeration in `exor-win`, attribution into the DAG (heuristic 0.3, `depends_on` link to the executable when known).
 - Quarantine execution (`exor-engine::execute`): quarantine what a policy decided, restore, purge, all recorded in the append-only ledger.
 - Crash recovery: interrupted quarantines are rolled back at startup (`recover`, `find_incomplete`, status `rolled_back`).

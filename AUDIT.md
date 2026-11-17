@@ -13,6 +13,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | Service enumeration (SCM) | Partially verified | type-checked for the Windows target; never run on Windows |
 | Release script, CI and release workflows | Unverified | YAML parses; scripts and workflows never run (no Windows runner here) |
 | Quarantine GUI view and Tauri commands | Partially verified | `tsc` + `vite build` pass, shell type-checked; never launched |
+| Themes (36 palettes, preview, apply, undo) | Partially verified | WCAG AA contrast script passes; store logic smoke-tested with stubs; never rendered or screen-reader tested |
 | Kernel driver `driver/exordrv.c`, INF | Unverified | not compiled with the WDK, not loaded |
 | GUI frontend | Partially verified | `tsc` + `vite build` pass; not rendered or screen-reader tested |
 | GUI Tauri shell | Partially verified | type-checked for the Windows target; never launched |
@@ -22,6 +23,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | Windows 10 vs 11 behaviour, DPI, high contrast | Unverified | |
 
 ## Known limitations
+- Theme palettes are inspired by well-known schemes. Colors were nudged where needed to meet WCAG AA, so they are not exact upstream values. Three names were changed to avoid third-party brand names (see CREDITS).
 - The driver reports `RegNtPreDeleteKey` as an attempt.
 - The registry client thread exits at the next message after the consumer drops (blocking `FilterGetMessage`).
 - Dev altitude `385201` is a placeholder; Microsoft must assign a real one.

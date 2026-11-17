@@ -3,16 +3,19 @@ import { flags } from "./flags";
 import { ScanView } from "./views/ScanView";
 import { ProvenanceView } from "./views/ProvenanceView";
 import { SessionsView } from "./views/SessionsView";
+import { AppearanceView } from "./views/AppearanceView";
+import { ThemeUndoBar } from "./ThemeUndoBar";
 import { QuarantineView } from "./views/QuarantineView";
 import { SimulatorView } from "./views/SimulatorView";
 
-type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine";
+type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine" | "appearance";
 const views: { id: ViewId; label: string; enabled: boolean }[] = [
   { id: "sessions", label: "Installations", enabled: true },
   { id: "scan", label: "Scan folder", enabled: true },
   { id: "provenance", label: "Provenance", enabled: true },
   { id: "simulator", label: "Cleanup simulator", enabled: true },
   { id: "quarantine", label: "Quarantine", enabled: flags.quarantineView },
+  { id: "appearance", label: "Appearance", enabled: flags.themes },
 ];
 
 export function App() {
@@ -59,6 +62,7 @@ export function App() {
             </li>
           ))}
         </ul>
+        <ThemeUndoBar />
       </nav>
       <main id="main" tabIndex={-1}>
         {view === "sessions" && <SessionsView />}
@@ -66,6 +70,7 @@ export function App() {
         {view === "provenance" && <ProvenanceView />}
         {view === "simulator" && <SimulatorView />}
         {view === "quarantine" && <QuarantineView />}
+        {view === "appearance" && <AppearanceView />}
       </main>
       <div className="sr-only" role="status" aria-live="polite">{announce}</div>
     </div>
