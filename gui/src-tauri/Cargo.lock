@@ -832,11 +832,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "exor-win"
+version = "0.1.0"
+dependencies = [
+ "exor-engine",
+ "thiserror 2.0.21",
+ "tokio",
+ "windows",
+]
+
+[[package]]
 name = "exorsystem-gui"
 version = "0.1.0"
 dependencies = [
  "exor-engine",
  "exor-storage",
+ "exor-win",
  "serde",
  "serde_json",
  "tauri",

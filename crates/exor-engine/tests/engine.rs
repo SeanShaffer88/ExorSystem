@@ -485,3 +485,128 @@ fn execute_quarantine_restore_purge_with_ledger() {
     };
     assert!(quarantine_decided(&store, &q, sess, &empty).is_err());
 }
+
+#[tokio::test]
+async fn install_watch_records_files_services_tasks_in_one_session() {
+    use exor_engine::collectors::{ServiceInfo, TaskInfo};
+    use exor_engine::watch::{InstallWatch, SystemProbe};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Mock(AtomicUsize);
+    impl SystemProbe for Mock {
+        fn services(&self) -> Result<Vec<ServiceInfo>, String> {
+            let n = self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(if n == 0 {
+                vec![]
+            } else {
+                vec![ServiceInfo {
+                    name: "FooSvc".into(),
+                    display_name: "Foo".into(),
+                    binary_path: "C:\\Foo\\svc.exe".into(),
+                    start_type: "auto".into(),
+                }]
+            })
+        }
+        fn tasks(&self) -> Result<Vec<TaskInfo>, String> {
+            Err("denied".into())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    write(&dir.path().join("keep.txt"), b"old");
+    let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let cancel = exor_engine::Cancel::new();
+    let w = InstallWatch::begin(
+        Arc::clone(&store),
+        "Foo",
+        None,
+        &[dir.path().to_path_buf()],
+        Arc::new(Mock(AtomicUsize::new(0))),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let sid = w.session_id();
+    write(&dir.path().join("foo.dll"), b"new");
+    let s = w.finish(&cancel).await.unwrap();
+    assert_eq!(s.session_id, sid);
+    assert_eq!(
+        (s.files_changed, s.services_changed, s.tasks_changed),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        s.warnings.len(),
+        1,
+        "baseline probe failure warns once and skips the compare: {:?}",
+        s.warnings
+    );
+    assert!(s.warnings[0].contains("Scheduled tasks"));
+    let st = store.lock().unwrap();
+    let dll = dir.path().join("foo.dll").to_string_lossy().into_owned();
+    assert!(st.provenance_for_path(&dll).unwrap().is_some());
+    assert!(st.provenance_for_path("service:FooSvc").unwrap().is_some());
+    let sess = st
+        .sessions()
+        .unwrap()
+        .into_iter()
+        .find(|x| x.session_id == sid)
+        .unwrap();
+    assert_eq!(sess.status, Some(exor_storage::SessionStatus::Completed));
+}
+
+#[tokio::test]
+async fn install_watch_abandon_and_failed_baseline_close_the_session() {
+    use exor_engine::watch::{InstallWatch, NullProbe};
+    let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let cancel = exor_engine::Cancel::new();
+    let dir = tempfile::tempdir().unwrap();
+    // a watch folder the installer will create later is fine: it baselines as empty
+    let later = dir.path().join("Foo");
+    InstallWatch::begin(
+        Arc::clone(&store),
+        "Later",
+        None,
+        std::slice::from_ref(&later),
+        Arc::new(NullProbe),
+        &cancel,
+    )
+    .await
+    .unwrap()
+    .abandon()
+    .unwrap();
+    // a cancelled baseline fails and closes its session
+    let stop = exor_engine::Cancel::new();
+    stop.cancel();
+    assert!(
+        InstallWatch::begin(
+            Arc::clone(&store),
+            "Bad",
+            None,
+            &[dir.path().to_path_buf()],
+            Arc::new(NullProbe),
+            &stop
+        )
+        .await
+        .is_err()
+    );
+    let w = InstallWatch::begin(
+        Arc::clone(&store),
+        "Ok",
+        None,
+        &[],
+        Arc::new(NullProbe),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let sid = w.session_id();
+    w.abandon().unwrap();
+    let st = store.lock().unwrap();
+    let all = st.sessions().unwrap();
+    assert!(
+        all.iter()
+            .all(|s| s.status == Some(exor_storage::SessionStatus::Failed)),
+        "{all:?}"
+    );
+    assert!(all.iter().any(|s| s.session_id == sid));
+}

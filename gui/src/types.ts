@@ -75,3 +75,12 @@ export interface QuarantineResult {
   skipped: number;
   summary: string;
 }
+
+export interface WatchSummary {
+  session_id: number;
+  files_changed: number;
+  services_changed: number;
+  tasks_changed: number;
+  warnings: string[];
+  summary: string;
+}

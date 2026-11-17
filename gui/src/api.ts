@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { ProvenanceView, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView } from "./types";
+import type { ProvenanceView, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -15,5 +15,9 @@ export const api = {
   listQuarantines: () => invoke<QuarantineRow[]>("list_quarantines"),
   restoreQuarantine: (quarantineId: string) => invoke<number>("restore_quarantine", { quarantineId }),
   purgeQuarantine: (quarantineId: string) => invoke<number>("purge_quarantine", { quarantineId }),
+  beginWatch: (appName: string, installerPath: string | null, folders: string[]) =>
+    invoke<number>("begin_watch", { appName, installerPath, folders }),
+  finishWatch: () => invoke<WatchSummary>("finish_watch"),
+  cancelWatch: () => invoke<void>("cancel_watch"),
   cancelScan: () => invoke<void>("cancel_scan"),
 };

@@ -5,12 +5,14 @@ import { ProvenanceView } from "./views/ProvenanceView";
 import { SessionsView } from "./views/SessionsView";
 import { AppearanceView } from "./views/AppearanceView";
 import { ThemeUndoBar } from "./ThemeUndoBar";
+import { WatchView } from "./views/WatchView";
 import { QuarantineView } from "./views/QuarantineView";
 import { SimulatorView } from "./views/SimulatorView";
 
-type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine" | "appearance";
+type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine" | "appearance" | "watch";
 const views: { id: ViewId; label: string; enabled: boolean }[] = [
   { id: "sessions", label: "Installations", enabled: true },
+  { id: "watch", label: "Watch an install", enabled: flags.watchView },
   { id: "scan", label: "Scan folder", enabled: true },
   { id: "provenance", label: "Provenance", enabled: true },
   { id: "simulator", label: "Cleanup simulator", enabled: true },
@@ -66,6 +68,7 @@ export function App() {
       </nav>
       <main id="main" tabIndex={-1}>
         {view === "sessions" && <SessionsView />}
+        {view === "watch" && <WatchView />}
         {view === "scan" && <ScanView />}
         {view === "provenance" && <ProvenanceView />}
         {view === "simulator" && <SimulatorView />}
