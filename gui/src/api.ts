@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { HistoryRow, RiskView, PortableView, Leftover, UninstallRun, ProgramRow, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
+import type { AppInfo, TemplateInfo, HistoryRow, RiskView, PortableView, Leftover, UninstallRun, ProgramRow, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -24,6 +24,8 @@ export const api = {
   exportReport: (sessionId: number, template: string) => invoke<string>("export_report", { sessionId, template }),
   makePortable: (sessionId: number) => invoke<PortableView>("make_portable", { sessionId }),
   updateRisk: () => invoke<RiskView>("update_risk"),
+  listTemplates: () => invoke<TemplateInfo[]>("list_templates"),
+  appInfo: () => invoke<AppInfo>("app_info"),
   sessionItems: (sessionId: number) => invoke<SessionItems>("session_items", { sessionId }),
   beginWatch: (appName: string, installerPath: string | null, folders: string[]) =>
     invoke<number>("begin_watch", { appName, installerPath, folders }),

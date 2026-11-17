@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { getPolicy } from "../settings";
 import type { Session, SimulationView } from "../types";
 
 const templates = [
@@ -13,7 +14,7 @@ const actionText = { keep: "Keep", quarantine: "Quarantine", flag_for_review: "R
 export function SimulatorView() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<number | null>(null);
-  const [template, setTemplate] = useState("standard");
+  const [template, setTemplate] = useState(getPolicy());
   const [result, setResult] = useState<SimulationView | null>(null);
   const [error, setError] = useState("");
 

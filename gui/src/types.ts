@@ -156,3 +156,13 @@ export interface RiskView {
   medium: RiskRow[];
   high: RiskRow[];
 }
+
+export interface TemplateInfo {
+  name: string;
+  description: string;
+}
+export interface AppInfo {
+  version: string;
+  data_folder: string;
+  quarantine_folder: string;
+}

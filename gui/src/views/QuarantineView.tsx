@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { getPolicy } from "../settings";
 import type { QuarantineRow, Session } from "../types";
 
 const statusText: Record<string, string> = {
@@ -13,7 +14,7 @@ const statusText: Record<string, string> = {
 export function QuarantineView() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<number | null>(null);
-  const [template, setTemplate] = useState("standard");
+  const [template, setTemplate] = useState(getPolicy());
   const [rows, setRows] = useState<QuarantineRow[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");

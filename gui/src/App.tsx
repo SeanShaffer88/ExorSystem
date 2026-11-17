@@ -7,12 +7,13 @@ import { AppearanceView } from "./views/AppearanceView";
 import { ThemeUndoBar } from "./ThemeUndoBar";
 import { WatchView } from "./views/WatchView";
 import { QuarantineView } from "./views/QuarantineView";
+import { SettingsView } from "./views/SettingsView";
 import { RiskView } from "./views/RiskView";
 import { HistoryView } from "./views/HistoryView";
 import { SimulatorView } from "./views/SimulatorView";
 import { StatusBar, type Shortcut } from "./StatusBar";
 
-type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine" | "history" | "risk" | "appearance" | "watch";
+type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine" | "history" | "risk" | "settings" | "appearance" | "watch";
 const views: { id: ViewId; label: string; enabled: boolean }[] = [
   { id: "sessions", label: "Installations", enabled: true },
   { id: "watch", label: "Watch an install", enabled: flags.watchView },
@@ -22,6 +23,7 @@ const views: { id: ViewId; label: string; enabled: boolean }[] = [
   { id: "quarantine", label: "Quarantine", enabled: flags.quarantineView },
   { id: "risk", label: "Update risk", enabled: true },
   { id: "history", label: "History", enabled: true },
+  { id: "settings", label: "Settings", enabled: true },
   { id: "appearance", label: "Appearance", enabled: flags.themes },
 ];
 
@@ -106,6 +108,7 @@ export function App() {
         {view === "quarantine" && <QuarantineView />}
         {view === "risk" && <RiskView />}
         {view === "history" && <HistoryView />}
+        {view === "settings" && <SettingsView />}
         {view === "appearance" && <AppearanceView />}
       </main>
       <StatusBar shortcuts={shortcuts} />
