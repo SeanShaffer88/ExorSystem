@@ -1,6 +1,7 @@
 //! Install-session monitor: noise-filtered events become nodes, ledger entries and attribution edges.
 
 use crate::cancel::Cancel;
+use crate::collectors::{ServiceChange, TaskChange};
 use crate::error::{EngineError, Result};
 use crate::events::{FsReason, RawEvent, RegOp};
 use crate::noise::{NoiseFilter, Verdict};
@@ -221,6 +222,113 @@ impl SessionMonitor {
         Ok(n)
     }
 
+    /// Attribute service changes. Added/modified services become `service` nodes (heuristic 0.3);
+    /// when the service's executable is already a known node, the service `depends_on` it.
+    pub fn attribute_services(&self, changes: &[ServiceChange]) -> Result<usize> {
+        let s = lock(&self.store)?;
+        let mut n = 0;
+        for c in changes {
+            let path = format!("service:{}", c.service.name);
+            let kind = match c.change {
+                ChangeType::Added => ChangeKind::Created,
+                ChangeType::Modified => ChangeKind::Modified,
+                ChangeType::Removed => ChangeKind::Deleted,
+            };
+            let node_id = if c.change == ChangeType::Removed {
+                s.node_by_path(&path)?.map(|x| x.node_id)
+            } else {
+                let id = s.upsert_node(&NewNode {
+                    node_type: NodeType::Service,
+                    path: path.clone(),
+                    hash: None,
+                    acl_fingerprint: None,
+                    first_detected_in: Some(self.session_id),
+                })?;
+                let rel = if c.change == ChangeType::Added {
+                    RelationshipType::CreatedBy
+                } else {
+                    RelationshipType::ModifiedBy
+                };
+                self.link(&s, id, rel, Evidence::Heuristic)?;
+                if let Some(exe) = image_path(&c.service.binary_path)
+                    && let Some(f) = s.node_by_path(&exe)?
+                {
+                    s.add_edge(
+                        f.node_id,
+                        id,
+                        RelationshipType::DependsOn,
+                        Evidence::Temporal,
+                    )?;
+                }
+                Some(id)
+            };
+            s.append_ledger(&NewLedgerEntry {
+                session_id: Some(self.session_id),
+                node_id,
+                path,
+                change_kind: kind,
+                old_hash: None,
+                new_hash: None,
+                source: ChangeSource::SnapshotDiff,
+            })?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Attribute scheduled-task changes (same rules as services).
+    pub fn attribute_tasks(&self, changes: &[TaskChange]) -> Result<usize> {
+        let s = lock(&self.store)?;
+        let mut n = 0;
+        for c in changes {
+            let path = format!("task:{}", c.task.path);
+            let kind = match c.change {
+                ChangeType::Added => ChangeKind::Created,
+                ChangeType::Modified => ChangeKind::Modified,
+                ChangeType::Removed => ChangeKind::Deleted,
+            };
+            let node_id = if c.change == ChangeType::Removed {
+                s.node_by_path(&path)?.map(|x| x.node_id)
+            } else {
+                let id = s.upsert_node(&NewNode {
+                    node_type: NodeType::Task,
+                    path: path.clone(),
+                    hash: None,
+                    acl_fingerprint: None,
+                    first_detected_in: Some(self.session_id),
+                })?;
+                let rel = if c.change == ChangeType::Added {
+                    RelationshipType::CreatedBy
+                } else {
+                    RelationshipType::ModifiedBy
+                };
+                self.link(&s, id, rel, Evidence::Heuristic)?;
+                if let Some(exe) = c.task.command.as_deref().and_then(image_path)
+                    && let Some(f) = s.node_by_path(&exe)?
+                {
+                    s.add_edge(
+                        f.node_id,
+                        id,
+                        RelationshipType::DependsOn,
+                        Evidence::Temporal,
+                    )?;
+                }
+                Some(id)
+            };
+            s.append_ledger(&NewLedgerEntry {
+                session_id: Some(self.session_id),
+                node_id,
+                path,
+                change_kind: kind,
+                old_hash: None,
+                new_hash: None,
+                source: ChangeSource::SnapshotDiff,
+            })?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     /// Confirm artifacts via a manifest: confidence 1.0.
     pub fn ingest_manifest(&self, entries: &[ManifestEntry]) -> Result<usize> {
         let s = lock(&self.store)?;
@@ -249,5 +357,26 @@ impl SessionMonitor {
     /// Close the session.
     pub fn finish(&self, status: SessionStatus) -> Result<()> {
         Ok(lock(&self.store)?.end_session(self.session_id, status)?)
+    }
+}
+
+/// Executable path from a command line: `"C:\\a b\\x.exe" /arg` or `C:\\a\\x.exe /arg`.
+fn image_path(cmd: &str) -> Option<String> {
+    let c = cmd.trim();
+    if let Some(rest) = c.strip_prefix('"') {
+        return rest
+            .split('"')
+            .next()
+            .filter(|p| !p.is_empty())
+            .map(str::to_string);
+    }
+    let lower = c.to_lowercase();
+    let end = lower
+        .find(".exe")
+        .map(|i| i + 4)
+        .or_else(|| lower.find(".sys").map(|i| i + 4));
+    match end {
+        Some(e) => Some(c[..e].to_string()),
+        None => c.split_whitespace().next().map(str::to_string),
     }
 }

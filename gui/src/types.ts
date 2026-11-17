@@ -61,3 +61,17 @@ export type ScanEvent =
   | { event: "done"; data: { files: number; skipped: number; root_digest: string } }
   | { event: "cancelled" }
   | { event: "failed"; data: { message: string } };
+
+export interface QuarantineRow {
+  quarantine_id: string;
+  session_id: number | null;
+  status: "in_progress" | "quarantined" | "restored" | "purged" | "rolled_back" | string;
+  files: number;
+}
+
+export interface QuarantineResult {
+  quarantine_id: string;
+  moved: number;
+  skipped: number;
+  summary: string;
+}

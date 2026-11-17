@@ -371,3 +371,117 @@ async fn capture_streams_progress_and_ends_done() {
     );
     assert_eq!(snap.trie.len(), 30);
 }
+
+#[tokio::test]
+async fn services_and_tasks_attributed_with_dependency_link() {
+    use exor_engine::collectors::{ServiceInfo, TaskInfo, diff_services, diff_tasks};
+    let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let mon =
+        SessionMonitor::start(Arc::clone(&store), "Foo", Some("C:\\foo-setup.exe"), None).unwrap();
+    mon.ingest_manifest(&[ManifestEntry {
+        path: "C:\\Program Files\\Foo\\svc.exe".into(),
+        node_type: NodeType::File,
+        hash: None,
+    }])
+    .unwrap();
+    let svc = ServiceInfo {
+        name: "FooSvc".into(),
+        display_name: "Foo".into(),
+        binary_path: "\"C:\\Program Files\\Foo\\svc.exe\" -run".into(),
+        start_type: "auto".into(),
+    };
+    let task = TaskInfo {
+        path: "\\Foo\\Update".into(),
+        command: Some("C:\\Program Files\\Foo\\svc.exe /update".into()),
+        author: None,
+    };
+    assert_eq!(
+        mon.attribute_services(&diff_services(&[], &[svc])).unwrap(),
+        1
+    );
+    assert_eq!(mon.attribute_tasks(&diff_tasks(&[], &[task])).unwrap(), 1);
+    let s = store.lock().unwrap();
+    let exe = s
+        .node_by_path("C:\\Program Files\\Foo\\svc.exe")
+        .unwrap()
+        .unwrap();
+    let impact = s.shared_component_impact(exe.node_id).unwrap();
+    let kinds: Vec<_> = impact.dependents.iter().map(|n| n.node_type).collect();
+    assert!(kinds.contains(&NodeType::Service) && kinds.contains(&NodeType::Task));
+    let p = s.provenance_for_path("service:FooSvc").unwrap().unwrap();
+    assert_eq!(p.confidence, 0.3);
+}
+
+#[test]
+fn execute_quarantine_restore_purge_with_ledger() {
+    use exor_engine::execute::{
+        purge_by_id, quarantine_decided, recover_interrupted, restore_by_id,
+    };
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let sess = store.begin_session("Foo", None, None).unwrap();
+    let f1 = d.path().join("a.dll");
+    let f2 = d.path().join("b.dll");
+    write(&f1, b"one");
+    write(&f2, b"two");
+    let report = exor_engine::policy::SimulationReport {
+        decisions: vec![
+            exor_engine::policy::Decision {
+                path: f1.to_string_lossy().into(),
+                action: PolicyAction::Quarantine,
+                rule: None,
+                reason: "t".into(),
+            },
+            exor_engine::policy::Decision {
+                path: f2.to_string_lossy().into(),
+                action: PolicyAction::Keep,
+                rule: None,
+                reason: "t".into(),
+            },
+            exor_engine::policy::Decision {
+                path: "service:X".into(),
+                action: PolicyAction::Quarantine,
+                rule: None,
+                reason: "t".into(),
+            },
+        ],
+        keep: 1,
+        quarantine: 2,
+        flag_for_review: 0,
+    };
+    let q = d.path().join("q");
+    let out = quarantine_decided(&store, &q, sess, &report).unwrap();
+    assert!(!f1.exists() && f2.exists());
+    assert_eq!(out.skipped, vec!["service:X".to_string()]);
+    let id = out.manifest.quarantine_id.clone();
+    restore_by_id(&store, &id, false).unwrap();
+    assert_eq!(std::fs::read(&f1).unwrap(), b"one");
+    let kinds: Vec<_> = store
+        .ledger_for_session(sess)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.entry.change_kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            exor_storage::ChangeKind::Quarantined,
+            exor_storage::ChangeKind::Restored
+        ]
+    );
+    // second round, purge
+    let out2 = quarantine_decided(&store, &q, sess, &report).unwrap();
+    purge_by_id(&store, &out2.manifest.quarantine_id).unwrap();
+    assert!(!f1.exists());
+    assert_eq!(store.quarantines().unwrap().len(), 2);
+    assert!(recover_interrupted(&q).unwrap().is_empty());
+    assert!(restore_by_id(&store, "nope", false).is_err());
+    // empty plan is an error, not a silent no-op
+    let empty = exor_engine::policy::SimulationReport {
+        decisions: vec![],
+        keep: 0,
+        quarantine: 0,
+        flag_for_review: 0,
+    };
+    assert!(quarantine_decided(&store, &q, sess, &empty).is_err());
+}

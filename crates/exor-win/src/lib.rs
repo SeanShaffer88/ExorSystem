@@ -7,10 +7,14 @@ pub mod usn;
 #[cfg(windows)]
 mod registry_source;
 #[cfg(windows)]
+mod services_source;
+#[cfg(windows)]
 mod usn_source;
 
 #[cfg(windows)]
 pub use registry_source::DriverRegistrySource;
+#[cfg(windows)]
+pub use services_source::enumerate_services;
 #[cfg(windows)]
 pub use usn_source::UsnJournalSource;
 

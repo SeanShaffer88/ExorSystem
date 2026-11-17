@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { ProvenanceView, ScanEvent, Session, SimulationView } from "./types";
+import type { ProvenanceView, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -11,5 +11,9 @@ export const api = {
     channel.onmessage = onEvent;
     return invoke<void>("scan", { root, onEvent: channel });
   },
+  quarantineSession: (sessionId: number, template: string) => invoke<QuarantineResult>("quarantine_session", { sessionId, template }),
+  listQuarantines: () => invoke<QuarantineRow[]>("list_quarantines"),
+  restoreQuarantine: (quarantineId: string) => invoke<number>("restore_quarantine", { quarantineId }),
+  purgeQuarantine: (quarantineId: string) => invoke<number>("purge_quarantine", { quarantineId }),
   cancelScan: () => invoke<void>("cancel_scan"),
 };
