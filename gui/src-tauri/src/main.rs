@@ -438,6 +438,65 @@ async fn quarantine_leftovers(
     })
 }
 
+/// Where saved reports go: the user's Documents folder, else their home folder.
+fn reports_dir() -> PathBuf {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let docs = home.join("Documents");
+    if docs.is_dir() { docs } else { home }
+}
+
+/// A file name that is safe on Windows.
+fn safe_name(s: &str) -> String {
+    let n: String = s
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " -_.()".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let n = n.trim().trim_matches('.').to_string();
+    if n.is_empty() {
+        "installation".into()
+    } else {
+        n.chars().take(80).collect()
+    }
+}
+
+/// Save a plain-language report for one recorded installation. Never overwrites a file.
+#[tauri::command]
+fn export_report(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: i64,
+    template: String,
+) -> Result<String, String> {
+    let store = lock(&state)?;
+    let name = store
+        .session(session_id)
+        .map_err(|e| e.to_string())?
+        .map(|s| s.app_name)
+        .unwrap_or_default();
+    let text = report::session_report(&store, session_id, &template).map_err(|e| e.to_string())?;
+    let dir = reports_dir();
+    let base = format!("ExorSystem report - {}", safe_name(&name));
+    let mut path = dir.join(format!("{base}.md"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{base} ({n}).md"));
+        n += 1;
+    }
+    std::fs::write(&path, text).map_err(|e| format!("could not save the report: {e}"))?;
+    let shown = path.to_string_lossy().into_owned();
+    dock::log(&app, "info", format!("Saved report to {shown}."));
+    Ok(shown)
+}
+
 #[derive(Serialize)]
 struct HistoryRow {
     id: i64,
@@ -792,6 +851,7 @@ fn run() -> Result<(), String> {
             purge_quarantine,
             list_programs,
             history,
+            export_report,
             run_uninstaller,
             find_leftovers,
             quarantine_leftovers,

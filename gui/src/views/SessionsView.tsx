@@ -243,6 +243,9 @@ export function SessionsView() {
                 <button type="button" disabled={!confirm || busy} title="Move this installation's items to quarantine. You can restore them." onClick={() => { setBusy(true); setDone(""); api.quarantineSession(sessionId, "standard").then((r) => { setDone(r.summary); setConfirm(false); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
                   Quarantine items
                 </button>
+                <button type="button" disabled={busy} title="Save a plain-language report of this installation to your Documents folder." onClick={() => { setBusy(true); api.exportReport(sessionId, "standard").then((f) => setDone(`Report saved to ${f}`)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                  Save report
+                </button>
                 {done && <p role="status">{done}</p>}
               </>
             )}
