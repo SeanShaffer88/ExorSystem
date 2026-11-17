@@ -12,6 +12,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | Mock event harness | Verified | deterministic replay tests |
 | USN/driver message parsers | Verified | unit tests incl. malformed input |
 | USN journal reader, driver client (Win32 I/O) | Partially verified | type-checked and clippy-clean against the Windows target; never run on Windows |
+| Dependency licenses (Rust + npm, 588) | Verified | all permissive or MPL-2.0; script enforced in CI |
 | Service enumeration (SCM) | Partially verified | type-checked for the Windows target; never run on Windows |
 | Release script, CI and release workflows | Unverified | YAML parses; scripts and workflows never run (no Windows runner here) |
 | Quarantine GUI view and Tauri commands | Partially verified | `tsc` + `vite build` pass, shell type-checked; never launched |
@@ -25,6 +26,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | Windows 10 vs 11 behaviour, DPI, high contrast | Unverified | |
 
 ## Known limitations
+- A release-signed kernel driver needs a code-signing certificate, which is not free. Test-signing works for development; source stays open either way.
 - Theme palettes are inspired by well-known schemes. Colors were nudged where needed to meet WCAG AA, so they are not exact upstream values. Three names were changed to avoid third-party brand names (see CREDITS).
 - The driver reports `RegNtPreDeleteKey` as an attempt.
 - The registry client thread exits at the next message after the consumer drops (blocking `FilterGetMessage`).
