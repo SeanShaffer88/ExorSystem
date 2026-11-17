@@ -553,6 +553,41 @@ fn make_portable(
 }
 
 #[derive(Serialize)]
+struct RiskRow {
+    name: String,
+    why: String,
+}
+
+#[derive(Serialize)]
+struct RiskView {
+    low: Vec<RiskRow>,
+    medium: Vec<RiskRow>,
+    high: Vec<RiskRow>,
+}
+
+/// How risky changing each recorded program would be, in batches (low first).
+#[tauri::command]
+fn update_risk(state: State<'_, AppState>) -> Result<RiskView, String> {
+    let store = lock(&state)?;
+    let b = exor_engine::risk::batch_by_risk(
+        exor_engine::risk::candidates_from_store(&store).map_err(|e| e.to_string())?,
+    );
+    let rows = |v: Vec<exor_engine::risk::UpdateCandidate>| {
+        v.into_iter()
+            .map(|c| RiskRow {
+                why: exor_engine::risk::explain(&c),
+                name: c.name,
+            })
+            .collect()
+    };
+    Ok(RiskView {
+        low: rows(b.low),
+        medium: rows(b.medium),
+        high: rows(b.high),
+    })
+}
+
+#[derive(Serialize)]
 struct HistoryRow {
     id: i64,
     when: Option<String>,
@@ -907,6 +942,7 @@ fn run() -> Result<(), String> {
             list_programs,
             history,
             export_report,
+            update_risk,
             make_portable,
             run_uninstaller,
             find_leftovers,
