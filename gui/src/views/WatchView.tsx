@@ -43,7 +43,7 @@ export function WatchView() {
       </p>
 
       {stage !== "watching" && (
-        <form onSubmit={begin}>
+        <form className="stack" onSubmit={begin}>
           <label htmlFor="w-app">Application name</label>
           <input id="w-app" value={appName} onChange={(e) => setAppName(e.target.value)} required title="What you are about to install" />
           <label htmlFor="w-inst">Installer file (optional)</label>
