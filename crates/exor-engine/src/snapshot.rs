@@ -31,6 +31,33 @@ impl Default for CaptureOptions {
     }
 }
 
+/// Capture phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// Enumerating directories.
+    Walking,
+    /// Hashing file contents.
+    Hashing,
+    /// Finished.
+    Done,
+}
+
+/// Live progress, safe to stream to a UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Progress {
+    /// Current phase.
+    pub phase: Phase,
+    /// Entries found by the walk (0 until the walk ends).
+    pub files_seen: u64,
+    /// Files finished (hashed or reused).
+    pub files_hashed: u64,
+    /// Bytes covered by finished files.
+    pub bytes_hashed: u64,
+}
+
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// A finalized trie plus anything that could not be read.
 #[derive(Debug)]
 pub struct Snapshot {
@@ -47,7 +74,33 @@ pub async fn capture(
     prev: Option<&PathTrie>,
     cancel: &Cancel,
 ) -> Result<Snapshot> {
+    capture_with_progress(root, opts, prev, cancel, &|_| {}).await
+}
+
+/// Like [`capture`], reporting [`Progress`] at most every 100 ms (plus phase changes and the end).
+pub async fn capture_with_progress(
+    root: &Path,
+    opts: &CaptureOptions,
+    prev: Option<&PathTrie>,
+    cancel: &Cancel,
+    on_progress: &(dyn Fn(Progress) + Send + Sync),
+) -> Result<Snapshot> {
+    let mut p = Progress {
+        phase: Phase::Walking,
+        files_seen: 0,
+        files_hashed: 0,
+        bytes_hashed: 0,
+    };
+    on_progress(p);
     let w = walk(root, &opts.walk, cancel).await?;
+    p.phase = Phase::Hashing;
+    p.files_seen = w
+        .entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::File)
+        .count() as u64;
+    on_progress(p);
+    let mut last = std::time::Instant::now();
     let mut trie = PathTrie::new();
     let mut skipped: Vec<(String, String)> = w
         .skipped
@@ -72,6 +125,8 @@ pub async fn capture(
             continue;
         }
         if opts.max_hash_bytes.is_some_and(|m| e.size > m) {
+            p.files_hashed += 1;
+            p.bytes_hashed += e.size;
             trie.insert(state);
             continue;
         }
@@ -81,6 +136,8 @@ pub async fn capture(
             && old.hash.is_some()
         {
             state.hash = old.hash.clone();
+            p.files_hashed += 1;
+            p.bytes_hashed += e.size;
             trie.insert(state);
             continue;
         }
@@ -106,8 +163,16 @@ pub async fn capture(
         if let Some(reason) = err {
             skipped.push((state.path.clone(), reason));
         }
+        p.files_hashed += 1;
+        p.bytes_hashed += state.size;
         trie.insert(state);
+        if last.elapsed() >= PROGRESS_INTERVAL {
+            on_progress(p);
+            last = std::time::Instant::now();
+        }
     }
     trie.finalize();
+    p.phase = Phase::Done;
+    on_progress(p);
     Ok(Snapshot { trie, skipped })
 }

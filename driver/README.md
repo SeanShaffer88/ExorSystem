@@ -14,13 +14,17 @@ Status: **source only, not yet compiled or loaded** (see `AUDIT.md`).
 2. New project: *Filter Driver: Filesystem Mini-Filter* (x64). Remove the template `.c`/`.inf`, add `exordrv.c`, `shared\exor_proto.h`, `exordrv.inf`.
 3. Target OS: Windows 10 2004 or later (uses `ExAllocatePool2`). Build `Release|x64`.
 
-## Test-load (development VM only)
-```
-bcdedit /set testsigning on        # reboot
-sc create ExorDrv type= filesys binPath= C:\path\exordrv.sys
-fltmc load ExorDrv
-```
-Unload with `fltmc unload ExorDrv`.
+## Test-load (disposable development VM only)
+Run `scripts\dev-load.ps1 -Sys <path>\exordrv.sys` from an elevated PowerShell. It enables test signing (`bcdedit /set testsigning on`, reboot once), creates and trusts a self-signed certificate, signs the driver with `signtool`, registers the minifilter and runs `fltmc load ExorDrv`. `-Unload` reverses it. The script is **unverified** (not yet run).
+
+### Troubleshooting
+| Symptom | Cause | Fix |
+|---|---|---|
+| `STATUS_DRIVER_BLOCKED_MANDATORY_SECURITY` / 0xC0000428 / "digital signature cannot be verified" | Not signed, cert not trusted, or test signing off | run the script; confirm `bcdedit /enum {current}` shows `testsigning Yes` after reboot |
+| `bcdedit` says value protected by Secure Boot policy | Secure Boot on | disable Secure Boot in VM firmware |
+| Load fails on a system with Memory integrity (HVCI) | HVCI blocks non-compliant drivers | turn off Core isolation > Memory integrity in the VM |
+| `fltmc load` error 0x80070005 | not elevated | use an Administrator shell |
+| Rust client gets "connect" error | driver not loaded, or client not elevated | `fltmc filters`; run the app as Administrator |
 
 ## Altitude
 `385201` is a development placeholder inside the Activity Monitor range (360000–389999). Request a Microsoft-assigned altitude and update `EXOR_ALTITUDE` and `exordrv.inf` before distributing.

@@ -4,6 +4,10 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased] - 0.1.0 in progress
 ### Added
+- App manifest requesting Administrator, PerMonitorV2 DPI, Win10/11 compatibility.
+- Tauri v2 IPC channel streaming: `scan`/`cancel_scan` commands and Scan folder view with live progress; engine `capture_with_progress`.
+- Driver test-signing loader `driver/scripts/dev-load.ps1` and troubleshooting table.
+- Toolchain pinning: `rust-toolchain.toml` (1.97.0, MSVC target), static CRT config, `docs/DEVELOPMENT.md`.
 - Storage layer (`exor-storage`): blueprint SQLite schema in WAL mode, transactional migrations with pre-upgrade backup, handlers for sessions, nodes, DAG edges (cycle-checked), policy rules, append-only change ledger, quarantine records, provenance, shared-component impact, orphaned-dependency review.
 - Engine (`exor-engine`): tokio parallel walker, Merkle path-trie differential diff, BLAKE3 snapshots with incremental reuse, noise filter, mock USN/registry event sources, JSONLogic policy simulator and templates, manifest quarantine (restore, purge), installer fingerprinting, session monitor with the 0.3/0.7/1.0 confidence ladder, update risk batching, portable plan, plain-language reports.
 - Windows sources (`exor-win`): USN journal reader, registry-driver client, portable and tested USN/driver-message parsers.
