@@ -1,0 +1,62 @@
+; ExorSystem registry-visibility driver (minifilter framework, no file-system callbacks)
+[Version]
+Signature   = "$Windows NT$"
+Class       = "ActivityMonitor"
+ClassGuid   = {b86dd4a1-e2eb-4e0c-9c0f-5a8e4a1b2c3d}
+Provider    = %ProviderString%
+DriverVer   = 11/17/2026,0.1.0.0
+CatalogFile = exordrv.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 12
+ExorDrv.DriverFiles = 12
+
+[DefaultInstall.NTamd64]
+OptionDesc = %ServiceDescription%
+CopyFiles  = ExorDrv.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService = ExorDrv,,ExorDrv.Service
+
+[DefaultUninstall.NTamd64]
+LegacyUninstall = 1
+DelFiles = ExorDrv.DriverFiles
+
+[DefaultUninstall.NTamd64.Services]
+DelService = ExorDrv,0x200
+
+[ExorDrv.DriverFiles]
+exordrv.sys
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+[SourceDisksFiles]
+exordrv.sys = 1,,
+
+[ExorDrv.Service]
+DisplayName    = %ServiceName%
+Description    = %ServiceDescription%
+ServiceBinary  = %12%\exordrv.sys
+ServiceType    = 2
+StartType      = 3
+ErrorControl   = 1
+LoadOrderGroup = "FSFilter Activity Monitor"
+DependOnService = FltMgr
+AddReg         = ExorDrv.AddRegistry
+
+[ExorDrv.AddRegistry]
+HKR,"Instances","DefaultInstance",0x00000000,%DefaultInstance%
+HKR,"Instances\"%Instance1.Name%,"Altitude",0x00000000,%Instance1.Altitude%
+HKR,"Instances\"%Instance1.Name%,"Flags",0x00010001,%Instance1.Flags%
+
+[Strings]
+ProviderString     = "ExorSystem contributors"
+ServiceDescription = "ExorSystem registry change visibility"
+ServiceName        = "ExorSystem Registry Monitor"
+DiskId1            = "ExorSystem Driver Disk"
+DefaultInstance    = "ExorDrv Instance"
+Instance1.Name     = "ExorDrv Instance"
+Instance1.Altitude = "385201"
+Instance1.Flags    = 0x0
