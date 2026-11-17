@@ -3,6 +3,7 @@ import { flags } from "./flags";
 import { ScanView } from "./views/ScanView";
 import { ProvenanceView } from "./views/ProvenanceView";
 import { SessionsView } from "./views/SessionsView";
+import { QuarantineView } from "./views/QuarantineView";
 import { SimulatorView } from "./views/SimulatorView";
 
 type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine";
@@ -64,6 +65,7 @@ export function App() {
         {view === "scan" && <ScanView />}
         {view === "provenance" && <ProvenanceView />}
         {view === "simulator" && <SimulatorView />}
+        {view === "quarantine" && <QuarantineView />}
       </main>
       <div className="sr-only" role="status" aria-live="polite">{announce}</div>
     </div>

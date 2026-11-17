@@ -3,7 +3,9 @@
 mod cancel;
 mod error;
 
+pub mod collectors;
 pub mod events;
+pub mod execute;
 pub mod fingerprint;
 pub mod hashing;
 pub mod jsonlogic;

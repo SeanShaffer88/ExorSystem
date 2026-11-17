@@ -21,6 +21,8 @@ pub enum ManifestStatus {
     Quarantined,
     /// Items returned to their original paths.
     Restored,
+    /// An interrupted run was undone by [`recover`].
+    RolledBack,
     /// Blobs deleted; manifest kept as evidence.
     Purged,
 }
@@ -256,6 +258,62 @@ pub fn restore(manifest_path: &Path, overwrite: bool) -> Result<QuarantineManife
     Ok(m)
 }
 
+/// Manifests under `root` left `in_progress` by a crash or power loss.
+pub fn find_incomplete(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    if !root.exists() {
+        return Ok(out);
+    }
+    for e in std::fs::read_dir(root).map_err(io_err(root))? {
+        let mp = e.map_err(io_err(root))?.path().join("manifest.json");
+        if mp.is_file()
+            && let Ok(m) = load_manifest(&mp)
+            && m.status == ManifestStatus::InProgress
+        {
+            out.push(mp);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Undo an interrupted quarantine: every blob still held goes back to its original path (never
+/// overwriting a file that has since reappeared), then the manifest is marked `rolled_back`.
+pub fn recover(manifest_path: &Path) -> Result<QuarantineManifest> {
+    let mut m = load_manifest(manifest_path)?;
+    if m.status != ManifestStatus::InProgress {
+        return Err(EngineError::Quarantine(format!(
+            "manifest is {:?}, nothing to recover",
+            m.status
+        )));
+    }
+    let blobs = manifest_path
+        .parent()
+        .map(|p| p.join("blobs"))
+        .ok_or_else(|| EngineError::Quarantine("manifest has no parent".into()))?;
+    for it in &m.items {
+        if let QuarantineItem::File {
+            original_path,
+            blob,
+            blake3,
+            ..
+        } = it
+        {
+            let b = blobs.join(blob);
+            let dst = Path::new(original_path);
+            if b.exists() && !dst.exists() {
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent).map_err(io_err(parent))?;
+                }
+                move_file(&b, dst, blake3)?;
+            }
+        }
+    }
+    m.status = ManifestStatus::RolledBack;
+    write_manifest(manifest_path, &m)?;
+    Ok(m)
+}
+
 /// Delete the blobs permanently; the manifest stays as evidence.
 pub fn purge(manifest_path: &Path) -> Result<QuarantineManifest> {
     let mut m = load_manifest(manifest_path)?;
@@ -334,6 +392,26 @@ mod tests {
         let q = d.path().join("q");
         assert!(quarantine(&q, &[a.clone(), missing], &[]).is_err());
         assert!(a.exists(), "nothing moved when a file is unreadable");
+    }
+
+    #[test]
+    fn recover_rolls_back_an_interrupted_run() {
+        let (d, a, b) = setup();
+        let q = d.path().join("q");
+        let (m, mp) = quarantine(&q, &[a.clone(), b.clone()], &[]).unwrap();
+        // simulate a crash after moving only the first file: b back in place, manifest in_progress
+        let blobs = mp.parent().unwrap().join("blobs");
+        std::fs::rename(blobs.join("1"), &b).unwrap();
+        let mut crashed = m.clone();
+        crashed.status = ManifestStatus::InProgress;
+        write_manifest(&mp, &crashed).unwrap();
+        assert_eq!(find_incomplete(&q).unwrap(), vec![mp.clone()]);
+        let r = recover(&mp).unwrap();
+        assert_eq!(r.status, ManifestStatus::RolledBack);
+        assert_eq!(std::fs::read(&a).unwrap(), b"aaa");
+        assert_eq!(std::fs::read(&b).unwrap(), b"bbbb");
+        assert!(find_incomplete(&q).unwrap().is_empty());
+        assert!(recover(&mp).is_err());
     }
 
     #[test]
