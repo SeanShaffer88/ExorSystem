@@ -1,0 +1,32 @@
+[package]
+name = "exor-win"
+description = "ExorSystem Windows event sources: NTFS USN journal reader and registry-callback driver client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+exor-engine = { path = "../exor-engine" }
+tokio.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_InstallableFileSystems",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
+
+# Unsafe is required for Win32 FFI here (and only here); every unsafe block carries a SAFETY note.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+undocumented_unsafe_blocks = "deny"

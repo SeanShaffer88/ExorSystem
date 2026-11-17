@@ -97,3 +97,20 @@ pub fn install(store: &Store, name: &str) -> Result<Vec<i64>> {
         .map(|(n, c, a)| store.add_rule(n, c, *a).map_err(Into::into))
         .collect()
 }
+
+/// Template rules as in-memory `PolicyRule`s (negative ids, nothing persisted) for dry runs.
+pub fn rules_for(name: &str) -> Option<Vec<exor_storage::PolicyRule>> {
+    let t = templates().into_iter().find(|t| t.name == name)?;
+    Some(
+        t.rules
+            .into_iter()
+            .zip(1i64..)
+            .map(|((n, c, a), i)| exor_storage::PolicyRule {
+                rule_id: -i,
+                rule_name: n.to_string(),
+                condition: c,
+                action: a,
+            })
+            .collect(),
+    )
+}
