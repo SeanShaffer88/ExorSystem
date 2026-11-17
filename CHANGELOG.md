@@ -4,6 +4,7 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased] - 0.1.0 in progress
 ### Added
+- Settings tab: pick the cleanup policy (conservative, standard, thorough) used by every preview, quarantine and report; shows version and data folders. Commands `list_templates`, `app_info`.
 - Update risk tab: recorded programs batched low/medium/high with a plain-language reason; `risk::candidates_from_store`, `risk::explain`, command `update_risk`.
 - Make portable copy: copies a recorded installation's files into a new folder with `portable-plan.json` (registry keys to replay, unsupported items); sources untouched. `portable::build_portable`, command `make_portable`.
 - Save report: writes a plain-language Markdown report of a recorded installation to Documents (never overwrites); `report::session_report`, command `export_report`.

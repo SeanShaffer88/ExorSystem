@@ -588,6 +588,41 @@ fn update_risk(state: State<'_, AppState>) -> Result<RiskView, String> {
 }
 
 #[derive(Serialize)]
+struct TemplateInfo {
+    name: String,
+    description: String,
+}
+
+/// Cleanup policies the user can choose between.
+#[tauri::command]
+fn list_templates() -> Vec<TemplateInfo> {
+    templates::templates()
+        .into_iter()
+        .map(|t| TemplateInfo {
+            name: t.name.to_string(),
+            description: t.description.to_string(),
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct AppInfo {
+    version: String,
+    data_folder: String,
+    quarantine_folder: String,
+}
+
+/// Version and where ExorSystem keeps its files.
+#[tauri::command]
+fn app_info(state: State<'_, AppState>) -> AppInfo {
+    AppInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        data_folder: data_dir().to_string_lossy().into_owned(),
+        quarantine_folder: state.quarantine_root.to_string_lossy().into_owned(),
+    }
+}
+
+#[derive(Serialize)]
 struct HistoryRow {
     id: i64,
     when: Option<String>,
@@ -942,6 +977,8 @@ fn run() -> Result<(), String> {
             list_programs,
             history,
             export_report,
+            list_templates,
+            app_info,
             update_risk,
             make_portable,
             run_uninstaller,

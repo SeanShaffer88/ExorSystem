@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { getPolicy } from "../settings";
 import type { InstalledProgram, Leftover, ProgramRow, Session, SessionItems } from "../types";
 
 /** One row in the left pane: an installed program, or a recorded install Windows does not list. */
@@ -233,17 +234,17 @@ export function SessionsView() {
             {sessionId !== null && (
               <>
                 <h3>Recorded install</h3>
-                <button type="button" disabled={busy} title="Dry run. Nothing is changed." onClick={() => { setBusy(true); setDone(""); api.simulate(sessionId, "standard").then((r) => setDone(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                <button type="button" disabled={busy} title="Dry run. Nothing is changed." onClick={() => { setBusy(true); setDone(""); api.simulate(sessionId, getPolicy()).then((r) => setDone(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
                   Preview cleanup
                 </button>
                 {items && items.shared > 0 && <p>{items.shared} item(s) may be shared. They are kept unless you choose otherwise.</p>}
                 <label className="check">
                   <input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} /> I understand items are moved to quarantine
                 </label>
-                <button type="button" disabled={!confirm || busy} title="Move this installation's items to quarantine. You can restore them." onClick={() => { setBusy(true); setDone(""); api.quarantineSession(sessionId, "standard").then((r) => { setDone(r.summary); setConfirm(false); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                <button type="button" disabled={!confirm || busy} title="Move this installation's items to quarantine. You can restore them." onClick={() => { setBusy(true); setDone(""); api.quarantineSession(sessionId, getPolicy()).then((r) => { setDone(r.summary); setConfirm(false); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
                   Quarantine items
                 </button>
-                <button type="button" disabled={busy} title="Save a plain-language report of this installation to your Documents folder." onClick={() => { setBusy(true); api.exportReport(sessionId, "standard").then((f) => setDone(`Report saved to ${f}`)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
+                <button type="button" disabled={busy} title="Save a plain-language report of this installation to your Documents folder." onClick={() => { setBusy(true); api.exportReport(sessionId, getPolicy()).then((f) => setDone(`Report saved to ${f}`)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
                   Save report
                 </button>
                 <button type="button" disabled={busy} title="Copy this installation's files into a new folder in Documents. The installed program is not changed." onClick={() => { setBusy(true); api.makePortable(sessionId).then((r) => setDone(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
