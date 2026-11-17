@@ -2,16 +2,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
+use exor_engine::watch::{InstallWatch, SystemProbe, WatchSummary};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
 use exor_storage::{Edge, LedgerEntry, Session, Store};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 use tauri::ipc::Channel;
 
 struct AppState {
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
+    watch: Mutex<Option<InstallWatch>>,
     scan_cancel: Mutex<Option<Cancel>>,
     quarantine_root: PathBuf,
 }
@@ -194,6 +196,104 @@ fn purge_quarantine(state: State<'_, AppState>, quarantine_id: String) -> Result
         .map_err(|e| e.to_string())
 }
 
+/// Real service and task listings on Windows; elsewhere the engine's "not available" probe.
+#[cfg(windows)]
+struct SystemState;
+
+#[cfg(windows)]
+impl SystemProbe for SystemState {
+    fn services(&self) -> Result<Vec<exor_engine::collectors::ServiceInfo>, String> {
+        exor_win::enumerate_services().map_err(|e| e.to_string())
+    }
+    fn tasks(&self) -> Result<Vec<exor_engine::collectors::TaskInfo>, String> {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        exor_engine::collectors::read_tasks_dir(&PathBuf::from(root).join("System32").join("Tasks"))
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn probe() -> Arc<dyn SystemProbe> {
+    #[cfg(windows)]
+    {
+        Arc::new(SystemState)
+    }
+    #[cfg(not(windows))]
+    {
+        Arc::new(exor_engine::watch::NullProbe)
+    }
+}
+
+fn watch_slot<'a>(
+    s: &'a State<'_, AppState>,
+) -> Result<std::sync::MutexGuard<'a, Option<InstallWatch>>, String> {
+    s.watch
+        .lock()
+        .map_err(|_| "internal lock poisoned".to_string())
+}
+
+/// Take the "before" picture of the watched folders, services and tasks. Run the installer next.
+#[tauri::command]
+async fn begin_watch(
+    state: State<'_, AppState>,
+    app_name: String,
+    installer_path: Option<String>,
+    folders: Vec<String>,
+) -> Result<i64, String> {
+    if watch_slot(&state)?.is_some() {
+        return Err("an installation is already being watched".into());
+    }
+    let name = app_name.trim();
+    if name.is_empty() {
+        return Err("enter the application name".into());
+    }
+    let roots: Vec<PathBuf> = folders
+        .iter()
+        .map(|f| f.trim())
+        .filter(|f| !f.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    let installer = installer_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    let w = InstallWatch::begin(
+        Arc::clone(&state.store),
+        name,
+        installer,
+        &roots,
+        probe(),
+        &Cancel::new(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let id = w.session_id();
+    let mut slot = watch_slot(&state)?;
+    if slot.is_some() {
+        let _ = w.abandon();
+        return Err("an installation is already being watched".into());
+    }
+    *slot = Some(w);
+    Ok(id)
+}
+
+/// Take the "after" picture and record every difference in one session.
+#[tauri::command]
+async fn finish_watch(state: State<'_, AppState>) -> Result<WatchSummary, String> {
+    let w = watch_slot(&state)?
+        .take()
+        .ok_or_else(|| "no installation is being watched".to_string())?;
+    w.finish(&Cancel::new()).await.map_err(|e| e.to_string())
+}
+
+/// Stop watching without recording anything.
+#[tauri::command]
+fn cancel_watch(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(w) = watch_slot(&state)?.take() {
+        w.abandon().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Snapshot a folder without blocking the UI: progress streams over `on_event`.
 #[tauri::command]
 async fn scan(
@@ -279,7 +379,8 @@ fn run() -> Result<(), String> {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(AppState {
-            store: Mutex::new(store),
+            store: Arc::new(Mutex::new(store)),
+            watch: Mutex::new(None),
             scan_cancel: Mutex::new(None),
             quarantine_root,
         })
@@ -292,7 +393,10 @@ fn run() -> Result<(), String> {
             quarantine_session,
             list_quarantines,
             restore_quarantine,
-            purge_quarantine
+            purge_quarantine,
+            begin_watch,
+            finish_watch,
+            cancel_watch
         ])
         .run(tauri::generate_context!())
         .map_err(|e| e.to_string())

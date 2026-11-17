@@ -202,6 +202,13 @@ pub fn quarantine(
     Ok((m, manifest_path))
 }
 
+/// A previous restore that was interrupted may already have put this file back: the blob is gone
+/// and the original path holds exactly the recorded content. Such items are skipped so a retry
+/// can finish the job instead of failing on "already exists".
+fn already_restored(blob: &Path, original: &Path, expect_hash: &str) -> Result<bool> {
+    Ok(!blob.exists() && original.is_file() && hash_file_blocking(original)? == expect_hash)
+}
+
 /// Restore files to their original paths. Verifies every blob first and refuses to overwrite
 /// existing files unless `overwrite`. Registry items are returned in the manifest for the caller.
 pub fn restore(manifest_path: &Path, overwrite: bool) -> Result<QuarantineManifest> {
@@ -225,6 +232,9 @@ pub fn restore(manifest_path: &Path, overwrite: bool) -> Result<QuarantineManife
         } = it
         {
             let b = blobs.join(blob);
+            if already_restored(&b, Path::new(original_path), blake3)? {
+                continue;
+            }
             if hash_file_blocking(&b)? != *blake3 {
                 return Err(EngineError::Quarantine(format!("blob {blob} is corrupt")));
             }
@@ -244,6 +254,9 @@ pub fn restore(manifest_path: &Path, overwrite: bool) -> Result<QuarantineManife
         } = it
         {
             let dst = Path::new(original_path);
+            if already_restored(&blobs.join(blob), dst, blake3)? {
+                continue;
+            }
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent).map_err(io_err(parent))?;
             }
@@ -412,6 +425,114 @@ mod tests {
         assert_eq!(std::fs::read(&b).unwrap(), b"bbbb");
         assert!(find_incomplete(&q).unwrap().is_empty());
         assert!(recover(&mp).is_err());
+    }
+
+    // ---- failure drills ----
+
+    #[test]
+    fn restore_resumes_after_a_partial_restore() {
+        let (d, a, b) = setup();
+        let q = d.path().join("q");
+        let (_, mp) = quarantine(&q, &[a.clone(), b.clone()], &[]).unwrap();
+        // an earlier restore got one file back, then died before finishing
+        std::fs::rename(mp.parent().unwrap().join("blobs").join("0"), &a).unwrap();
+        let m = restore(&mp, false).unwrap();
+        assert_eq!(m.status, ManifestStatus::Restored);
+        assert_eq!(std::fs::read(&a).unwrap(), b"aaa");
+        assert_eq!(std::fs::read(&b).unwrap(), b"bbbb");
+    }
+
+    #[test]
+    fn restore_does_not_hide_a_different_file_at_the_original_path() {
+        let (d, a, b) = setup();
+        let q = d.path().join("q");
+        let (_, mp) = quarantine(&q, &[a.clone(), b.clone()], &[]).unwrap();
+        std::fs::remove_file(mp.parent().unwrap().join("blobs").join("0")).unwrap();
+        std::fs::write(&a, b"someone else's file").unwrap();
+        assert!(
+            restore(&mp, false).is_err(),
+            "missing blob + different content must not pass as restored"
+        );
+        assert_eq!(std::fs::read(&a).unwrap(), b"someone else's file");
+        assert!(
+            !b.exists(),
+            "nothing was moved because verification failed first"
+        );
+    }
+
+    #[test]
+    fn restore_recreates_deleted_parent_directory() {
+        let (d, a, b) = setup();
+        let q = d.path().join("q");
+        let (_, mp) = quarantine(&q, &[a.clone(), b.clone()], &[]).unwrap();
+        let _ = std::fs::remove_dir_all(a.parent().unwrap());
+        restore(&mp, false).unwrap();
+        assert_eq!(std::fs::read(&a).unwrap(), b"aaa");
+    }
+
+    #[test]
+    fn recover_never_overwrites_a_file_that_reappeared() {
+        let (d, a, b) = setup();
+        let q = d.path().join("q");
+        let (m, mp) = quarantine(&q, &[a.clone(), b.clone()], &[]).unwrap();
+        let mut crashed = m.clone();
+        crashed.status = ManifestStatus::InProgress;
+        write_manifest(&mp, &crashed).unwrap();
+        std::fs::write(&a, b"reinstalled").unwrap();
+        recover(&mp).unwrap();
+        assert_eq!(std::fs::read(&a).unwrap(), b"reinstalled");
+        assert!(
+            mp.parent().unwrap().join("blobs").join("0").exists(),
+            "blob kept, not lost"
+        );
+        assert_eq!(std::fs::read(&b).unwrap(), b"bbbb");
+    }
+
+    #[test]
+    fn missing_file_aborts_before_anything_moves() {
+        let (d, a, b) = setup();
+        let q = d.path().join("q");
+        let gone = d.path().join("app").join("gone.dll");
+        assert!(quarantine(&q, &[a.clone(), gone, b.clone()], &[]).is_err());
+        assert_eq!(std::fs::read(&a).unwrap(), b"aaa");
+        assert_eq!(std::fs::read(&b).unwrap(), b"bbbb");
+        assert!(find_incomplete(&q).unwrap().is_empty());
+    }
+
+    /// Disk full: `/dev/full` fails every write with ENOSPC, and the source must survive.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disk_full_during_move_leaves_the_source_intact() {
+        if !Path::new("/dev/full").exists() {
+            return;
+        }
+        let (_d, a, _b) = setup();
+        let hash = hash_file_blocking(&a).unwrap();
+        assert!(move_file(&a, Path::new("/dev/full"), &hash).is_err());
+        assert_eq!(std::fs::read(&a).unwrap(), b"aaa");
+    }
+
+    /// A quarantine folder on another filesystem forces the copy + verify + delete path.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cross_filesystem_quarantine_and_restore() {
+        let shm = Path::new("/dev/shm");
+        if !shm.is_dir() {
+            return;
+        }
+        let (d, a, b) = setup();
+        let q = shm.join(format!("exor-xdev-{}", std::process::id()));
+        let r = (|| -> Result<()> {
+            let (_, mp) = quarantine(&q, &[a.clone(), b.clone()], &[])?;
+            assert!(!a.exists() && !b.exists());
+            restore(&mp, false)?;
+            Ok(())
+        })();
+        let _ = std::fs::remove_dir_all(&q);
+        r.unwrap();
+        assert_eq!(std::fs::read(&a).unwrap(), b"aaa");
+        assert_eq!(std::fs::read(&b).unwrap(), b"bbbb");
+        drop(d);
     }
 
     #[test]

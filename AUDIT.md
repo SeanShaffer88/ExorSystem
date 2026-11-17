@@ -4,8 +4,10 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 
 | Area | Status | Evidence |
 |---|---|---|
-| Storage (schema, migrations, DAG, ledger, provenance) | Verified | 15 integration tests, Linux |
-| Engine (walker, trie diff, BLAKE3, noise, policy, quarantine, monitor, collectors, execute) | Verified | 34 tests, Linux, `clippy -D warnings` |
+| Storage (schema, migrations, DAG, ledger, provenance) | Verified | 18 integration tests, Linux |
+| Engine (walker, trie diff, BLAKE3, noise, policy, quarantine, monitor, collectors, execute) | Verified | 43 tests, Linux, `clippy -D warnings` |
+| Install watch (files, services, tasks, failed probes) | Verified (mock probe) | 2 integration tests; real probes never run on Windows |
+| Failure drills on Linux (ENOSPC, cross-filesystem, corrupt DB, concurrent writers, partial restore) | Verified | tests in `quarantine.rs` and `storage.rs` |
 | Quarantine crash recovery | Verified (simulated) | crash state reproduced in a test; real power loss never exercised |
 | Mock event harness | Verified | deterministic replay tests |
 | USN/driver message parsers | Verified | unit tests incl. malformed input |
@@ -32,4 +34,4 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 - Path matching in SQLite is case-sensitive (blueprint schema); the trie and ledger lookups are case-insensitive.
 
 ## Failure drills not yet run
-Crash mid-quarantine on real volumes (the rollback logic itself is tested), disk full, locked files, cross-volume moves, power loss during migration.
+Need Windows or a person: locked files (sharing violations), cross-volume moves on NTFS, antivirus interference, power loss during a real migration or quarantine, Windows long paths and reparse points. Run as root here, so permission-denied cases were not exercised.

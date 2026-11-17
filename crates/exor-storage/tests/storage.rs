@@ -366,3 +366,90 @@ fn quarantine_records_roundtrip() {
             .is_err()
     );
 }
+
+// ---- failure drills ----
+
+#[test]
+fn corrupt_database_is_rejected_and_left_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("exor.db");
+    let junk =
+        b"this is definitely not a sqlite database, it is long enough to look like a header....."
+            .repeat(8);
+    std::fs::write(&db, &junk).unwrap();
+    assert!(Store::open(&db).is_err());
+    assert_eq!(
+        std::fs::read(&db).unwrap(),
+        junk,
+        "never rewrite or truncate a file we cannot read"
+    );
+}
+
+#[test]
+fn concurrent_writers_lose_no_ledger_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("exor.db");
+    Store::open(&db).unwrap();
+    let handles: Vec<_> = (0..4)
+        .map(|t| {
+            let db = db.clone();
+            std::thread::spawn(move || {
+                let s = Store::open(&db).unwrap();
+                for i in 0..50 {
+                    s.append_ledger(&NewLedgerEntry {
+                        session_id: None,
+                        node_id: None,
+                        path: format!("t{t}-{i}"),
+                        change_kind: ChangeKind::Created,
+                        old_hash: None,
+                        new_hash: None,
+                        source: ChangeSource::SnapshotDiff,
+                    })
+                    .unwrap();
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let s = Store::open(&db).unwrap();
+    let n: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM change_ledger", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 200);
+    drop(s);
+}
+
+#[test]
+fn backup_before_upgrade_is_a_working_old_version_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("exor.db");
+    {
+        let mut c = rusqlite::Connection::open(&db).unwrap();
+        migrate_to(&mut c, 1).unwrap();
+        c.execute(
+            "INSERT INTO installation_sessions(app_name) VALUES ('Old')",
+            [],
+        )
+        .unwrap();
+    }
+    Store::open(&db).unwrap();
+    let bak = rusqlite::Connection::open(dir.path().join("exor.pre-v1.bak")).unwrap();
+    let v: u32 = bak
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let name: String = bak
+        .query_row("SELECT app_name FROM installation_sessions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        (v, name.as_str()),
+        (1, "Old"),
+        "rolling back means copying the .bak over the db"
+    );
+}

@@ -21,6 +21,7 @@ See `docs/ARCHITECTURE.md`, `AUDIT.md` (what is and is not verified) and `CHANGE
 - **BOM & inference graph**: confidence `1.0` manifest-confirmed, `0.7` inferred from timing, `0.3` heuristic/unknown. Edges are cycle-checked.
 - **Noise filtering**: background telemetry, browser caches, indexer and Defender writes dropped in real time, with burst de-duplication.
 - **Differential engine**: async parallel directory walk, Merkle path-trie diff (identical subtrees skipped), BLAKE3 hashing with incremental reuse.
+- **Install watch**: take a before picture, run the installer, take an after picture; files, services and scheduled tasks land in one traceable session.
 - **Optional themes**: 36 dark and light palettes with live preview and a temporary Undo; all pass WCAG AA contrast.
 - **Cleanup policy simulator**: JSONLogic rules, pure dry run; most protective rule wins (keep, then review, then quarantine). Templates: conservative, standard, thorough.
 - **Evidence-preserving quarantine**: compact JSON manifests with BLAKE3 verification, all-or-nothing moves, restore and purge, manifests kept as evidence. No VSS snapshots.

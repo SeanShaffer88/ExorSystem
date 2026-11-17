@@ -20,6 +20,7 @@ pub mod snapshot;
 pub mod templates;
 pub mod trie;
 pub mod walker;
+pub mod watch;
 
 pub use cancel::Cancel;
 pub use error::{EngineError, Result};
