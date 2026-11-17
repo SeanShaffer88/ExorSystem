@@ -336,3 +336,38 @@ fn no_rules_means_review() {
     let r = simulate(&[], &candidates_for_session(&store, s).unwrap()).unwrap();
     assert_eq!(r.flag_for_review, 1);
 }
+
+#[tokio::test]
+async fn capture_streams_progress_and_ends_done() {
+    use exor_engine::snapshot::{Phase, Progress, capture_with_progress};
+    let d = tempfile::tempdir().unwrap();
+    for i in 0..30 {
+        write(&d.path().join(format!("f{i}.txt")), b"data");
+    }
+    let seen: Mutex<Vec<Progress>> = Mutex::new(Vec::new());
+    let snap = capture_with_progress(
+        d.path(),
+        &CaptureOptions::default(),
+        None,
+        &Cancel::new(),
+        &|p| {
+            seen.lock().unwrap().push(p);
+        },
+    )
+    .await
+    .unwrap();
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen.first().unwrap().phase, Phase::Walking);
+    let last = seen.last().unwrap();
+    assert_eq!(last.phase, Phase::Done);
+    assert_eq!(
+        (last.files_seen, last.files_hashed, last.bytes_hashed),
+        (30, 30, 120)
+    );
+    assert!(
+        seen.windows(2)
+            .all(|w| w[0].files_hashed <= w[1].files_hashed),
+        "monotonic"
+    );
+    assert_eq!(snap.trie.len(), 30);
+}

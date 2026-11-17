@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { flags } from "./flags";
+import { ScanView } from "./views/ScanView";
 import { ProvenanceView } from "./views/ProvenanceView";
 import { SessionsView } from "./views/SessionsView";
 import { SimulatorView } from "./views/SimulatorView";
 
-type ViewId = "sessions" | "provenance" | "simulator" | "quarantine";
+type ViewId = "scan" | "sessions" | "provenance" | "simulator" | "quarantine";
 const views: { id: ViewId; label: string; enabled: boolean }[] = [
   { id: "sessions", label: "Installations", enabled: true },
+  { id: "scan", label: "Scan folder", enabled: true },
   { id: "provenance", label: "Provenance", enabled: true },
   { id: "simulator", label: "Cleanup simulator", enabled: true },
   { id: "quarantine", label: "Quarantine", enabled: flags.quarantineView },
@@ -59,6 +61,7 @@ export function App() {
       </nav>
       <main id="main" tabIndex={-1}>
         {view === "sessions" && <SessionsView />}
+        {view === "scan" && <ScanView />}
         {view === "provenance" && <ProvenanceView />}
         {view === "simulator" && <SimulatorView />}
       </main>

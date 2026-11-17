@@ -48,3 +48,16 @@ export interface SimulationView {
   flag_for_review: number;
   decisions: Decision[];
 }
+
+export interface ScanProgress {
+  phase: "walking" | "hashing" | "done";
+  files_seen: number;
+  files_hashed: number;
+  bytes_hashed: number;
+}
+
+export type ScanEvent =
+  | { event: "progress"; data: ScanProgress }
+  | { event: "done"; data: { files: number; skipped: number; root_digest: string } }
+  | { event: "cancelled" }
+  | { event: "failed"; data: { message: string } };

@@ -12,6 +12,9 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | Kernel driver `driver/exordrv.c`, INF | Unverified | not compiled with the WDK, not loaded |
 | GUI frontend | Partially verified | `tsc` + `vite build` pass; not rendered or screen-reader tested |
 | GUI Tauri shell | Partially verified | type-checked for the Windows target; never launched |
+| Administrator manifest (`requireAdministrator`, PMv2 DPI) | Partially verified | manifest embedded via tauri-build, type-checked; UAC prompt never observed |
+| IPC streaming (`scan` + `cancel_scan` over Tauri channel) | Partially verified | engine progress API tested (monotonic, ends `done`); channel path type-checked only |
+| `driver/scripts/dev-load.ps1` | Unverified | never run |
 | Windows 10 vs 11 behaviour, DPI, high contrast | Unverified | |
 
 ## Known limitations

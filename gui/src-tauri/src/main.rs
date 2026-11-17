@@ -1,15 +1,28 @@
 //! ExorSystem desktop shell: thin Tauri commands over `exor-storage` and `exor-engine`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use exor_engine::{policy, report, templates};
+use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
+use exor_engine::{Cancel, EngineError, policy, report, templates};
 use exor_storage::{Edge, LedgerEntry, Session, Store};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
+use tauri::ipc::Channel;
 
 struct AppState {
     store: Mutex<Store>,
+    scan_cancel: Mutex<Option<Cancel>>,
+}
+
+/// Events streamed to the UI over a Tauri v2 IPC channel while a scan runs.
+#[derive(Clone, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "snake_case")]
+enum ScanEvent {
+    Progress(Progress),
+    Done { files: usize, skipped: usize, root_digest: String },
+    Cancelled,
+    Failed { message: String },
 }
 
 fn lock<'a>(s: &'a State<'_, AppState>) -> Result<std::sync::MutexGuard<'a, Store>, String> {
@@ -75,6 +88,42 @@ fn simulate(state: State<'_, AppState>, session_id: i64, template: String) -> Re
     })
 }
 
+/// Snapshot a folder without blocking the UI: progress streams over `on_event`.
+#[tauri::command]
+async fn scan(state: State<'_, AppState>, root: String, on_event: Channel<ScanEvent>) -> Result<(), String> {
+    let cancel = Cancel::new();
+    {
+        let mut slot = state.scan_cancel.lock().map_err(|_| "internal lock poisoned".to_string())?;
+        if slot.is_some() {
+            return Err("a scan is already running".into());
+        }
+        *slot = Some(cancel.clone());
+    }
+    let progress = on_event.clone();
+    let result = capture_with_progress(std::path::Path::new(&root), &CaptureOptions::default(), None, &cancel, &move |p| {
+        let _ = progress.send(ScanEvent::Progress(p));
+    })
+    .await;
+    if let Ok(mut slot) = state.scan_cancel.lock() {
+        *slot = None;
+    }
+    let event = match result {
+        Ok(snap) => ScanEvent::Done { files: snap.trie.len(), skipped: snap.skipped.len(), root_digest: snap.trie.root_digest() },
+        Err(EngineError::Cancelled) => ScanEvent::Cancelled,
+        Err(e) => ScanEvent::Failed { message: e.to_string() },
+    };
+    on_event.send(event).map_err(|e| e.to_string())
+}
+
+/// Ask the running scan (if any) to stop.
+#[tauri::command]
+fn cancel_scan(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(c) = state.scan_cancel.lock().map_err(|_| "internal lock poisoned".to_string())?.as_ref() {
+        c.cancel();
+    }
+    Ok(())
+}
+
 /// Portable by default: data lives next to the executable (`data/exor.db`).
 fn data_dir() -> PathBuf {
     std::env::current_exe()
@@ -89,8 +138,8 @@ fn run() -> Result<(), String> {
     let store = Store::open(&dir.join("exor.db")).map_err(|e| e.to_string())?;
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        .manage(AppState { store: Mutex::new(store) })
-        .invoke_handler(tauri::generate_handler![list_sessions, provenance, simulate])
+        .manage(AppState { store: Mutex::new(store), scan_cancel: Mutex::new(None) })
+        .invoke_handler(tauri::generate_handler![list_sessions, provenance, simulate, scan, cancel_scan])
         .run(tauri::generate_context!())
         .map_err(|e| e.to_string())
 }
