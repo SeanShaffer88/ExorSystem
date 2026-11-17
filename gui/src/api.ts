@@ -21,6 +21,7 @@ export const api = {
   quarantineLeftovers: (programId: string, folders: string[], sessionId: number | null) =>
     invoke<QuarantineResult>("quarantine_leftovers", { programId, folders, sessionId }),
   history: (filter: string | null, limit: number) => invoke<HistoryRow[]>("history", { filter, limit }),
+  exportReport: (sessionId: number, template: string) => invoke<string>("export_report", { sessionId, template }),
   sessionItems: (sessionId: number) => invoke<SessionItems>("session_items", { sessionId }),
   beginWatch: (appName: string, installerPath: string | null, folders: string[]) =>
     invoke<number>("begin_watch", { appName, installerPath, folders }),
