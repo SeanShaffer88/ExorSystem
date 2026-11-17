@@ -1,0 +1,542 @@
+[
+ {
+  "id": "default",
+  "name": "ExorSystem Default",
+  "mode": "dark",
+  "description": "High-contrast dark. The built-in look.",
+  "tokens": {
+   "bg": "#0a0c10",
+   "panel": "#151b23",
+   "fg": "#f0f3f6",
+   "muted": "#d9dee3",
+   "border": "#7a828e",
+   "accent": "#71b7ff",
+   "danger": "#ff9492"
+  }
+ },
+ {
+  "id": "minimalist",
+  "name": "Minimalist",
+  "mode": "dark",
+  "description": "Flat dark, based on a modern editor dark theme.",
+  "tokens": {
+   "bg": "#1f1f1f",
+   "panel": "#181818",
+   "fg": "#cccccc",
+   "muted": "#9d9d9d",
+   "border": "#6d6d6d",
+   "accent": "#0078d4",
+   "danger": "#f85149"
+  }
+ },
+ {
+  "id": "catppuccin-latte",
+  "name": "Catppuccin Latte",
+  "mode": "light",
+  "description": "Soft pastel, lightest level.",
+  "tokens": {
+   "bg": "#eff1f5",
+   "panel": "#e6e9ef",
+   "fg": "#4c4f69",
+   "muted": "#5f6276",
+   "border": "#7e818b",
+   "accent": "#1e66f5",
+   "danger": "#c50e36"
+  }
+ },
+ {
+  "id": "catppuccin-frappe",
+  "name": "Catppuccin Frappé",
+  "mode": "dark",
+  "description": "Soft pastel, low-contrast dark level.",
+  "tokens": {
+   "bg": "#303446",
+   "panel": "#292c3c",
+   "fg": "#c6d0f5",
+   "muted": "#a5adce",
+   "border": "#7d8296",
+   "accent": "#8caaee",
+   "danger": "#e78284"
+  }
+ },
+ {
+  "id": "catppuccin-macchiato",
+  "name": "Catppuccin Macchiato",
+  "mode": "dark",
+  "description": "Soft pastel, medium dark level.",
+  "tokens": {
+   "bg": "#24273a",
+   "panel": "#1e2030",
+   "fg": "#cad3f5",
+   "muted": "#a5adcb",
+   "border": "#6e7388",
+   "accent": "#8aadf4",
+   "danger": "#ed8796"
+  }
+ },
+ {
+  "id": "catppuccin-mocha",
+  "name": "Catppuccin Mocha",
+  "mode": "dark",
+  "description": "Soft pastel, darkest level.",
+  "tokens": {
+   "bg": "#1e1e2e",
+   "panel": "#181825",
+   "fg": "#cdd6f4",
+   "muted": "#a6adc8",
+   "border": "#6b6e81",
+   "accent": "#89b4fa",
+   "danger": "#f38ba8"
+  }
+ },
+ {
+  "id": "nord",
+  "name": "Nord",
+  "mode": "dark",
+  "description": "Cool arctic blues and grays.",
+  "tokens": {
+   "bg": "#2e3440",
+   "panel": "#3b4252",
+   "fg": "#eceff4",
+   "muted": "#d8dee9",
+   "border": "#8b919e",
+   "accent": "#88c0d0",
+   "danger": "#d89fa4"
+  }
+ },
+ {
+  "id": "tokyo-night",
+  "name": "Tokyo Night",
+  "mode": "dark",
+  "description": "Clean, neon-lit night palette.",
+  "tokens": {
+   "bg": "#1a1b26",
+   "panel": "#16161e",
+   "fg": "#c0caf5",
+   "muted": "#a9b1d6",
+   "border": "#616782",
+   "accent": "#7aa2f7",
+   "danger": "#f7768e"
+  }
+ },
+ {
+  "id": "dracula",
+  "name": "Dracula",
+  "mode": "dark",
+  "description": "Vibrant purple and pink on dark.",
+  "tokens": {
+   "bg": "#282a36",
+   "panel": "#21222c",
+   "fg": "#f8f8f2",
+   "muted": "#bdc2d6",
+   "border": "#6272a4",
+   "accent": "#bd93f9",
+   "danger": "#ff5555"
+  }
+ },
+ {
+  "id": "gruvbox-dark",
+  "name": "Gruvbox Dark",
+  "mode": "dark",
+  "description": "Retro warm earth tones.",
+  "tokens": {
+   "bg": "#282828",
+   "panel": "#1d2021",
+   "fg": "#ebdbb2",
+   "muted": "#bdae93",
+   "border": "#807871",
+   "accent": "#fabd2f",
+   "danger": "#fb5440"
+  }
+ },
+ {
+  "id": "everforest",
+  "name": "Everforest",
+  "mode": "dark",
+  "description": "Calm forest greens.",
+  "tokens": {
+   "bg": "#2d353b",
+   "panel": "#232a2e",
+   "fg": "#d3c6aa",
+   "muted": "#9da9a0",
+   "border": "#859289",
+   "accent": "#a7c080",
+   "danger": "#e67e80"
+  }
+ },
+ {
+  "id": "rose-pine",
+  "name": "Rosé Pine",
+  "mode": "dark",
+  "description": "Muted roses and soft pinks.",
+  "tokens": {
+   "bg": "#191724",
+   "panel": "#1f1d2e",
+   "fg": "#e0def4",
+   "muted": "#908caa",
+   "border": "#6a6878",
+   "accent": "#c4a7e7",
+   "danger": "#eb6f92"
+  }
+ },
+ {
+  "id": "kanagawa",
+  "name": "Kanagawa",
+  "mode": "dark",
+  "description": "Woodblock-print inspired colors.",
+  "tokens": {
+   "bg": "#1f1f28",
+   "panel": "#16161d",
+   "fg": "#dcd7ba",
+   "muted": "#c8c093",
+   "border": "#68687e",
+   "accent": "#7e9cd8",
+   "danger": "#ff5d62"
+  }
+ },
+ {
+  "id": "aura",
+  "name": "Aura",
+  "mode": "dark",
+  "description": "Simple, elegant dark with violet accents.",
+  "tokens": {
+   "bg": "#15141b",
+   "panel": "#110f18",
+   "fg": "#edecee",
+   "muted": "#b4b3ba",
+   "border": "#686381",
+   "accent": "#a277ff",
+   "danger": "#ff6767"
+  }
+ },
+ {
+  "id": "shadcn-zinc",
+  "name": "Shadcn Zinc",
+  "mode": "dark",
+  "description": "Neutral zinc grays, shadcn-style.",
+  "tokens": {
+   "bg": "#09090b",
+   "panel": "#18181b",
+   "fg": "#fafafa",
+   "muted": "#a1a1aa",
+   "border": "#69696f",
+   "accent": "#3b82f6",
+   "danger": "#ef4444"
+  }
+ },
+ {
+  "id": "breeze-dark",
+  "name": "Breeze Dark",
+  "mode": "dark",
+  "description": "KDE Breeze-style dark.",
+  "tokens": {
+   "bg": "#232629",
+   "panel": "#31363b",
+   "fg": "#eff0f1",
+   "muted": "#bdc3c7",
+   "border": "#848484",
+   "accent": "#3daee9",
+   "danger": "#e7868f"
+  }
+ },
+ {
+  "id": "qdark",
+  "name": "QDark Flat",
+  "mode": "dark",
+  "description": "Flat blue-gray dark for desktop toolkits.",
+  "tokens": {
+   "bg": "#19232d",
+   "panel": "#32414b",
+   "fg": "#f0f0f0",
+   "muted": "#bfc9d4",
+   "border": "#868f9a",
+   "accent": "#2293d5",
+   "danger": "#ff8b8b"
+  }
+ },
+ {
+  "id": "sauge-sage",
+  "name": "Sauge Sage",
+  "mode": "light",
+  "description": "Sage palette with warm neutrals.",
+  "tokens": {
+   "bg": "#f4f3ee",
+   "panel": "#e9ebe3",
+   "fg": "#2b3329",
+   "muted": "#5a6558",
+   "border": "#7a8376",
+   "accent": "#4f7a58",
+   "danger": "#a8322d"
+  }
+ },
+ {
+  "id": "thematic-slate",
+  "name": "Thematic Slate",
+  "mode": "dark",
+  "description": "Neutral slate with teal accent.",
+  "tokens": {
+   "bg": "#1e2227",
+   "panel": "#272c33",
+   "fg": "#e6e8eb",
+   "muted": "#aab0b8",
+   "border": "#757b82",
+   "accent": "#56b6c2",
+   "danger": "#e2757d"
+  }
+ },
+ {
+  "id": "photo-tool",
+  "name": "Photo Tool",
+  "mode": "dark",
+  "description": "Dark photo-editor look with amber accent.",
+  "tokens": {
+   "bg": "#2b2b2b",
+   "panel": "#3c3f41",
+   "fg": "#e8e8e8",
+   "muted": "#b0b0b0",
+   "border": "#8b8b8b",
+   "accent": "#e0a030",
+   "danger": "#ff8b89"
+  }
+ },
+ {
+  "id": "matte-black",
+  "name": "Matte Black",
+  "mode": "dark",
+  "description": "True black and white, maximum focus.",
+  "tokens": {
+   "bg": "#000000",
+   "panel": "#0d0d0d",
+   "fg": "#ffffff",
+   "muted": "#c8c8c8",
+   "border": "#8a8a8a",
+   "accent": "#ffffff",
+   "danger": "#ff7b7b"
+  }
+ },
+ {
+  "id": "osaka-jade",
+  "name": "Osaka Jade",
+  "mode": "dark",
+  "description": "Serene jade and bamboo greens.",
+  "tokens": {
+   "bg": "#111c18",
+   "panel": "#162620",
+   "fg": "#dff0e8",
+   "muted": "#a8c4b6",
+   "border": "#4f7a68",
+   "accent": "#3ccf91",
+   "danger": "#ff7a7a"
+  }
+ },
+ {
+  "id": "ristretto",
+  "name": "Ristretto",
+  "mode": "dark",
+  "description": "Cozy dark-roast browns.",
+  "tokens": {
+   "bg": "#2c2525",
+   "panel": "#211c1c",
+   "fg": "#fff1f3",
+   "muted": "#c3b5b6",
+   "border": "#7a7273",
+   "accent": "#f9cc6c",
+   "danger": "#fd6883"
+  }
+ },
+ {
+  "id": "solarized-dark",
+  "name": "Solarized Dark",
+  "mode": "dark",
+  "description": "Classic precision palette, dark.",
+  "tokens": {
+   "bg": "#002b36",
+   "panel": "#073642",
+   "fg": "#eee8d5",
+   "muted": "#93a1a1",
+   "border": "#6b7f85",
+   "accent": "#268bd2",
+   "danger": "#e87a78"
+  }
+ },
+ {
+  "id": "solarized-light",
+  "name": "Solarized Light",
+  "mode": "light",
+  "description": "Classic precision palette, light.",
+  "tokens": {
+   "bg": "#fdf6e3",
+   "panel": "#eee8d5",
+   "fg": "#073642",
+   "muted": "#53676e",
+   "border": "#748385",
+   "accent": "#268bd2",
+   "danger": "#c22c2a"
+  }
+ },
+ {
+  "id": "monokai",
+  "name": "Monokai",
+  "mode": "dark",
+  "description": "Vibrant classic editor palette.",
+  "tokens": {
+   "bg": "#272822",
+   "panel": "#1e1f1c",
+   "fg": "#f8f8f2",
+   "muted": "#cfcfc2",
+   "border": "#75715e",
+   "accent": "#a6e22e",
+   "danger": "#fa4b8a"
+  }
+ },
+ {
+  "id": "fluent-vanish",
+  "name": "Fluent Vanish",
+  "mode": "dark",
+  "description": "Windows 11 Fluent-style dark.",
+  "tokens": {
+   "bg": "#202020",
+   "panel": "#2b2b2b",
+   "fg": "#ffffff",
+   "muted": "#c5c5c5",
+   "border": "#8a8a8a",
+   "accent": "#60cdff",
+   "danger": "#ff99a4"
+  }
+ },
+ {
+  "id": "midnight-blue",
+  "name": "Midnight Blue",
+  "mode": "dark",
+  "description": "Deep blue, calmer than standard dark.",
+  "tokens": {
+   "bg": "#0b1426",
+   "panel": "#101c33",
+   "fg": "#e6edf8",
+   "muted": "#aab8d0",
+   "border": "#55698d",
+   "accent": "#5aa9ff",
+   "danger": "#ff8a8a"
+  }
+ },
+ {
+  "id": "oled-black",
+  "name": "OLED Black",
+  "mode": "dark",
+  "description": "True #000000 for OLED screens.",
+  "tokens": {
+   "bg": "#000000",
+   "panel": "#0a0a0a",
+   "fg": "#f2f2f2",
+   "muted": "#bdbdbd",
+   "border": "#6b6b6b",
+   "accent": "#4da3ff",
+   "danger": "#ff7a7a"
+  }
+ },
+ {
+  "id": "synthwave-84",
+  "name": "SynthWave '84",
+  "mode": "dark",
+  "description": "Neon magenta, electric blue, sunset glow.",
+  "tokens": {
+   "bg": "#262335",
+   "panel": "#241b2f",
+   "fg": "#ffffff",
+   "muted": "#c9c3dd",
+   "border": "#7668a0",
+   "accent": "#ff7edb",
+   "danger": "#fe4f5a"
+  }
+ },
+ {
+  "id": "solarized-light-hc",
+  "name": "Solarized Light High Contrast",
+  "mode": "light",
+  "description": "Cream paper palette for bright daylight.",
+  "tokens": {
+   "bg": "#fdf6e3",
+   "panel": "#f5ecd0",
+   "fg": "#002b36",
+   "muted": "#3d5560",
+   "border": "#586e75",
+   "accent": "#0f5fa6",
+   "danger": "#b01c1a"
+  }
+ },
+ {
+  "id": "gruvbox-light",
+  "name": "Gruvbox Light",
+  "mode": "light",
+  "description": "Warm cream paper with earthy accents.",
+  "tokens": {
+   "bg": "#fbf1c7",
+   "panel": "#ebdbb2",
+   "fg": "#3c3836",
+   "muted": "#504945",
+   "border": "#7c6f64",
+   "accent": "#076678",
+   "danger": "#9d0006"
+  }
+ },
+ {
+  "id": "material-ocean",
+  "name": "Material Ocean",
+  "mode": "dark",
+  "description": "Deep ocean teal and blue.",
+  "tokens": {
+   "bg": "#0f111a",
+   "panel": "#090b10",
+   "fg": "#eeffff",
+   "muted": "#a6accd",
+   "border": "#60667e",
+   "accent": "#80cbc4",
+   "danger": "#f07178"
+  }
+ },
+ {
+  "id": "midnight-shield",
+  "name": "Midnight Shield",
+  "mode": "dark",
+  "description": "Deep midnight blue, regal red, silver accents.",
+  "tokens": {
+   "bg": "#0a1226",
+   "panel": "#121c3a",
+   "fg": "#eef2fa",
+   "muted": "#b8c4de",
+   "border": "#8b97ad",
+   "accent": "#cfd6e0",
+   "danger": "#ff5d6c"
+  }
+ },
+ {
+  "id": "alleyway-necromancer",
+  "name": "Alleyway Necromancer",
+  "mode": "dark",
+  "description": "Gothic inky black with sickly neon green.",
+  "tokens": {
+   "bg": "#070809",
+   "panel": "#121416",
+   "fg": "#dfe5e0",
+   "muted": "#a5ada8",
+   "border": "#5f6462",
+   "accent": "#4cff3a",
+   "danger": "#ff5c5c"
+  }
+ },
+ {
+  "id": "aged-parchment",
+  "name": "Aged Parchment",
+  "mode": "light",
+  "description": "Aged parchment, gunmetal borders, gold accents.",
+  "tokens": {
+   "bg": "#e8d9b0",
+   "panel": "#d8c595",
+   "fg": "#2b1d0e",
+   "muted": "#4e3a1e",
+   "border": "#4a4f55",
+   "accent": "#7a5600",
+   "danger": "#8c1d1d"
+  }
+ }
+]
