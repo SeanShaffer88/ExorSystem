@@ -1,6 +1,7 @@
 //! ExorSystem desktop shell: thin Tauri commands over `exor-storage` and `exor-engine`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use exor_engine::leftovers::{self, Leftover};
 use exor_engine::programs::{self, InstalledProgram};
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
 use exor_engine::watch::{InstallWatch, SystemProbe, WatchSummary};
@@ -273,6 +274,168 @@ async fn list_programs(
             }
         })
         .collect())
+}
+
+/// Look a program up by its registry id. Windows only: the list comes from the registry.
+async fn program_by_id(id: String) -> Result<InstalledProgram, String> {
+    #[cfg(windows)]
+    {
+        let raw = tauri::async_runtime::spawn_blocking(exor_win::enumerate_programs)
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        raw.into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| "that program is no longer in Windows' list".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = id;
+        Err("uninstalling needs Windows".to_string())
+    }
+}
+
+/// Folders where programs usually leave files.
+fn leftover_roots() -> Vec<PathBuf> {
+    [
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+        "LOCALAPPDATA",
+        "APPDATA",
+    ]
+    .iter()
+    .filter_map(std::env::var_os)
+    .map(PathBuf::from)
+    .collect()
+}
+
+#[derive(Serialize)]
+struct UninstallRun {
+    /// Process exit code; `None` when Windows gave none.
+    exit_code: Option<i32>,
+    summary: String,
+}
+
+/// Start the program's own uninstaller and wait for it to finish. No shell is used. The command
+/// comes from Windows' registry entry for the program, never from the UI.
+#[tauri::command]
+async fn run_uninstaller(
+    app: tauri::AppHandle,
+    program_id: String,
+    quiet: bool,
+) -> Result<UninstallRun, String> {
+    let p = program_by_id(program_id).await?;
+    let cmd = if quiet {
+        p.quiet_uninstall_command
+            .as_ref()
+            .or(p.uninstall_command.as_ref())
+    } else {
+        p.uninstall_command.as_ref()
+    }
+    .ok_or_else(|| "this program has no uninstaller registered".to_string())?
+    .clone();
+    let (exe, args) = leftovers::split_command(&cmd)
+        .ok_or_else(|| "the registered uninstall command could not be read".to_string())?;
+    dock::log(
+        &app,
+        "info",
+        format!("Running the uninstaller for {}…", p.name),
+    );
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        std::process::Command::new(exe).args(args).status()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| {
+        dock::log(
+            &app,
+            "error",
+            format!("Could not start the uninstaller: {e}"),
+        );
+        format!("could not start the uninstaller: {e}")
+    })?;
+    let code = status.code();
+    let summary = if status.success() {
+        format!(
+            "The uninstaller for {} finished. Next, look for leftovers.",
+            p.name
+        )
+    } else {
+        format!(
+            "The uninstaller for {} ended with code {}. It may have been cancelled. You can still look for leftovers.",
+            p.name,
+            code.map_or("unknown".into(), |c| c.to_string())
+        )
+    };
+    dock::log(
+        &app,
+        if status.success() { "info" } else { "warn" },
+        summary.clone(),
+    );
+    Ok(UninstallRun {
+        exit_code: code,
+        summary,
+    })
+}
+
+/// Folders that may be left after uninstalling the program. Nothing is changed.
+#[tauri::command]
+async fn find_leftovers(
+    app: tauri::AppHandle,
+    program_id: String,
+) -> Result<Vec<Leftover>, String> {
+    let p = program_by_id(program_id).await?;
+    let roots = leftover_roots();
+    let found = tauri::async_runtime::spawn_blocking(move || leftovers::find_leftovers(&p, &roots))
+        .await
+        .map_err(|e| e.to_string())?;
+    dock::log(
+        &app,
+        "info",
+        format!("Found {} possible leftover folder(s).", found.len()),
+    );
+    Ok(found)
+}
+
+/// Quarantine the chosen leftover folders. Only folders `find_leftovers` suggests are accepted.
+#[tauri::command]
+async fn quarantine_leftovers(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    program_id: String,
+    folders: Vec<String>,
+    session_id: Option<i64>,
+) -> Result<QuarantineResult, String> {
+    let p = program_by_id(program_id).await?;
+    let roots = leftover_roots();
+    let allowed =
+        tauri::async_runtime::spawn_blocking(move || leftovers::find_leftovers(&p, &roots))
+            .await
+            .map_err(|e| e.to_string())?;
+    let chosen: Vec<PathBuf> = folders
+        .iter()
+        .filter(|f| allowed.iter().any(|l| l.path.eq_ignore_ascii_case(f)))
+        .map(PathBuf::from)
+        .collect();
+    if chosen.is_empty() {
+        return Err("none of those folders is a suggested leftover".into());
+    }
+    let store = lock(&state)?;
+    let (id, moved) =
+        leftovers::quarantine_leftovers(&store, &state.quarantine_root, session_id, &chosen)
+            .map_err(|e| e.to_string())?;
+    dock::log(
+        &app,
+        "info",
+        format!("Quarantined {moved} leftover file(s)."),
+    );
+    Ok(QuarantineResult {
+        quarantine_id: id,
+        moved,
+        skipped: 0,
+        summary: format!("Moved {moved} file(s) to quarantine. You can restore them at any time."),
+    })
 }
 
 #[derive(Serialize)]
@@ -595,6 +758,9 @@ fn run() -> Result<(), String> {
             restore_quarantine,
             purge_quarantine,
             list_programs,
+            run_uninstaller,
+            find_leftovers,
+            quarantine_leftovers,
             session_items,
             begin_watch,
             finish_watch,

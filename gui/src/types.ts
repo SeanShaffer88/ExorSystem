@@ -119,3 +119,13 @@ export interface SessionItems {
   by_type: Record<string, number>;
   items: SessionItem[];
 }
+
+export interface Leftover {
+  path: string;
+  reason: string;
+  confidence: number;
+}
+export interface UninstallRun {
+  exit_code: number | null;
+  summary: string;
+}

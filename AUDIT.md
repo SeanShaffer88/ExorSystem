@@ -23,6 +23,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | Administrator manifest (`requireAdministrator`, PMv2 DPI) | Partially verified | manifest embedded via tauri-build, type-checked; UAC prompt never observed |
 | IPC streaming (`scan` + `cancel_scan` over Tauri channel) | Partially verified | engine progress API tested (monotonic, ends `done`); channel path type-checked only |
 | Installed programs enumeration (`exor-win`) | Partially verified | type-checked for the Windows target; filtering and matching unit-tested; registry never read at runtime |
+| Guided uninstall (run uninstaller, leftovers) | Partially verified | command splitting, leftover search and quarantine/restore unit-tested; real uninstallers, UAC prompts and MSI never run |
 | Log window slide, z-order, docking | Unverified | type-checked only; behavior on real Windows (animation, staying behind main, multi-monitor, DPI) never observed |
 | `driver/scripts/dev-load.ps1` | Unverified | never run |
 | Windows 10 vs 11 behaviour, DPI, high contrast | Unverified | |
@@ -33,6 +34,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 - The driver reports `RegNtPreDeleteKey` as an attempt.
 - The registry client thread exits at the next message after the consumer drops (blocking `FilterGetMessage`).
 - Dev altitude `385201` is a placeholder; Microsoft must assign a real one.
+- Leftovers cover files in folders only. Registry leftovers, services and tasks of programs with no recorded install are not searched yet.
 - Windows lists programs from the registry only; Store (MSIX) apps and portable apps are not listed.
 - Installers are produced only by `scripts/release.ps1` on a Windows machine; none have been built.
 - Path matching in SQLite is case-sensitive (blueprint schema); the trie and ledger lookups are case-insensitive.

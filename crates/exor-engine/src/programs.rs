@@ -87,7 +87,7 @@ pub fn visible(programs: Vec<InstalledProgram>, include_system: bool) -> Vec<Ins
     out
 }
 
-fn norm(s: &str) -> String {
+pub(crate) fn norm(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_alphanumeric())
         .flat_map(char::to_lowercase)

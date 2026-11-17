@@ -9,6 +9,7 @@ pub mod execute;
 pub mod fingerprint;
 pub mod hashing;
 pub mod jsonlogic;
+pub mod leftovers;
 pub mod monitor;
 pub mod noise;
 pub mod policy;

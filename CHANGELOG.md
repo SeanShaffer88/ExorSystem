@@ -4,6 +4,7 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased] - 0.1.0 in progress
 ### Added
+- Guided uninstall: Uninstall runs the program's own registered uninstaller (no shell; command read from the registry, never from the UI), then Find leftovers suggests folders (recorded install folder 0.7, name match 0.3; publisher folders never match) and quarantines the chosen ones, reversibly. `exor-engine::leftovers`; commands `run_uninstaller`, `find_leftovers`, `quarantine_leftovers` (only suggested folders are accepted; roots and `\\Windows` refused).
 - Installed programs list: `exor-engine::programs` (tidy, dedupe, match to recorded installs) and `exor-win::enumerate_programs` (HKLM 64/32-bit and HKCU Uninstall keys). Installations view is now three panes: program list, details with traced items, actions (preview cleanup, quarantine with confirm). Commands `list_programs`, `session_items`.
 - Tabs across the top replace the side menu (arrow keys, Home/End, Alt+number). Status bar at the bottom shows the latest activity, with buttons for Watch, Scan, Quarantine, Themes and Log (Ctrl+`).
 - Activity log window: small, fixed size, borderless, docked to the main window's right edge. It slides out from behind the main window and back; cannot be resized; follows the main window; follows the theme; honors reduced motion. Commands `get_log`, `clear_log`, `set_log_open`, `log_is_open`; engine activity is logged in plain language.
