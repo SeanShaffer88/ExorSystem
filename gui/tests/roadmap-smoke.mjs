@@ -1,195 +1,15 @@
 // Run against the production bundle; stub only the native Tauri IPC boundary.
 import { chromium } from 'playwright-core';
-import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import path from 'node:path';
+import { mockDesktop } from './ipc-fixture.mjs';
 
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
 try {
   const page = await browser.newPage({ viewport: { width: 1100, height: 720 } });
   const errors = [];
   page.on('pageerror', err => errors.push(err.message));
-  const dist = path.resolve(import.meta.dirname, '../dist');
-  await page.route('https://exor.test/**', async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    const p = path.join(dist, pathname === '/' ? 'index.html' : pathname);
-    const contentType = ({'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css'})[path.extname(p)];
-    await route.fulfill({contentType, body: await readFile(p)});
-  });
-  await page.addInitScript(() => {
-    const standard = {
-      version: '1.0', publisher: 'Fixture', install_location: 'C:\\Program Files\\Zed Widget',
-      uninstall_command: null, quiet_uninstall_command: null, install_date: null, size_kb: null,
-      scope: 'user', system_component: false, parent_key: null, windows_installer: false,
-    };
-    const app = { ...standard, name: 'Zed Widget', source: 'registry', id: 'HKLM\\Zed', scope: 'machine', uninstall_command: 'C:\\Program Files\\Zed Widget\\uninstall.exe' };
-    const userApp = { ...app, id: 'HKCU\\Fixture', name: 'Per-user Fixture', scope: 'user' };
-    const msix = { ...standard, name: 'Alpha Package', source: 'msix', id: 'msix:AlphaPackage' };
-    const moveable = 'C:\\Program Files\\Zed Widget';
-    let portable = [];
-    let removed = false;
-    let invocationChanged = true;
-    let invocationCount = 0;
-    const argv = { executable: `${moveable}\\uninstall.exe`, args: ['--interactive', 'two words'] };
-    const batches = [
-      { quarantine_id: 'fixture-held', session_id: null, status: 'quarantined', files: 2, file_bytes: 4 * 1024 ** 2 },
-      { quarantine_id: 'fixture-deleted', session_id: 9, status: 'purged', files: 3, file_bytes: 100 * 1024 ** 2 },
-    ];
-    let watch = null;
-    let nextWatchId = 40;
-    let watchRecorded = false;
-    let historyFailed = false;
-    const historyRows = [
-      { id: 44, session_id: null, path: String.raw`C:\Unassigned.dat`, what: 'quarantined', source: 'policy' },
-      { id: 43, session_id: 9, path: String.raw`C:\Other session.dat`, what: 'created', source: 'manifest' },
-      { id: 42, session_id: 40, path: String.raw`HKCU\Software\Watch Fixture\Gone`, what: 'deleted', source: 'snapshot_diff' },
-      { id: 41, session_id: 40, path: String.raw`HKCU\Software\Watch Fixture\Changed`, what: 'modified', source: 'snapshot_diff' },
-      { id: 40, session_id: 40, path: String.raw`C:\Watch Fixture\Older.txt`, what: 'created', source: 'snapshot_diff' },
-      { id: 39, session_id: 40, path: String.raw`C:\Watch Fixture\Modified.txt`, what: 'modified', source: 'snapshot_diff', old_hash: 'a'.repeat(64), new_hash: 'b'.repeat(64) },
-    ].map(row => ({ old_hash: null, new_hash: null, ...row, domain: row.path.startsWith('HKCU') ? 'registry' : 'file', when: '2026-11-18 05:00:00' }));
-    const calls = [];
-    window.exorCalls = calls;
-    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
-    window.__TAURI_INTERNALS__ = {
-      transformCallback: () => 1,
-      invoke: async (command, args) => {
-        calls.push([command, args]);
-        switch (command) {
-          case 'plugin:event|listen': return 1;
-          case 'plugin:event|unlisten': return null;
-          case 'get_log': return [];
-          case 'log_is_open': return false;
-          case 'list_sessions': return watchRecorded ? [
-            { session_id: 40, app_name: 'Watch Fixture', status: 'completed' },
-            { session_id: 9, app_name: 'Another Fixture', status: 'completed' },
-          ] : [{ session_id: 9, app_name: 'Another Fixture', status: 'completed' }];
-          case 'history': {
-            if (![5, 6, 100].includes(args.limit)) throw new Error('unexpected history page size');
-            if (args.filter === 'Retry fixture' && !historyFailed) {
-              historyFailed = true;
-              throw new Error('history temporarily unavailable');
-            }
-            const matches = historyRows.filter(row =>
-              (args.domain === null || row.domain === args.domain) &&
-              (args.sessionId === null || row.session_id === args.sessionId) &&
-              (args.beforeId === null || row.id < args.beforeId) &&
-              (!args.filter || row.path.toLowerCase().includes(args.filter.toLowerCase()))
-            );
-            // Two rows per fixture page are enough to exercise both paging controls.
-            const limit = args.limit === 100 ? 2 : args.limit;
-            const rows = matches.slice(0, limit);
-            return { rows, next_before_id: matches.length > limit ? rows.at(-1).id : null };
-          }
-          case 'begin_watch': {
-            if (watch) throw new Error('already watching');
-            const registry = args.registrySubtrees ? { requested: 2, usable: 1 } : { requested: 0, usable: 0 };
-            const services = Number(args.system.services);
-            const tasks = Number(args.system.tasks);
-            const session_id = nextWatchId++;
-            watch = {
-              session_id,
-              coverage: {
-                folders: { requested: args.folders.length, usable: args.folders.length }, registry,
-                services: { requested: services, usable: services }, tasks: { requested: tasks, usable: session_id === 40 ? 0 : tasks },
-              },
-              warnings: [
-                ...(args.registrySubtrees ? ['A registry subtree was not checked before changes.'] : []),
-                ...(tasks && session_id === 40 ? ['Scheduled tasks were not checked before changes: access denied.'] : []),
-              ],
-            };
-            return watch;
-          }
-          case 'finish_watch': {
-            if (!watch) throw new Error('no watch to finish');
-            const current = watch;
-            watch = null;
-            const counts = { files_changed: 0, services_changed: 0, tasks_changed: 0, registry_keys_changed: 0 };
-            if (current.session_id === 41) return { ...current, ...counts };
-            if (current.session_id === 43) return {
-              ...current, ...counts, coverage: { ...current.coverage, tasks: { requested: 1, usable: 0 } },
-              warnings: ['Scheduled tasks were not checked after changes: access denied.'],
-            };
-            if (current.session_id !== 40) throw new Error('file snapshot failed');
-            await new Promise(resolve => { window.finishWatchSnapshot = resolve; });
-            watchRecorded = true;
-            return { ...current, ...counts, files_changed: 2, registry_keys_changed: 2 };
-          }
-          case 'cancel_watch':
-            if (!watch) throw new Error('no watch to cancel');
-            watch = null;
-            return null;
-          case 'list_programs': return { programs: [
-            { program: removed ? { ...app, uninstall_command: null } : app, session_ids: [], removed },
-            { program: msix, session_ids: [], removed: false },
-            { program: userApp, session_ids: [], removed: false },
-            ...portable.map((p) => ({program: {...standard, ...p, source: 'portable', id: 'portable:'+p.executable}, session_ids: [], removed: false})),
-          ], warnings: ['One inventory source could not be checked.'] };
-          case 'preview_uninstaller':
-            if (args.programId !== app.id || removed) throw new Error('unsupported registration');
-            return argv;
-          case 'run_uninstaller':
-            if (args.programId !== app.id || args.quiet || JSON.stringify(args.expected) !== JSON.stringify(argv)) throw new Error('incorrect uninstall target');
-            if (invocationChanged) {
-              invocationChanged = false;
-              throw new Error('The registered uninstaller changed.');
-            }
-            if (invocationCount++ === 0) return { exit_code: 1602, summary: 'The vendor cancelled.' };
-            await new Promise((resolve) => { window.finishUninstaller = resolve; });
-            removed = true;
-            return { exit_code: 0, summary: 'The uninstaller finished.' };
-          case 'find_leftovers': return {
-            folders: [
-              { path: moveable, confidence: .7, reason: 'This was the install folder.', can_quarantine: true },
-              { path: 'D:\\Tools\\Zed', confidence: .7, reason: 'This was the install folder.', can_quarantine: false },
-            ],
-            system_entries: [
-              { kind: 'registry_key', path: 'HKCU\\SOFTWARE\\Zed Widget', reason: 'The key name matches the program name.' },
-              { kind: 'service', path: 'ZedUpdater', reason: 'The service command points inside the install folder.' },
-              { kind: 'task', path: '\\Zed\\Updater', reason: 'The task command points inside the install folder.' },
-            ], warnings: ['A registry view could not be checked.'],
-          };
-          case 'quarantine_leftovers':
-            if (args.programId !== app.id || args.folders.length !== 1 || args.folders[0] !== moveable) throw new Error('unexpected quarantine target');
-            batches.unshift({ quarantine_id: 'fixture', session_id: null, status: 'quarantined', files: 2, file_bytes: 2 * 1024 ** 2 });
-            return { quarantine_id: 'fixture', moved: 2, skipped: 0, summary: 'Moved 2 files to quarantine.' };
-          case 'list_templates': return [{name:'standard', description:'Default'}];
-          case 'list_quarantines': return batches;
-          case 'purge_quarantine': {
-            if (args.quarantineId !== 'fixture-held') throw new Error('incorrect purge target');
-            const row = batches.find(b => b.quarantine_id === args.quarantineId);
-            row.status = 'purged';
-            return row.files;
-          }
-          case 'simulate': return { summary: 'Three items assessed.', keep: 1, quarantine: 1, flag_for_review: 1, decisions: [
-            { path: String.raw`C:\Fixture\protected.dll`, node_type: 'file', action: 'keep', reason: 'Shared component' },
-            { path: String.raw`C:\Fixture\cache.bin`, node_type: 'file', action: 'quarantine', reason: 'Recorded file' },
-            { path: String.raw`HKCU\Software\Fixture`, node_type: 'registry_key', action: 'flag_for_review', reason: 'Read only' },
-          ] };
-          case 'app_info': return {
-            version: '0.1.0', data_folder: 'profile', quarantine_folder: 'profile\\quarantine',
-            legacy_data_folder: 'portable\\data', recovery_warnings: ['Batch fixture: original already exists.'],
-          };
-          case 'list_portable_programs': return portable;
-          case 'register_portable_program':
-            if (args.executable === 'does-not-exist.exe') throw new Error('enter the full local path');
-            portable = [...portable, args];
-            return null;
-          case 'forget_portable_program': portable = portable.filter(p => p.executable !== args.executable); return null;
-          case 'provenance': {
-            const focus = { id: 10, kind: 'file', path: String.raw`C:\Program Files\Zed Widget\Updater.exe`, session_name: 'Zed Widget' };
-            const service = { id: 11, kind: 'service', path: 'service:ZedUpdater', session_name: 'Updater service' };
-            const isFile = args.path.toLowerCase() === focus.path.toLowerCase();
-            if (!isFile && args.path !== service.path) throw new Error('unexpected trace path');
-            return { found: true, summary: isFile ? 'The requested path matched its recorded spelling.' : 'Traced the service.', confidence: 0.7, ledger: [], graph: {
-              focus: isFile ? focus : service, total_edges: 1, links: [{ node: isFile ? service : focus, edge: { edge_id: 2, parent_node_id: 10, child_node_id: 11, relationship_type: 'depends_on', confidence_score: 0.7, evidence_source: 'temporal' } }],
-            } };
-          }
-          default: throw new Error('unhandled command '+command);
-        }
-      },
-    };
-  });
-  const tab = (name) => page.getByRole('tab', { name, exact: true });
+  await mockDesktop(page);
+  const tool = (name) => page.getByRole('toolbar', { name: 'Workspace tools' }).getByRole('button', { name, exact: true });
   const choose = (name) => page.getByRole('region', { name: 'Application inventory' }).getByRole('button', { name }).click();
   const button = (name) => page.getByRole('button', { name, exact: true });
   const callsOf = (name) => page.evaluate((c) => window.exorCalls.filter(([command]) => command === c), name);
@@ -200,7 +20,7 @@ try {
   await page.getByRole('region', { name: 'Storage reclamation' }).getByText('4 MiB', { exact: true }).waitFor();
   await page.getByRole('article').filter({ hasText: 'Deleted in cleanup' }).getByText('100 MiB', { exact: true }).waitFor();
   await button('View inventory').click();
-  await page.getByText('One inventory source could not be checked.').waitFor();
+  await page.getByRole('tabpanel', { name: 'Applications' }).getByText('One inventory source could not be checked.').waitFor();
   const details = page.getByRole('complementary', { name: 'Application details' });
   await choose(/Per-user Fixture/);
   await details.getByText(/Use Windows Settings → Apps to uninstall this per-user program/).waitFor();
@@ -215,7 +35,7 @@ try {
   await terminal.getByText('"two words"', { exact: true }).waitFor();
   assert.equal(await terminal.locator('input, textarea, [contenteditable]').count(), 0);
   assert.equal((await callsOf('run_uninstaller')).length, 0);
-  await tab('Applications').click();
+  await tool('Applications').click();
   await choose(/Zed Widget/);
 
   const wizard = page.getByRole('dialog');
@@ -266,7 +86,7 @@ try {
   assert.equal(await details.getByRole('button', {name:'Review leftovers'}).count(), 0);
   assert.equal(await details.getByRole('button', {name:'Uninstall wizard'}).count(), 0);
 
-  await tab('Cleanup summary').click();
+  await tool('Cleanup summary').click();
   await page.getByRole('alert').getByText('Batch fixture: original already exists.').waitFor();
   const held = page.getByRole('row').filter({ hasText: 'fixture-held' });
   await held.getByRole('button', { name: 'Delete permanently…' }).click();
@@ -274,14 +94,14 @@ try {
   await held.getByRole('button', { name: 'Confirm: delete' }).click();
   await page.getByRole('region', {name:'Storage reclamation'}).getByText('104 MiB', { exact: true }).first().waitFor();
   await held.getByRole('cell', {name:'Deleted permanently'}).waitFor();
-  await tab('Policy simulator').click();
-  await page.getByLabel('Installation', {exact: true}).selectOption('9');
+  await tool('Policy simulator').click();
+  await page.locator('#panel-simulator').getByLabel('Installation', {exact: true}).selectOption('9');
   await button('Run dry run').click();
   await page.getByRole('cell', {name:'Protected · keep'}).waitFor();
   await page.getByRole('cell', {name:'Quarantine candidate'}).waitFor();
   await page.getByRole('cell', {name:'Review only'}).waitFor();
 
-  await tab('Settings').click();
+  await tool('Settings').click();
   await page.getByText(/Older portable data is unchanged/).waitFor();
   await page.getByLabel('Program name').fill('Portable Fixture');
   await page.getByLabel('Full path to the .exe file').fill('does-not-exist.exe');
@@ -290,25 +110,25 @@ try {
   await page.getByLabel('Full path to the .exe file').fill(String.raw`C:\Tools\Fixture.exe`);
   await button('Save portable app').click();
   await button('Forget Portable Fixture').waitFor();
-  await tab('Applications').click();
+  await tool('Applications').click();
   await page.getByLabel('Application source').selectOption('portable');
   await choose(/Portable Fixture/);
   await details.getByText(/Manage this inventory entry/).waitFor();
   assert.equal(await details.getByRole('button', {name:'Uninstall wizard'}).count(), 0);
-  await tab('Settings').click();
+  await tool('Settings').click();
   await button('Forget Portable Fixture').click();
   await page.getByText('No portable apps added.').waitFor();
 
-  await tab('Relationships').click();
+  await tool('Relationships').click();
   await page.getByLabel('File path or registry key').fill(String.raw`c:\program files\ZED widget\UPDATER.EXE`);
   await button('Trace').click();
   await page.getByText('The requested path matched its recorded spelling.').waitFor();
   const graph = page.getByRole('region', { name: 'Relationship graph' });
   await graph.getByRole('button', { name: /Depends on focus.*Updater service.*70%/ }).click();
   await graph.getByRole('button', { name: /Focus depends on.*Zed Widget.*70%/ }).waitFor();
-  const watchTab = tab('Registry monitor');
-  const provenanceTab = tab('Relationships');
-  await watchTab.click();
+  const watchTool = tool('Registry monitor');
+  const provenanceTool = tool('Relationships');
+  await watchTool.click();
   const begin = button('Take baseline');
   const finish = button('Compare snapshots');
   const setup = button('Set up another watch');
@@ -336,15 +156,15 @@ try {
   await scope(baseline, 'Scheduled tasks').getByText('Skipped', { exact: true }).waitFor();
   await page.getByText('Skipped scope details (2)', { exact: true }).click();
   await page.getByText('Scheduled tasks were not checked before changes: access denied.').waitFor();
-  await provenanceTab.click();
+  await provenanceTool.click();
   assert(!(await finish.isVisible()));
-  await watchTab.click();
+  await watchTool.click();
   assert(await finish.isEnabled());
   await finish.click();
   await watchStatus.getByText('Comparing snapshots…').waitFor();
-  await provenanceTab.click();
+  await provenanceTool.click();
   await page.evaluate(() => window.finishWatchSnapshot());
-  await watchTab.click();
+  await watchTool.click();
   await watchStatus.getByText('Comparison incomplete', { exact: true }).waitFor();
   await scope(comparison, 'File system').getByText('2 changes recorded', { exact: true }).waitFor();
   await scope(comparison, 'Registry').getByText('1 of 2 subtrees compared').waitFor();
@@ -356,9 +176,9 @@ try {
   // Open the recorded evidence for the completed watch, not the newest global changes.
   await page.getByRole('button', {name: 'View recorded changes (session #40)', exact: true}).click();
   await page.getByRole('heading', {name: 'Change inspector', exact: true}).waitFor();
-  const historyTab = tab('Change inspector');
+  const historyTab = page.getByRole('tab', { name: 'Change inspector', exact: true });
   assert(await historyTab.evaluate(tab => document.activeElement === tab));
-  const historySession = page.getByLabel('Installation', {exact: true});
+  const historySession = page.locator('#panel-history').getByLabel('Installation', {exact: true});
   await historySession.getByRole('option', {name: 'Watch Fixture (#40)', exact: true}).waitFor({state: 'attached'});
   assert.equal(await historySession.inputValue(), '40');
   const registryPane = page.getByRole('region', { name: 'Registry', exact: true });
@@ -373,7 +193,7 @@ try {
   const removedKey = page.getByRole('row').filter({hasText: String.raw`HKCU\Software\Watch Fixture\Gone`});
   await removedKey.getByRole('cell', {name: 'Removed', exact: true}).waitFor();
   await removedKey.getByRole('cell', {name: 'Before/after snapshots', exact: true}).waitFor();
-  assert.equal(await page.getByText('Other session.dat', {exact: false}).count(), 0);
+  assert.equal(await page.getByRole('tabpanel', { name: 'Change inspector' }).getByText('Other session.dat', {exact: false}).count(), 0);
   const olderChanges = page.getByRole('button', {name: 'Older changes'});
   const newerChanges = page.getByRole('button', {name: 'Newer changes'});
   const olderItem = page.getByRole('cell', {name: String.raw`C:\Watch Fixture\Older.txt`, exact: true});
@@ -399,7 +219,7 @@ try {
   await historySession.selectOption('');
   await page.getByRole('cell', {name: 'Unassigned', exact: true}).waitFor();
   await page.getByRole('cell', {name: String.raw`C:\Other session.dat`, exact: true}).waitFor();
-  await watchTab.click();
+  await watchTool.click();
 
   // A file-only watch explicitly opts out of the other sources; unchanged files are zero,
   // while checks that were never requested have no changed-items count.
@@ -433,8 +253,8 @@ try {
   await setup.click();
   await begin.click();
   await finish.waitFor();
-  await provenanceTab.click();
-  await watchTab.click();
+  await provenanceTool.click();
+  await watchTool.click();
   await button('Cancel watch').click();
   await begin.waitFor();
   assert.deepEqual(errors, []);
@@ -462,23 +282,23 @@ try {
     const inventoryShortcut = page.locator('.terminal-notice').getByRole('button', { name: 'Applications', exact: true });
     await inventoryShortcut.waitFor();
     assert(await inventoryShortcut.evaluate((el) => getComputedStyle(el).whiteSpace === 'nowrap' && el.scrollWidth <= el.clientWidth));
-    assert(await page.locator('#main').evaluate((el) => el.scrollWidth <= el.clientWidth));
+    assert(await page.locator('.dock-panel:visible').evaluate((el) => el.scrollWidth <= el.clientWidth));
   };
   await page.setViewportSize({width: 1100, height: 560});
-  await tab('Script preview').click();
+  await tool('Script preview').click();
   await checkPreviewLayout();
-  assert(await tab('Cleanup summary').locator('.nav-text').evaluate((label) => {
+  assert(await tool('Cleanup summary').locator('.nav-text').evaluate((label) => {
     const range = document.createRange();
     range.selectNodeContents(label);
     return range.getClientRects().length === 1 && label.scrollWidth <= label.clientWidth;
   }));
   await page.setViewportSize({width: 390, height: 844});
   await checkPreviewLayout();
-  await tab('Overview').click();
+  await tool('Overview').click();
   await page.getByRole('region', { name: 'Installed applications' }).getByRole('button', { name: /Alpha Package/ }).waitFor();
-  assert(await page.locator('#main').evaluate((el) => el.scrollWidth <= el.clientWidth));
+  assert(await page.locator('.dock-panel:visible').evaluate((el) => el.scrollWidth <= el.clientWidth));
   await page.keyboard.press('ArrowDown');
-  assert.equal(await tab('Applications').getAttribute('aria-selected'), 'true');
+  assert.equal(await tool('Applications').getAttribute('aria-current'), 'page');
   console.log('Browser smoke passed: dashboard metrics, read-only preview, confirmed wizard, cleanup totals, inventory, graph traversal, scoped watch coverage, split diff, history pagination, and responsive labels.');
 } finally {
   await browser.close();

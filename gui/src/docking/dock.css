@@ -1,0 +1,149 @@
+/* Panels share the shell grid, but each owns its own scroll position and layout width. */
+.workspace-main {
+  display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0;
+  padding: 13px clamp(9px, 1.4vw, 22px) 12px;
+}
+.workspace-main > .undo-bar { grid-row: 1; width: 100%; margin: 0 0 8px; }
+.dock-space {
+  --dock-header: 40px;
+  --dock-gutter: 10px;
+  grid-row: 2;
+  position: relative; isolation: isolate; display: grid; min-width: 0; min-height: 0;
+  grid-template-columns: minmax(0, 1fr) 0 0;
+  grid-template-rows: 0 var(--dock-header) minmax(0, 1fr) 0 0 0;
+}
+.dock-space[data-compact="false"][data-right="true"] {
+  grid-template-columns: minmax(0, 1fr) var(--dock-gutter) var(--right-size);
+}
+.dock-space[data-compact="false"][data-bottom="true"] {
+  grid-template-rows: 0 var(--dock-header) minmax(0, 1fr) var(--dock-gutter) var(--dock-header) calc(var(--bottom-size) - var(--dock-header));
+}
+.dock-space:has(.dock-switcher) { grid-template-rows: 39px var(--dock-header) minmax(0, 1fr) 0 0 0; }
+.dock-bar[data-area="main"] { grid-area: 2 / 1; }
+.dock-panel[data-area="main"] { grid-area: 3 / 1; }
+.dock-bar[data-area="right"] { grid-area: 2 / 3; }
+.dock-panel[data-area="right"] { grid-area: 3 / 3; }
+.dock-bar[data-area="bottom"] { grid-area: 5 / 1 / 6 / -1; }
+.dock-panel[data-area="bottom"] { grid-area: 6 / 1 / 7 / -1; }
+.dock-space[data-compact="true"] > .dock-bar { grid-area: 2 / 1; }
+.dock-space[data-compact="true"] > .dock-panel { grid-area: 3 / 1; }
+
+.dock-bar {
+  position: relative; z-index: 2; display: flex; gap: 6px; align-items: center;
+  min-width: 0; padding-inline: 6px; background: var(--surface-low);
+  border: 1px solid var(--line); border-radius: 10px 10px 0 0;
+}
+.dock-bar:has(.dock-menu[data-open="true"]) { z-index: 5; }
+.dock-position { display: grid; place-items: center; width: 20px; flex: none; color: var(--muted); }
+.dock-tabs { display: flex; align-items: center; gap: 3px; min-width: 0; flex: 1; padding: 2px; overflow: auto hidden; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.dock-tab {
+  display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; min-width: 0; max-width: 178px;
+  min-height: 29px; padding: 4px 8px; border-radius: 6px; border-color: transparent; background: transparent;
+  color: var(--muted); font-size: 12px; font-weight: 600; text-align: left;
+}
+.dock-tab svg { flex: none; }
+.dock-tab > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-tab:hover { background: var(--surface-high); color: var(--fg); }
+.dock-tab[aria-selected="true"] {
+  color: var(--fg); border-color: var(--line); border-bottom-color: var(--accent);
+  background: color-mix(in srgb, var(--panel) 91%, var(--fg));
+}
+.dock-bar[data-current="true"] .dock-tab[aria-selected="true"] { color: var(--accent-text); }
+.dock-tab:focus-visible { outline-offset: -2px; }
+.dock-empty-label { flex: 1; color: var(--muted); font-size: 12px; }
+.dock-actions { display: flex; flex: none; align-items: center; gap: 3px; }
+.dock-control {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none; min-height: 29px; min-width: 29px;
+  padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; color: var(--muted); background: transparent; font: 620 12px/1.4 "Segoe UI", system-ui, sans-serif; cursor: pointer;
+}
+.dock-control:hover, .dock-menu[data-open="true"] > .dock-control { background: var(--surface-high); color: var(--fg); border-color: var(--line); }
+.workspace-bar { position: relative; z-index: 6; }
+.workspace-status > .dock-menu > .dock-control { padding-inline: 9px; border-color: var(--line); }
+.dock-menu { position: relative; }
+.dock-menu-body {
+  position: absolute; inset: calc(100% + 6px) -29px auto auto; z-index: 1; display: grid; gap: 3px;
+  width: 192px; max-width: calc(100vw - 70px); padding: 7px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 10px 24px #0005;
+  color: var(--fg); font-size: 12px;
+}
+.dock-space[data-compact="false"] > .dock-bar[data-area="bottom"] .dock-menu-body { inset-block: auto calc(100% + 6px); }
+.dock-menu-body > strong { padding: 4px 7px 3px; font-size: 12px; }
+.dock-menu-body > small { padding: 4px 7px; line-height: 1.4; }
+.dock-menu-body > button { display: flex; align-items: center; gap: 8px; text-align: left; border-color: transparent; padding: 7px; font-size: 12px; }
+.dock-menu-body > button:hover { border-color: var(--line); background: var(--surface-high); }
+.dock-menu-body > button:focus-visible { outline-offset: -1px; }
+.workspace-status .dock-menu-body { inset-inline-end: 0; width: 285px; }
+.layout-preset small { display: block; color: var(--muted); font-size: 10.5px; }
+.preset-diagram {
+  flex: none; width: 32px; height: 24px; padding: 2px; display: grid; gap: 2px;
+  grid-template: 1fr 6px / 1fr 8px; border: 1px solid var(--border); border-radius: 4px;
+}
+.preset-diagram > i { background: var(--border); border-radius: 1px; }
+.preset-diagram > i:first-child { background: var(--accent); grid-area: 1 / 1; }
+.preset-diagram > i:last-child { grid-column: 1 / -1; }
+.preset-diagram[data-preset="default"] > i:first-child { grid-area: 1 / 1 / -1 / -1; }
+.preset-diagram[data-preset="default"] > i:not(:first-child) { display: none; }
+
+.dock-panel {
+  min-height: 0; min-width: 0; overflow: auto; container: panel / inline-size;
+  background: var(--bg); border: 1px solid var(--line); border-top: 0; border-radius: 0 0 10px 10px;
+  scrollbar-color: var(--border) transparent; scrollbar-gutter: stable;
+  padding: 20px clamp(12px, 1.68vw, 26px);
+}
+.dock-panel:focus-visible { outline-offset: -3px; }
+.dock-panel > section:not(.workspace-page):not(.activity-panel) { max-width: 1520px; margin: 0 auto; overflow-wrap: anywhere; }
+.dock-panel > section:not(.workspace-page):not(.activity-panel) > h2 { font-size: 26px; margin: 3px 0 10px; letter-spacing: -.028em; }
+.dock-empty { text-align: center; background: var(--surface-low); padding-top: clamp(24px, 7vh, 72px); }
+.dock-empty h1 { margin: 8px 0 2px; font-size: 20px; }
+.dock-empty p { margin: 0 0 12px; }
+
+.dock-switcher { grid-area: 1 / 1 / 2 / -1; display: flex; align-items: flex-start; gap: 4px; min-width: 0; overflow: auto hidden; scrollbar-width: thin; padding: 2px 2px 5px; }
+.dock-switcher button { flex: none; display: flex; align-items: center; gap: 5px; background: var(--surface-low); color: var(--muted); padding: 3px 7px; min-height: 28px; border-color: var(--line); font-size: 11.5px; }
+.dock-switcher button[aria-pressed="true"] { color: var(--accent-text); border-color: var(--accent); background: var(--surface-high); }
+.dock-switcher button:focus-visible { outline-offset: -2px; }
+.dock-splitter { display: grid; place-items: center; touch-action: none; }
+.dock-splitter i { display: block; background: var(--border); border-radius: 2px; }
+.dock-splitter[data-area="right"] { grid-area: 2 / 2 / 4 / 3; cursor: ew-resize; }
+.dock-splitter[data-area="bottom"] { grid-area: 4 / 1 / 5 / -1; cursor: ns-resize; }
+.dock-splitter[data-area="right"] i { width: 3px; height: 30px; }
+.dock-splitter[data-area="bottom"] i { height: 3px; width: 30px; }
+.dock-splitter:hover, .dock-splitter:focus-visible { background: var(--surface-high); outline-offset: -2px; }
+.dock-splitter:hover i, .dock-splitter:focus-visible i { background: var(--accent-text); }
+.dock-drop-target {
+  position: absolute; z-index: 3; display: grid; gap: 5px; place-content: center; justify-items: center;
+  padding: 8px; border: 2px dashed var(--accent); border-radius: 8px; background: var(--surface-high);
+  color: var(--accent-text); box-shadow: 0 6px 28px #0004; text-align: center; font-size: 12px;
+}
+.dock-drop-target[data-area="right"] { inset: 54px 10px clamp(78px, 20%, 110px) auto; width: clamp(86px, 17%, 165px); }
+.dock-drop-target[data-area="bottom"] { inset: auto 10px 10px; height: clamp(55px, 16%, 92px); }
+.dock-space[data-compact="true"] .dock-drop-target { inset: clamp(86px, 36%, 155px) auto auto; width: calc(100% / 3 - 9px); height: 66px; }
+.dock-space[data-compact="true"] .dock-drop-target[data-area="main"] { left: 6px; }
+.dock-space[data-compact="true"] .dock-drop-target[data-area="right"] { left: calc(100% / 3 + 4px); }
+.dock-space[data-compact="true"] .dock-drop-target[data-area="bottom"] { right: 6px; }
+.dock-drop-target[data-over="true"], .dock-bar[data-over="true"] { background: color-mix(in srgb, var(--surface-high) 85%, var(--accent)); border-color: var(--accent); }
+
+/* Activity is a read-only scrollback, separate from the invocation preview. */
+.dock-panel[data-panel="activity"] { padding: 0; scrollbar-gutter: auto; }
+.activity-panel { height: 100%; min-height: 100px; display: flex; flex-direction: column; }
+.activity-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 14px; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--line); }
+.activity-tools h1 { margin: 0; font-size: 14px; }
+.activity-tools small { color: var(--muted); font-size: 11px; }
+.activity-tools button { min-height: 27px; padding: 3px 7px; font-size: 11.5px; }
+.activity-panel .logbody { flex: 1 1 auto; padding: 8px 12px; font: 12px/1.55 var(--mono); }
+.logbody:focus-visible { outline-offset: -2px; }
+.activity-error { margin: 0; padding: 5px 12px; font-size: 12px; }
+.logwin { grid-template-rows: auto auto minmax(0, 1fr); }
+.logwin > .logbody { grid-row: 3; }
+
+@media (max-width: 460px) {
+  .workspace-main { padding-block: 8px; }
+  .dock-position { display: none; }
+  .dock-tab { max-width: 156px; padding-inline: 7px; }
+  .dock-tab > svg, .dock-switcher button > svg { display: none; }
+  .dock-panel { padding: 12px 10px; }
+}
+@media (forced-colors: active) {
+  .dock-bar, .dock-panel, .dock-control { border-color: ButtonText; }
+  .dock-tab[aria-selected="true"], .dock-switcher button[aria-pressed="true"], .dock-drop-target { outline: 1px solid Highlight; outline-offset: -2px; }
+  .dock-splitter i, .preset-diagram i { background: ButtonText; forced-color-adjust: none; }
+}

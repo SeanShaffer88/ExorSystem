@@ -32,7 +32,13 @@ Record the format used for each functional run. Repeat it for another format if 
 | Quarantine, conflicting destination, restore hash, purge confirmation, and storage totals | Not run | Not run |
 | Sharing violation, junction, cross-volume NTFS and long paths | Not run | Not run |
 | Interrupted-batch/restart and legacy data preservation | Not run | Not run |
-| Keyboard, Narrator, contrast, DPI and log docking | Not run | Not run |
+| Docking: drag and keyboard move/reorder, close/reopen, focus recovery, both splitters | Not run | Not run |
+| Compact dock switcher, restart persistence, layout presets/reset and theme preview/Undo | Not run | Not run |
+| Active Watch/Scan retained; context links update existing inspector and Script preview; modal shortcuts blocked | Not run | Not run |
+| Activity log: shortcut, shared messages/clear, attached log follow, minimize and reduced motion | Not run | Not run |
+| Keyboard, Narrator, high contrast and 100%/150% DPI (including second monitor) | Not run | Not run |
 
 - Failed/skipped cases, issue links, decisions and re-test evidence:
-- Release decision (do not infer pass):
+- Sign-off decision / operator / date (do not infer Pass):
+
+A passing package build, Windows Server test, or browser demo does not fill a client row. A partial smoke on a live PC is helpful but not a substitute for the disposable Windows 10 and 11 runs. Leave the release on hold if either client matrix has required cases that are failing, blocked, or not run.

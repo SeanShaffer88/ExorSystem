@@ -8,7 +8,8 @@ import type { HistoryRow, ProgramInventory, QuarantineRow, Session } from "../ty
 
 type Result = { inventory: ProgramInventory | null; sessions: Session[] | null; batches: QuarantineRow[] | null; recent: HistoryRow[] | null; errors: string[] };
 
-export function OverviewView({ onApplications, onWatch, onHistory, onCleanup }: {
+export function OverviewView({ visible, onApplications, onWatch, onHistory, onCleanup }: {
+  visible: boolean;
   onApplications: (programId?: string) => void;
   onWatch: () => void;
   onHistory: (row?: HistoryRow) => void;
@@ -18,6 +19,7 @@ export function OverviewView({ onApplications, onWatch, onHistory, onCleanup }: 
   const [revision, refresh] = useState(0);
   const [pending, setPending] = useState(true);
   useEffect(() => {
+    if (!visible) return;
     let live = true;
     setPending(true);
     void Promise.allSettled([api.listPrograms(false), api.listSessions(), api.listQuarantines(), api.history(null, 5, null, null)] as const)
@@ -31,7 +33,7 @@ export function OverviewView({ onApplications, onWatch, onHistory, onCleanup }: 
         setPending(false);
       });
     return () => { live = false; };
-  }, [revision]);
+  }, [revision, visible]);
 
   const programs = data?.inventory?.programs.filter((row) => !row.removed).map(({ program }) => program) ?? [];
   const newest = [...programs].sort((a, b) => (b.install_date ?? "").localeCompare(a.install_date ?? "") || a.name.localeCompare(b.name)).slice(0, 5);

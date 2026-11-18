@@ -13,7 +13,7 @@ const states: Record<string, { label: string; tone: Tone }> = {
 };
 type Confirmation = { kind: "move"; sessionId: number; policy: string } | { kind: "purge"; id: string };
 
-export function QuarantineView({ onSimulate }: { onSimulate: () => void }) {
+export function QuarantineView({ visible, onSimulate }: { visible: boolean; onSimulate: () => void }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [template, setTemplate] = useState(getPolicy());
@@ -28,17 +28,20 @@ export function QuarantineView({ onSimulate }: { onSimulate: () => void }) {
   const gate = useRef(false);
 
   useEffect(() => {
+    if (!visible) { setConfirm(null); return; }
+    setLoadError("");
     let live = true;
     api.listSessions().then((list) => { if (live) setSessions(list); }).catch((e: unknown) => { if (live) setLoadError(String(e)); });
     api.appInfo().then((info) => { if (live) setRecoveryWarnings(info.recovery_warnings ?? []); }).catch((e: unknown) => { if (live) setLoadError(String(e)); });
     return () => { live = false; };
-  }, []);
+  }, [visible]);
   useEffect(() => {
+    if (!visible) return;
     let live = true;
     api.listQuarantines().then((next) => { if (live) setRows(next); })
       .catch((e: unknown) => { if (live) setError(`Could not load batches: ${String(e)}`); });
     return () => { live = false; };
-  }, [revision]);
+  }, [revision, visible]);
 
   const act = async (fn: () => Promise<string>) => {
     if (gate.current) return;

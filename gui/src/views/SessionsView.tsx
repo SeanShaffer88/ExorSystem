@@ -10,7 +10,8 @@ interface Entry {
 }
 const PAGE_SIZE = 16;
 
-export function SessionsView({ initialProgramId, onTrace, onHistory, onSimulate, onCleanup, onTerminal }: {
+export function SessionsView({ visible, initialProgramId, onTrace, onHistory, onSimulate, onCleanup, onTerminal }: {
+  visible: boolean;
   initialProgramId: string | null; onTrace: (path: string) => void; onHistory: (id: number) => void;
   onSimulate: (id: number) => void; onCleanup: () => void; onTerminal: (id: string) => void;
 }) {
@@ -26,13 +27,14 @@ export function SessionsView({ initialProgramId, onTrace, onHistory, onSimulate,
   const [page, setPage] = useState<number | null>(null);
 
   useEffect(() => {
+    if (!visible) return;
     let live = true;
     setPending(true); setError("");
     Promise.all([api.listPrograms(showSystem), api.listSessions()]).then(([result, list]) => {
       if (live) { setInventory(result); setSessions(list); }
     }).catch((e: unknown) => { if (live) setError(String(e)); }).finally(() => { if (live) setPending(false); });
     return () => { live = false; };
-  }, [revision, showSystem]);
+  }, [revision, showSystem, visible]);
 
   const entries = useMemo<Entry[]>(() => {
     if (!inventory) return [];

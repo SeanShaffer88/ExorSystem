@@ -7,7 +7,7 @@ import type { InstalledProgram, UninstallPreview } from "../types";
 
 export const hasVendorCommand = (p: InstalledProgram) => p.source === "registry" && p.scope !== "user" && !!p.uninstall_command;
 
-export function TerminalView({ initialProgramId, onInventory }: { initialProgramId: string | null; onInventory: () => void }) {
+export function TerminalView({ visible, initialProgramId, onInventory }: { visible: boolean; initialProgramId: string | null; onInventory: () => void }) {
   const [programs, setPrograms] = useState<InstalledProgram[] | null>(null);
   const [id, setId] = useState(initialProgramId ?? "");
   const [request, setRequest] = useState<{ id: string } | null>(initialProgramId ? { id: initialProgramId } : null);
@@ -17,12 +17,14 @@ export function TerminalView({ initialProgramId, onInventory }: { initialProgram
   const loading = !!request && !current;
 
   useEffect(() => {
+    if (!visible) return;
+    setInventoryError("");
     let live = true;
     api.listPrograms(false).then((data) => {
       if (live) setPrograms(data.programs.filter((r) => !r.removed && hasVendorCommand(r.program)).map((r) => r.program));
     }).catch((e: unknown) => { if (live) setInventoryError(String(e)); });
     return () => { live = false; };
-  }, []);
+  }, [visible]);
 
   useEffect(() => {
     if (!request) return;

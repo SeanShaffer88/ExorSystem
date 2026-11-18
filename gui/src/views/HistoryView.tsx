@@ -6,7 +6,7 @@ import { Badge, CardHeading, Empty, Intro, evidenceText, leafName, timeText } fr
 import type { ChangeDomain, HistoryPage, HistoryRow, Session } from "../types";
 
 type Result = { key: string; page?: HistoryPage; error?: string };
-function useHistoryPage(path: string | null, sessionId: number | null, domain: ChangeDomain | null, limit: number) {
+function useHistoryPage(visible: boolean, path: string | null, sessionId: number | null, domain: ChangeDomain | null, limit: number) {
   const [cursors, setCursors] = useState<(number | null)[]>([null]);
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<Result | null>(null);
@@ -14,13 +14,14 @@ function useHistoryPage(path: string | null, sessionId: number | null, domain: C
   const key = JSON.stringify([sessionId, path, domain, beforeId, attempt]);
   const current = result?.key === key ? result : null;
   useEffect(() => {
+    if (!visible) return;
     let live = true;
     const wait = window.setTimeout(() => {
       api.history(path, limit, sessionId, beforeId, domain).then((page) => { if (live) setResult({ key, page }); })
         .catch((e: unknown) => { if (live) setResult({ key, error: String(e) }); });
     }, path ? 180 : 0);
     return () => { live = false; window.clearTimeout(wait); };
-  }, [key, limit, path, sessionId, beforeId, domain]);
+  }, [key, limit, path, sessionId, beforeId, domain, visible]);
   const older = current?.page?.next_before_id ?? null;
   return {
     page: current?.page, number: cursors.length, error: current?.error, loading: !current,
@@ -31,7 +32,8 @@ function useHistoryPage(path: string | null, sessionId: number | null, domain: C
 }
 type Page = ReturnType<typeof useHistoryPage>;
 
-export function HistoryView({ initialSessionId, initialRow, onTrace, onWatch }: {
+export function HistoryView({ visible, initialSessionId, initialRow, onTrace, onWatch }: {
+  visible: boolean;
   initialSessionId: number | null; initialRow?: HistoryRow; onTrace: (path: string) => void; onWatch: () => void;
 }) {
   const [filter, setFilter] = useState("");
@@ -44,10 +46,12 @@ export function HistoryView({ initialSessionId, initialRow, onTrace, onWatch }: 
   const path = filter.trim() || null;
   const key = JSON.stringify([path, sessionId, refresh]);
   useEffect(() => {
+    if (!visible) return;
+    setSessionError("");
     let live = true;
     api.listSessions().then((list) => { if (live) setSessions(list); }).catch((e: unknown) => { if (live) setSessionError(String(e)); });
     return () => { live = false; };
-  }, [refresh]);
+  }, [refresh, visible]);
 
   return <section className="workspace-page" aria-labelledby="history-title">
     <Intro id="history-title" kicker="SYSTEM EVIDENCE" title="Change inspector" description="Compare registry and file system observations side by side. Snapshots show what changed, not which process did it."
@@ -65,15 +69,15 @@ export function HistoryView({ initialSessionId, initialRow, onTrace, onWatch }: 
       </div>
     </div>
     {sessionError && <p role="alert" className="error">Could not load installation names: {sessionError}</p>}
-    {timeline ? <Timeline key={key} sessionId={sessionId} path={path} initialRow={openingRow} onTrace={onTrace}/> : <SplitInspector key={key} sessionId={sessionId} path={path} initialRow={openingRow} onTrace={onTrace}/>}
+    {timeline ? <Timeline visible={visible} key={key} sessionId={sessionId} path={path} initialRow={openingRow} onTrace={onTrace}/> : <SplitInspector visible={visible} key={key} sessionId={sessionId} path={path} initialRow={openingRow} onTrace={onTrace}/>}
   </section>;
 }
 
-type EvidenceProps = { sessionId: number | null; path: string | null; initialRow?: HistoryRow; onTrace: (path: string) => void };
+type EvidenceProps = { visible: boolean; sessionId: number | null; path: string | null; initialRow?: HistoryRow; onTrace: (path: string) => void };
 
-function SplitInspector({ sessionId, path, initialRow, onTrace }: EvidenceProps) {
-  const registry = useHistoryPage(path, sessionId, "registry", 6);
-  const files = useHistoryPage(path, sessionId, "file", 6);
+function SplitInspector({ visible, sessionId, path, initialRow, onTrace }: EvidenceProps) {
+  const registry = useHistoryPage(visible, path, sessionId, "registry", 6);
+  const files = useHistoryPage(visible, path, sessionId, "file", 6);
   const [selected, setSelected] = useState<HistoryRow | null>(initialRow ?? null);
   const row = selected ?? files.page?.rows[0] ?? registry.page?.rows[0] ?? null;
   return <>
@@ -111,8 +115,8 @@ function Pager({ data, onPage }: { data: Page; onPage: () => void }) {
   </div>;
 }
 
-function Timeline({ sessionId, path, initialRow, onTrace }: EvidenceProps) {
-  const data = useHistoryPage(path, sessionId, null, 100);
+function Timeline({ visible, sessionId, path, initialRow, onTrace }: EvidenceProps) {
+  const data = useHistoryPage(visible, path, sessionId, null, 100);
   const [selected, setSelected] = useState<HistoryRow | null>(initialRow ?? null);
   return <>
     <section className="card card-overflow" aria-label="History timeline">
