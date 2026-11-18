@@ -159,9 +159,9 @@ pub struct SessionEvidence {
 #[derive(Debug, Serialize)]
 pub struct SessionEvidencePage {
     /// Number of recorded nodes in the session before path filtering.
-    pub total: usize,
+    pub total: i64,
     /// Number of matching nodes.
-    pub matching: usize,
+    pub matching: i64,
     /// Page of matching nodes, with confidence and shared markers.
     pub items: Vec<SessionEvidence>,
 }

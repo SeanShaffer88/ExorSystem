@@ -303,9 +303,9 @@ pub struct LedgerQuery<'a> {
 #[derive(Debug)]
 pub struct SessionNodePage {
     /// Number of nodes first detected in the session, before filtering.
-    pub total: usize,
+    pub total: i64,
     /// Number of nodes matching the literal path filter.
-    pub matching: usize,
+    pub matching: i64,
     /// Nodes on the requested page.
     pub nodes: Vec<Node>,
 }

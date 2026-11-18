@@ -455,8 +455,8 @@ impl Store {
                 params![
                     session_id,
                     filter,
-                    limit.clamp(1, 100),
-                    offset.min(matching)
+                    i64::try_from(limit.clamp(1, 100)).unwrap_or(100),
+                    i64::try_from(offset).unwrap_or(i64::MAX).min(matching),
                 ],
                 node_row,
             )?

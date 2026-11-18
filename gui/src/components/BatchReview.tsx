@@ -32,7 +32,7 @@ export function BatchReview({ row, state, reviewRestore, onClose, onReviewRestor
     <div className="batch-review-heading">
       <div><div className="eyebrow">{reviewRestore ? "RESTORE REVIEW" : "RECORDED MANIFEST"}</div>
         <h2 id="batch-review-title" tabIndex={-1} ref={heading}>{reviewRestore ? "Review restore" : "Batch preview"}</h2></div>
-      <button className="quiet-button" type="button" onClick={onClose}>{reviewRestore ? "Cancel restore" : "Close batch preview"}</button>
+      <button className="quiet-button" type="button" onClick={onClose}>{reviewRestore ? "Close review" : "Close batch preview"}</button>
     </div>
     <p className="batch-review-meta"><code>{row.quarantine_id}</code> <Badge tone={state.tone}>{state.label}</Badge>
       {created && Number.isFinite(created.valueOf()) && <span className="muted">Created <time dateTime={created.toISOString()}>{created.toLocaleString()}</time></span>}</p>
@@ -50,7 +50,7 @@ export function BatchReview({ row, state, reviewRestore, onClose, onReviewRestor
     {reviewRestore ? <div role="group" aria-label="Confirm restore" className="notice review-notice confirm-box">
       <div><strong>{held ? `Restore all ${batch.total_files} files to their original paths?` : batch ? "Only files in a held batch can be restored." : "Read the batch record before confirming."}</strong>
         <p>ExorSystem checks the batch and destinations again on restore. It never overwrites existing files or applies registry changes.</p></div>
-      <div className="button-row"><button className="primary" type="button" disabled={!held} onClick={onRestore}>Confirm: restore files</button></div>
+      <div className="button-row"><button className="quiet-button" type="button" onClick={onClose}>Cancel restore</button><button className="primary" type="button" disabled={!held} onClick={onRestore}>Confirm: restore files</button></div>
     </div> : held && <button className="quiet-button" type="button" onClick={onReviewRestore}>Review restore…</button>}
   </section>;
 }
