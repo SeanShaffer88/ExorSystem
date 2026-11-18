@@ -23,7 +23,7 @@ This describes the unreleased changes based on `97d2f45b33a082a1b5bc0fbc1267a1fd
 
 - **Passed:** production GUI build, 36 WCAG AA theme contrast checks, and the four Chromium suites using the built bundle and mocked IPC. The suites exercise approval, cancellation, backup, rotation, dated export continuation and close feedback, alongside the existing desktop and docking regressions.
 - **Passed in a source-tag Linux harness:** 125 Rust tests, including simulated interruption and DB failure, stale file identity, changed held bytes, backup tampering, and UTC cursor boundaries. Clippy passed with the `chunks_exact_to_as_chunks` lint allowed on the harness's Rust 1.99.0. Both workspace format checks and `git diff --check` passed.
-- **Not run:** a successful build or license check with the pinned locked dependency set. The sandbox could not fetch the required registry crates. Windows-only tests, native Tauri/Win32 compilation, and interactive package checks remain pending.
+- **Blocked locally:** the sandbox could not fetch the dependencies for the pinned locked build and license check. See [PR #31 checks](https://github.com/SeanShaffer88/ExorSystem/pull/31/checks) for pinned Linux and Windows CI and candidate package evidence. Automated results don't substitute for interactive Windows 10/11 package checks or real power-loss testing.
 
 ## Evidence to record
 
