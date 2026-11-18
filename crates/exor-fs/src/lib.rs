@@ -45,10 +45,8 @@ pub fn is_local_drive(path: &Path) -> bool {
     };
     let root = [u16::from(drive), 58, 92, 0];
     // SAFETY: a terminated three-character drive root lives for the synchronous query.
-    matches!(
-        unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) },
-        2 | 3 | 5 | 6
-    ) // removable, fixed, CD-ROM, RAM disk
+    let drive_type = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
+    matches!(drive_type, 2 | 3 | 5 | 6) // removable, fixed, CD-ROM, RAM disk
 }
 
 fn id_info(file: &File) -> io::Result<FILE_ID_INFO> {

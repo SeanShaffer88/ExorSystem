@@ -253,8 +253,8 @@ pub fn uninstall_arguments(command: &str) -> Result<(PathBuf, Vec<String>), Stri
     if argv.is_null() {
         return Err(invalid.into());
     }
-    // SAFETY: the successful call returned `argc` live pointers to terminated UTF-16 strings.
     let values = if argc > 0 && argc <= 512 {
+        // SAFETY: success returned `argc` live pointers to terminated UTF-16 strings.
         unsafe {
             std::slice::from_raw_parts(argv, argc as usize)
                 .iter()

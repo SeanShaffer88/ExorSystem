@@ -58,9 +58,9 @@ fn werr(call: &'static str, e: windows::core::Error) -> WinError {
 fn run(tx: &mpsc::Sender<RawEvent>, stop: &Cancel) -> Result<LiveEnd, WinError> {
     let port = connect()?;
     // SAFETY: no foreign pointer is supplied; a manual-reset event is owned by this worker.
-    let event = Port(
-        unsafe { CreateEventW(None, true, false, None) }.map_err(|e| werr("CreateEventW", e))?,
-    );
+    let event = unsafe { CreateEventW(None, true, false, None) }
+        .map(Port)
+        .map_err(|e| werr("CreateEventW", e))?;
     let header = std::mem::size_of::<FILTER_MESSAGE_HEADER>();
     let mut storage = vec![0u64; 16 * 1024];
     let capacity = storage.len() * 8;
