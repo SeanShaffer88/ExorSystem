@@ -432,6 +432,12 @@ mod tests {
         assert!(too_broad(Path::new("/")));
         assert!(too_broad(Path::new("/tmp")));
         assert!(too_broad(Path::new(r"C:\Windows\System32")));
+        #[cfg(windows)]
+        {
+            assert!(too_broad(Path::new("/tmp/a/b")), "no drive letter");
+            assert!(!too_broad(Path::new(r"C:\Program Files\Example")));
+        }
+        #[cfg(not(windows))]
         assert!(!too_broad(Path::new("/tmp/a/b")));
     }
 
