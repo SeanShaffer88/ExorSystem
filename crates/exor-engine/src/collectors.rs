@@ -51,14 +51,14 @@ pub struct TaskChange {
     pub change: ChangeType,
 }
 
-fn diff_by_key<T: Clone + PartialEq>(
+pub(crate) fn diff_by_key<T: Clone>(
     old: &[T],
     new: &[T],
     key: impl Fn(&T) -> String,
     same: impl Fn(&T, &T) -> bool,
 ) -> Vec<(T, ChangeType)> {
-    let o: BTreeMap<String, &T> = old.iter().map(|x| (key(x).to_lowercase(), x)).collect();
-    let n: BTreeMap<String, &T> = new.iter().map(|x| (key(x).to_lowercase(), x)).collect();
+    let o: BTreeMap<String, &T> = old.iter().map(|x| (key(x), x)).collect();
+    let n: BTreeMap<String, &T> = new.iter().map(|x| (key(x), x)).collect();
     let mut out = Vec::new();
     for (k, v) in &n {
         match o.get(k) {
@@ -80,7 +80,7 @@ pub fn diff_services(old: &[ServiceInfo], new: &[ServiceInfo]) -> Vec<ServiceCha
     diff_by_key(
         old,
         new,
-        |s| s.name.clone(),
+        |s| s.name.to_lowercase(),
         |a, b| {
             a.name.eq_ignore_ascii_case(&b.name)
                 && a.display_name == b.display_name
@@ -98,7 +98,7 @@ pub fn diff_tasks(old: &[TaskInfo], new: &[TaskInfo]) -> Vec<TaskChange> {
     diff_by_key(
         old,
         new,
-        |t| t.path.clone(),
+        |t| t.path.to_lowercase(),
         |a, b| {
             a.path.eq_ignore_ascii_case(&b.path) && a.command == b.command && a.author == b.author
         },

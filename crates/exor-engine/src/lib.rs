@@ -16,6 +16,7 @@ pub mod policy;
 pub mod portable;
 pub mod programs;
 pub mod quarantine;
+pub mod registry;
 pub mod report;
 pub mod risk;
 pub mod snapshot;

@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfo, TemplateInfo, HistoryRow, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
+import type { AppInfo, TemplateInfo, HistoryRow, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchStart, WatchSummary } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -30,8 +30,8 @@ export const api = {
   listTemplates: () => invoke<TemplateInfo[]>("list_templates"),
   appInfo: () => invoke<AppInfo>("app_info"),
   sessionItems: (sessionId: number) => invoke<SessionItems>("session_items", { sessionId }),
-  beginWatch: (appName: string, installerPath: string | null, folders: string[]) =>
-    invoke<number>("begin_watch", { appName, installerPath, folders }),
+  beginWatch: (appName: string, installerPath: string | null, folders: string[], registrySubtrees: string) =>
+    invoke<WatchStart>("begin_watch", { appName, installerPath, folders, registrySubtrees }),
   finishWatch: () => invoke<WatchSummary>("finish_watch"),
   cancelWatch: () => invoke<void>("cancel_watch"),
   cancelScan: () => invoke<void>("cancel_scan"),

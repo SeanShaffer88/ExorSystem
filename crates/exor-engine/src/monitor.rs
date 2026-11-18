@@ -5,6 +5,7 @@ use crate::collectors::{ServiceChange, TaskChange};
 use crate::error::{EngineError, Result};
 use crate::events::{FsReason, RawEvent, RegOp};
 use crate::noise::{NoiseFilter, Verdict};
+use crate::registry::RegistryChange;
 use crate::trie::{Change, ChangeType};
 use crate::walker::EntryKind;
 use exor_storage::{
@@ -220,6 +221,42 @@ impl SessionMonitor {
             n += 1;
         }
         Ok(n)
+    }
+
+    /// Attribute metadata-only registry changes as snapshot evidence, not driver observations.
+    /// Removed keys contribute history but do not create new cleanup candidates.
+    pub fn attribute_registry_keys(&self, changes: &[RegistryChange]) -> Result<usize> {
+        let s = lock(&self.store)?;
+        for c in changes {
+            let (kind, relation) = match c.change {
+                ChangeType::Added => (ChangeKind::Created, Some(RelationshipType::CreatedBy)),
+                ChangeType::Modified => (ChangeKind::Modified, Some(RelationshipType::ModifiedBy)),
+                ChangeType::Removed => (ChangeKind::Deleted, None),
+            };
+            let node_id = if let Some(relation) = relation {
+                let id = s.upsert_node(&NewNode {
+                    node_type: NodeType::RegistryKey,
+                    path: c.path.clone(),
+                    hash: None,
+                    acl_fingerprint: None,
+                    first_detected_in: Some(self.session_id),
+                })?;
+                self.link(&s, id, relation, Evidence::Heuristic)?;
+                Some(id)
+            } else {
+                s.node_by_path(&c.path)?.map(|node| node.node_id)
+            };
+            s.append_ledger(&NewLedgerEntry {
+                session_id: Some(self.session_id),
+                node_id,
+                path: c.path.clone(),
+                change_kind: kind,
+                old_hash: None,
+                new_hash: None,
+                source: ChangeSource::SnapshotDiff,
+            })?;
+        }
+        Ok(changes.len())
     }
 
     /// Attribute service changes. Added/modified services become `service` nodes (heuristic 0.3);

@@ -3,7 +3,7 @@
 use crate::error::{EngineError, Result};
 use crate::policy::{self, SimulationReport};
 use crate::templates;
-use exor_storage::{PolicyAction, Provenance, Store};
+use exor_storage::{ChangeSource, NodeType, PolicyAction, Provenance, Store};
 
 /// Words for a confidence score.
 pub fn confidence_words(c: f64) -> &'static str {
@@ -93,6 +93,18 @@ pub fn session_report(store: &Store, session_id: i64, template: &str) -> Result<
 
 /// Plain-language provenance sentence for one artifact.
 pub fn describe_provenance(p: &Provenance) -> String {
+    if let Some(s) = &p.session
+        && p.node.node_type == NodeType::RegistryKey
+        && p.ledger.iter().any(|row| {
+            row.entry.source == ChangeSource::SnapshotDiff
+                && row.entry.session_id == Some(s.session_id)
+        })
+    {
+        return format!(
+            "{} was observed during the watch for {} (session {}). A snapshot cannot tell which process changed the key.",
+            p.node.path, s.app_name, s.session_id
+        );
+    }
     let who = match &p.session {
         Some(s) => format!(
             "installed by {} (session {}{})",

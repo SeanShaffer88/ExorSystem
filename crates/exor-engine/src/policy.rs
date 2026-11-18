@@ -35,6 +35,8 @@ impl Candidate {
 pub struct Decision {
     /// Path / key.
     pub path: String,
+    /// Kind; only file decisions can be executed.
+    pub node_type: NodeType,
     /// Final action.
     pub action: PolicyAction,
     /// Deciding rule id and name, if any rule matched.
@@ -67,7 +69,8 @@ fn protectiveness(a: PolicyAction) -> u8 {
 /// Evaluate every rule against every candidate. No side effects.
 ///
 /// When several rules match, the most protective wins (keep, then flag_for_review, then
-/// quarantine); ties go to the lowest rule id. No match means `flag_for_review`.
+/// quarantine); ties go to the lowest rule id. No match means `flag_for_review`. Only files
+/// can be quarantined, regardless of the rules.
 pub fn simulate(rules: &[PolicyRule], candidates: &[Candidate]) -> Result<SimulationReport> {
     let mut decisions = Vec::with_capacity(candidates.len());
     for c in candidates {
@@ -86,19 +89,25 @@ pub fn simulate(rules: &[PolicyRule], candidates: &[Candidate]) -> Result<Simula
                 };
             }
         }
-        decisions.push(match best {
-            Some(r) => Decision {
-                path: c.path.clone(),
-                action: r.action,
-                rule: Some((r.rule_id, r.rule_name.clone())),
-                reason: format!("matched rule '{}'", r.rule_name),
-            },
-            None => Decision {
-                path: c.path.clone(),
-                action: PolicyAction::FlagForReview,
-                rule: None,
-                reason: "no rule matched".into(),
-            },
+        let (action, rule, reason) = match best {
+            Some(r) if r.action == PolicyAction::Quarantine && c.node_type != NodeType::File => (
+                PolicyAction::FlagForReview,
+                None,
+                "system items are review-only".into(),
+            ),
+            Some(r) => (
+                r.action,
+                Some((r.rule_id, r.rule_name.clone())),
+                format!("matched rule '{}'", r.rule_name),
+            ),
+            None => (PolicyAction::FlagForReview, None, "no rule matched".into()),
+        };
+        decisions.push(Decision {
+            path: c.path.clone(),
+            node_type: c.node_type,
+            action,
+            rule,
+            reason,
         });
     }
     let count = |a| decisions.iter().filter(|d| d.action == a).count();

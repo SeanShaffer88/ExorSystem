@@ -4,8 +4,8 @@ use crate::error::{EngineError, Result};
 use crate::policy::SimulationReport;
 use crate::quarantine::{self, QuarantineItem, QuarantineManifest};
 use exor_storage::{
-    ChangeKind, ChangeSource, NewLedgerEntry, PolicyAction, QuarantineRecord, QuarantineStatus,
-    Store,
+    ChangeKind, ChangeSource, NewLedgerEntry, NodeType, PolicyAction, QuarantineRecord,
+    QuarantineStatus, Store,
 };
 use std::path::{Path, PathBuf};
 
@@ -35,11 +35,11 @@ pub fn quarantine_decided(
         .iter()
         .filter(|d| d.action == PolicyAction::Quarantine)
     {
-        let p = PathBuf::from(&d.path);
-        if p.is_file() {
-            files.push(p)
+        // A registry key is not a filesystem path, even if a file has the same spelling.
+        if d.node_type == NodeType::File && Path::new(&d.path).is_file() {
+            files.push(PathBuf::from(&d.path));
         } else {
-            skipped.push(d.path.clone())
+            skipped.push(d.path.clone());
         }
     }
     if files.is_empty() {

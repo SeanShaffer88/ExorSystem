@@ -428,18 +428,21 @@ fn execute_quarantine_restore_purge_with_ledger() {
         decisions: vec![
             exor_engine::policy::Decision {
                 path: f1.to_string_lossy().into(),
+                node_type: NodeType::File,
                 action: PolicyAction::Quarantine,
                 rule: None,
                 reason: "t".into(),
             },
             exor_engine::policy::Decision {
                 path: f2.to_string_lossy().into(),
+                node_type: NodeType::File,
                 action: PolicyAction::Keep,
                 rule: None,
                 reason: "t".into(),
             },
             exor_engine::policy::Decision {
-                path: "service:X".into(),
+                path: f2.to_string_lossy().into(),
+                node_type: NodeType::RegistryKey,
                 action: PolicyAction::Quarantine,
                 rule: None,
                 reason: "t".into(),
@@ -452,7 +455,7 @@ fn execute_quarantine_restore_purge_with_ledger() {
     let q = d.path().join("q");
     let out = quarantine_decided(&store, &q, sess, &report).unwrap();
     assert!(!f1.exists() && f2.exists());
-    assert_eq!(out.skipped, vec!["service:X".to_string()]);
+    assert_eq!(out.skipped, vec![f2.to_string_lossy().into_owned()]);
     let id = out.manifest.quarantine_id.clone();
     restore_by_id(&store, &id, false).unwrap();
     assert_eq!(std::fs::read(&f1).unwrap(), b"one");
@@ -487,8 +490,9 @@ fn execute_quarantine_restore_purge_with_ledger() {
 }
 
 #[tokio::test]
-async fn install_watch_records_files_services_tasks_in_one_session() {
+async fn install_watch_records_files_and_services_with_registry_opted_out() {
     use exor_engine::collectors::{ServiceInfo, TaskInfo};
+    use exor_engine::registry::{RegistryKeyState, RegistryScope, RegistryScopes};
     use exor_engine::watch::{InstallWatch, SystemProbe};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -510,6 +514,9 @@ async fn install_watch_records_files_services_tasks_in_one_session() {
         fn tasks(&self) -> Result<Vec<TaskInfo>, String> {
             Err("denied".into())
         }
+        fn registry_keys(&self, _: &RegistryScope) -> Result<Vec<RegistryKeyState>, String> {
+            Err("must not be called without any scopes".into())
+        }
     }
 
     let dir = tempfile::tempdir().unwrap();
@@ -521,6 +528,7 @@ async fn install_watch_records_files_services_tasks_in_one_session() {
         "Foo",
         None,
         &[dir.path().to_path_buf()],
+        &RegistryScopes::default(),
         Arc::new(Mock(AtomicUsize::new(0))),
         &cancel,
     )
@@ -530,6 +538,10 @@ async fn install_watch_records_files_services_tasks_in_one_session() {
     write(&dir.path().join("foo.dll"), b"new");
     let s = w.finish(&cancel).await.unwrap();
     assert_eq!(s.session_id, sid);
+    assert_eq!(
+        (s.registry_keys_changed, s.registry_scopes_compared),
+        (0, 0)
+    );
     assert_eq!(
         (s.files_changed, s.services_changed, s.tasks_changed),
         (1, 1, 0)
@@ -556,6 +568,7 @@ async fn install_watch_records_files_services_tasks_in_one_session() {
 
 #[tokio::test]
 async fn install_watch_abandon_and_failed_baseline_close_the_session() {
+    use exor_engine::registry::RegistryScopes;
     use exor_engine::watch::{InstallWatch, NullProbe};
     let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
     let cancel = exor_engine::Cancel::new();
@@ -567,6 +580,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
         "Later",
         None,
         std::slice::from_ref(&later),
+        &RegistryScopes::default(),
         Arc::new(NullProbe),
         &cancel,
     )
@@ -583,6 +597,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
             "Bad",
             None,
             &[dir.path().to_path_buf()],
+            &RegistryScopes::default(),
             Arc::new(NullProbe),
             &stop
         )
@@ -594,6 +609,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
         "Ok",
         None,
         &[],
+        &RegistryScopes::default(),
         Arc::new(NullProbe),
         &cancel,
     )
