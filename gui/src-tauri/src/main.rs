@@ -630,31 +630,51 @@ struct HistoryRow {
     when: Option<String>,
     path: String,
     what: String,
+    source: String,
     session_id: Option<i64>,
 }
 
-/// Newest recorded changes, optionally limited to paths containing `filter`.
+#[derive(Serialize)]
+struct HistoryPage {
+    rows: Vec<HistoryRow>,
+    next_before_id: Option<i64>,
+}
+
+/// Read one page of evidence by installation and path, including changes without a known node.
 #[tauri::command]
-fn history(
+async fn history(
     state: State<'_, AppState>,
     filter: Option<String>,
     limit: usize,
-) -> Result<Vec<HistoryRow>, String> {
-    let store = lock(&state)?;
-    let f = filter.as_deref().map(str::trim).filter(|f| !f.is_empty());
-    let rows = store
-        .ledger_recent(limit.clamp(1, 1000), f)
-        .map_err(|e| e.to_string())?;
-    Ok(rows
-        .into_iter()
-        .map(|e| HistoryRow {
-            id: e.entry_id,
-            when: e.observed_at,
-            path: e.entry.path,
-            what: e.entry.change_kind.as_str().to_string(),
-            session_id: e.entry.session_id,
-        })
-        .collect())
+    session_id: Option<i64>,
+    before_id: Option<i64>,
+) -> Result<HistoryPage, String> {
+    let store = Arc::clone(&state.store);
+    let page = tauri::async_runtime::spawn_blocking(move || {
+        let filter = filter.as_deref().map(str::trim).filter(|f| !f.is_empty());
+        store
+            .lock()
+            .map_err(|_| "internal lock poisoned".to_string())?
+            .ledger_page(limit, filter, session_id, before_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(HistoryPage {
+        rows: page
+            .entries
+            .into_iter()
+            .map(|e| HistoryRow {
+                id: e.entry_id,
+                when: e.observed_at,
+                path: e.entry.path,
+                what: e.entry.change_kind.as_str().to_string(),
+                source: e.entry.source.as_str().to_string(),
+                session_id: e.entry.session_id,
+            })
+            .collect(),
+        next_before_id: page.next_before_id,
+    })
 }
 
 #[derive(Serialize)]

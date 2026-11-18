@@ -164,7 +164,13 @@ export interface HistoryRow {
   when: string | null;
   path: string;
   what: string;
+  source: string;
   session_id: number | null;
+}
+
+export interface HistoryPage {
+  rows: HistoryRow[];
+  next_before_id: number | null;
 }
 
 export interface PortableView {

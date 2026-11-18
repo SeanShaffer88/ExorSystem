@@ -29,6 +29,15 @@ try {
     let removed = false;
     let watch = null;
     let nextWatchId = 40;
+    let watchRecorded = false;
+    let historyFailed = false;
+    const historyRows = [
+      { id: 44, session_id: null, path: String.raw`C:\Unassigned.dat`, what: 'quarantined', source: 'policy' },
+      { id: 43, session_id: 9, path: String.raw`C:\Other session.dat`, what: 'created', source: 'manifest' },
+      { id: 42, session_id: 40, path: String.raw`HKCU\Software\Watch Fixture\Gone`, what: 'deleted', source: 'snapshot_diff' },
+      { id: 41, session_id: 40, path: String.raw`HKCU\Software\Watch Fixture\Changed`, what: 'modified', source: 'snapshot_diff' },
+      { id: 40, session_id: 40, path: String.raw`C:\Watch Fixture\Older.txt`, what: 'created', source: 'snapshot_diff' },
+    ].map(row => ({ ...row, when: '2026-11-18 05:00:00' }));
     const calls = [];
     window.exorCalls = calls;
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
@@ -41,7 +50,25 @@ try {
           case 'plugin:event|unlisten': return null;
           case 'get_log': return [];
           case 'log_is_open': return false;
-          case 'list_sessions': return [];
+          case 'list_sessions': return watchRecorded ? [
+            { session_id: 40, app_name: 'Watch Fixture', status: 'completed' },
+            { session_id: 9, app_name: 'Another Fixture', status: 'completed' },
+          ] : [];
+          case 'history': {
+            if (args.limit !== 100) throw new Error('unexpected history page size');
+            if (args.filter === 'Retry fixture' && !historyFailed) {
+              historyFailed = true;
+              throw new Error('history temporarily unavailable');
+            }
+            const matches = historyRows.filter(row =>
+              (args.sessionId === null || row.session_id === args.sessionId) &&
+              (args.beforeId === null || row.id < args.beforeId) &&
+              (!args.filter || row.path.toLowerCase().includes(args.filter.toLowerCase()))
+            );
+            // Two rows per fixture page are enough to exercise both paging controls.
+            const rows = matches.slice(0, 2);
+            return { rows, next_before_id: matches.length > 2 ? rows[1].id : null };
+          }
           case 'begin_watch':
             if (watch) throw new Error('already watching');
             watch = {
@@ -55,6 +82,7 @@ try {
             watch = null;
             if (current.session_id !== 40) throw new Error('file snapshot failed');
             await new Promise(resolve => { window.finishWatchSnapshot = resolve; });
+            watchRecorded = true;
             return {
               ...current, files_changed: 1, services_changed: 0, tasks_changed: 0,
               registry_keys_changed: 2, registry_scopes_compared: 1,
@@ -173,6 +201,45 @@ try {
   await page.getByText('A registry subtree was not checked before the install.').waitFor();
   assert.equal(await registry.inputValue(), subtrees);
 
+  // Open the recorded evidence for the completed watch, not the newest global changes.
+  await page.getByRole('button', {name: 'View recorded changes (session #40)', exact: true}).click();
+  await page.getByRole('heading', {name: 'History', exact: true}).waitFor();
+  const historyTab = page.getByRole('tab', {name: 'History', exact: true});
+  assert(await historyTab.evaluate(tab => document.activeElement === tab));
+  const historySession = page.getByLabel('Installation', {exact: true});
+  await historySession.getByRole('option', {name: 'Watch Fixture (#40)', exact: true}).waitFor({state: 'attached'});
+  assert.equal(await historySession.inputValue(), '40');
+  const removedKey = page.getByRole('row').filter({hasText: String.raw`HKCU\Software\Watch Fixture\Gone`});
+  await removedKey.getByRole('cell', {name: 'Removed', exact: true}).waitFor();
+  await removedKey.getByRole('cell', {name: 'Before/after snapshots', exact: true}).waitFor();
+  assert.equal(await page.getByText('Other session.dat', {exact: false}).count(), 0);
+  const olderChanges = page.getByRole('button', {name: 'Older changes'});
+  const newerChanges = page.getByRole('button', {name: 'Newer changes'});
+  const olderItem = page.getByRole('cell', {name: String.raw`C:\Watch Fixture\Older.txt`, exact: true});
+  await olderChanges.click();
+  await olderItem.waitFor();
+  assert(await olderChanges.isDisabled());
+  await newerChanges.click();
+  await removedKey.waitFor();
+  assert(await newerChanges.isDisabled());
+  await olderChanges.click();
+  await olderItem.waitFor();
+  const pathFilter = page.getByLabel('Filter by path');
+  await pathFilter.fill('gone');
+  await removedKey.waitFor();
+  assert(await newerChanges.isDisabled());
+  assert(await olderChanges.isDisabled());
+  await pathFilter.fill('Retry fixture');
+  await page.getByRole('alert').filter({hasText: 'history temporarily unavailable'}).waitFor();
+  await page.getByRole('button', {name: 'Retry', exact: true}).click();
+  await page.getByText('No recorded changes match these filters.').waitFor();
+  assert.equal(await page.getByRole('alert').count(), 0);
+  await pathFilter.fill('');
+  await historySession.selectOption('');
+  await page.getByRole('cell', {name: 'Unassigned', exact: true}).waitFor();
+  await page.getByRole('cell', {name: String.raw`C:\Other session.dat`, exact: true}).waitFor();
+  await watchTab.click();
+
   // A failed Finish consumes the watch. Offer a fresh baseline, not a dead Finish button.
   await registry.fill('');
   await begin.click();
@@ -194,7 +261,11 @@ try {
   assert.deepEqual(calls.filter(([c]) => c === 'begin_watch').map(([, args]) => args.registrySubtrees), [subtrees, '', '']);
   assert.equal(calls.filter(([c]) => c === 'finish_watch').length, 2);
   assert.equal(calls.filter(([c]) => c === 'cancel_watch').length, 1);
-  console.log('Browser smoke passed: inventory, uninstall/review, quarantine, portable inventory, provenance, and registry watch across tabs');
+  const historyCalls = calls.filter(([c]) => c === 'history').map(([, args]) => args);
+  assert.deepEqual(historyCalls[0], { filter: null, limit: 100, sessionId: 40, beforeId: null });
+  assert(historyCalls.some(args => args.sessionId === 40 && args.beforeId === 41));
+  assert(historyCalls.some(args => args.sessionId === 40 && args.filter === 'gone' && args.beforeId === null));
+  console.log('Browser smoke passed: inventory, uninstall/review, quarantine, portable inventory, provenance, registry watch, and session history');
 } finally {
   await browser.close();
 }

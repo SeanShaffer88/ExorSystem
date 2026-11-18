@@ -88,3 +88,9 @@ main:has(.panes) { padding: 0; overflow: hidden; }
 .review-list, .portable-list { padding-inline-start: 20px; }
 .review-list li + li, .portable-list li + li { margin-top: 8px; }
 .portable-list button { margin-block-start: 4px; }
+
+/* History filters and evidence paths should fit narrow windows. */
+.history-filters { align-items: center; flex-wrap: wrap; }
+.history-filters select { max-width: min(100%, 30rem); }
+.history-filters input[type="search"] { min-width: 0; max-width: 100%; }
+.history-path { overflow-wrap: anywhere; }
