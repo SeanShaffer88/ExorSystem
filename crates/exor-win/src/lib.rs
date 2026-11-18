@@ -9,6 +9,8 @@ mod programs_source;
 #[cfg(windows)]
 mod registry_source;
 #[cfg(windows)]
+mod secure_storage;
+#[cfg(windows)]
 mod services_source;
 #[cfg(windows)]
 mod usn_source;
@@ -17,6 +19,8 @@ mod usn_source;
 pub use programs_source::enumerate_programs;
 #[cfg(windows)]
 pub use registry_source::DriverRegistrySource;
+#[cfg(windows)]
+pub use secure_storage::{program_data_dir, secure_quarantine_dir};
 #[cfg(windows)]
 pub use services_source::enumerate_services;
 #[cfg(windows)]

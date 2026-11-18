@@ -454,7 +454,7 @@ fn execute_quarantine_restore_purge_with_ledger() {
     assert!(!f1.exists() && f2.exists());
     assert_eq!(out.skipped, vec!["service:X".to_string()]);
     let id = out.manifest.quarantine_id.clone();
-    restore_by_id(&store, &id, false).unwrap();
+    restore_by_id(&store, &q, &id, false).unwrap();
     assert_eq!(std::fs::read(&f1).unwrap(), b"one");
     let kinds: Vec<_> = store
         .ledger_for_session(sess)
@@ -471,11 +471,11 @@ fn execute_quarantine_restore_purge_with_ledger() {
     );
     // second round, purge
     let out2 = quarantine_decided(&store, &q, sess, &report).unwrap();
-    purge_by_id(&store, &out2.manifest.quarantine_id).unwrap();
+    purge_by_id(&store, &q, &out2.manifest.quarantine_id).unwrap();
     assert!(!f1.exists());
     assert_eq!(store.quarantines().unwrap().len(), 2);
     assert!(recover_interrupted(&q).unwrap().is_empty());
-    assert!(restore_by_id(&store, "nope", false).is_err());
+    assert!(restore_by_id(&store, &q, "nope", false).is_err());
     // empty plan is an error, not a silent no-op
     let empty = exor_engine::policy::SimulationReport {
         decisions: vec![],

@@ -18,6 +18,8 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 - Install watch (`exor-engine::watch`): baseline, run the installer, compare. Folder snapshots plus services and scheduled tasks are recorded in one session. A failed probe skips that comparison with a warning instead of reporting everything as new. GUI: "Watch an install" view; Tauri commands `begin_watch`, `finish_watch`, `cancel_watch`.
 - Failure drills as tests: disk full (ENOSPC), cross-filesystem quarantine, vanished file, reappeared file, deleted parent folder, interrupted restore, corrupt database, concurrent writers, upgrade backup usable as a rollback.
 ### Fixed
+- Elevated safety: per-user uninstall commands from HKCU are blocked, and Windows quarantine data now lives under ProgramData with restore/purge restricted to manifests inside that root.
+- Existing quarantine batches from earlier portable builds remain on disk but are refused by restore and purge; their user-writable manifests are not imported as trusted.
 - Layout: Appearance radio buttons no longer stretched; Watch an install form is stacked and its textarea styled (found in the first real Windows screenshots).
 - An interrupted restore can now be retried: items already put back are recognised by content hash and skipped, instead of failing with "already exists".
 - Optional themes: 36 palettes (dark and light) in `gui/src/themes.json`, Appearance view with live preview on selection, Apply / Cancel preview, and a temporary 30 s Undo after applying. Choice persists; the default look is unchanged. `npm run check:themes` enforces WCAG AA contrast and runs in `npm run build` and CI.

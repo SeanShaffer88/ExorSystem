@@ -305,7 +305,7 @@ mod tests {
         let (id, n) = quarantine_leftovers(&store, &q, None, std::slice::from_ref(&dir)).unwrap();
         assert_eq!(n, 2);
         assert!(!dir.join("a.txt").exists());
-        crate::execute::restore_by_id(&store, &id, false).unwrap();
+        crate::execute::restore_by_id(&store, &q, &id, false).unwrap();
         assert_eq!(std::fs::read(dir.join("sub/b.txt")).unwrap(), b"b");
         assert!(quarantine_leftovers(&store, &q, None, &[PathBuf::from("/tmp")]).is_err());
     }

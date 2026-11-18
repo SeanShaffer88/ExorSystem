@@ -42,7 +42,7 @@ Requires Rust 1.90+ (edition 2024). The driver needs the WDK; see `driver/README
 
 ## Data
 
-Everything is local and offline. The desktop app stores `data/exor.db` next to the executable. No telemetry.
+Everything is local and offline. The desktop app stores `data/exor.db` next to the executable. On Windows, quarantine manifests and file blobs live under the system ProgramData folder, separate from portable app data, so elevated restore operations do not trust user-writable manifests. Older batches in portable `data/quarantine` folders stay on disk but are not restored by this version. No telemetry.
 
 ## License
 

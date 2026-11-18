@@ -18,6 +18,14 @@ pub enum Scope {
     User,
 }
 
+/// Whether an uninstall command is safe for this elevated process to launch.
+///
+/// User-scope uninstall entries come from HKCU, which the current user can edit. The desktop app
+/// requests administrator rights, so it must not execute those commands with its elevated token.
+pub fn elevated_uninstall_allowed(scope: Scope) -> bool {
+    matches!(scope, Scope::Machine | Scope::Machine32)
+}
+
 /// One entry from the Windows uninstall list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledProgram {
@@ -161,6 +169,13 @@ mod tests {
         ] {
             assert_eq!(format_install_date(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn elevated_uninstall_blocks_user_scope_only() {
+        assert!(!elevated_uninstall_allowed(Scope::User));
+        assert!(elevated_uninstall_allowed(Scope::Machine));
+        assert!(elevated_uninstall_allowed(Scope::Machine32));
     }
 
     #[test]

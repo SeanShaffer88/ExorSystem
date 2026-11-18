@@ -30,7 +30,7 @@ GUI (Tauri v2 + React)  --invoke-->  exorsystem-gui (src-tauri)
 7. **Safety**: `exor-storage` and `exor-engine` forbid `unsafe`; all FFI is isolated in `exor-win` with a SAFETY note per block. No `unwrap`/`expect` outside tests (clippy-enforced).
 8. **USN reads** are kernel-side waits on the blocking pool with a 1 s timeout; no sleep polling.
 9. **Registry visibility** is observe-only in the driver; file visibility stays in user mode via the USN journal.
-10. **GUI data** is portable: `data/exor.db` beside the executable.
+10. **GUI data** keeps `data/exor.db` beside the executable. On Windows, quarantine manifests and blobs live in the system ProgramData folder under a per-installation directory; restore and purge resolve batches by ID inside that protected root, never from the portable database's stored path.
 
 ## Known limitations
 See `AUDIT.md`.
