@@ -44,7 +44,7 @@ See the [0.2.0 release notes](docs/releases/v0.2.0.md), including the required u
 ### Changed
 - The Windows desktop now runs without elevation and refuses an already-elevated token. All formats use the current user's `%LOCALAPPDATA%\ExorSystem` profile. Old executable-adjacent data and quarantine are left unchanged, not migrated automatically.
 - Only supported live machine-wide classic registrations can launch uninstall commands; per-user installs use Windows Settings. Restore never overwrites an existing file.
-- The stable Release workflow publishes the exact signed-off candidate packages without rebuilding or replacing a tag.
+- The stable Release workflow promotes the exact candidate packages after CI and hash verification, without rebuilding or replacing a tag. Interactive Windows 10/11 testing is optional.
 
 ### Fixed
 - Both cleanup entry points persist the quarantine record and ledger atomically, roll back a failed write, and reconcile interrupted batches. Restore/purge derive storage paths by validated ID and refuse redirected directories. Conflicts retain held files with a warning.

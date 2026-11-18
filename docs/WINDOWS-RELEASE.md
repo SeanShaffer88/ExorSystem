@@ -1,6 +1,8 @@
 # Windows release verification
 
-Run these checks on **disposable Windows 10 and 11 x64 VMs**, from a normal test account. Use a clean snapshot for each installer format. Keep unrelated user files off the VMs. An Actions Windows Server runner proves compilation and package structure, not Windows client behavior. The steps below use [dashboard](DASHBOARD.md) labels. Earlier builds call Applications **Installations**, show **Watch an install** directly, and expose **History**, **Provenance**, and **Quarantine** as standalone tabs.
+**Stable publishing requires passing CI and verified candidate packages. Interactive Windows 10/11 testing is optional, not a release gate.**
+
+For the optional client checks in sections 2–5, use **disposable Windows 10 and 11 x64 VMs** and a normal test account. Use a clean snapshot for each installer format. Keep unrelated user files off the VMs. An Actions Windows Server runner proves compilation and package structure, not Windows client behavior. The steps below use [dashboard](DASHBOARD.md) labels. Earlier builds call Applications **Installations**, show **Watch an install** directly, and expose **History**, **Provenance**, and **Quarantine** as standalone tabs.
 
 ## 1. Build a candidate without publishing
 
@@ -11,7 +13,7 @@ Use the **Windows candidate packages (no publish)** Actions workflow on the cand
 ./scripts/check-release.ps1 -ArtifactDir ./dist
 ```
 
-Use the **workflow artifact** for sign-off and eventual publication. Keep `SHA256SUMS.txt` and `PACKAGE-CHECKS.json` with the three packages. The verification script checks their hashes, the NSIS PE header, the MSI x64 template, and the portable ZIP contents plus its executable's x64, `asInvoker`, and PerMonitorV2 manifest. It does **not** install or launch the packages. Local builds are useful for troubleshooting but are not a substitute for the exact workflow artifact you intend to release.
+Use the **workflow artifact** for publication and any optional client testing. Keep `SHA256SUMS.txt` and `PACKAGE-CHECKS.json` with the three packages. The verification script checks their hashes, the NSIS PE header, the MSI x64 template, and the portable ZIP contents plus its executable's x64, `asInvoker`, and PerMonitorV2 manifest. It does **not** install or launch the packages. Local builds are useful for troubleshooting but are not a substitute for the exact workflow artifact you intend to release.
 
 ## 2. Install, start, and remove each format
 
@@ -45,7 +47,7 @@ The script prints an ID, file folders, exact registry subtrees, a per-user inven
 3. Repeat with a different name ending in `B`, `$fixture.folder_b`, and `$fixture.registry_b` (initially missing). Between pictures run `./scripts/windows-fixture.ps1 -Action ChangeB -Id $fixture.id`. History for B must include the newly created Second key and B's files, not A's. Use **Older changes** and **Newer changes**; then search for `percent%_literal`, which should match exactly the fixture file with those literal characters. Switch to A, then to **All installations and unassigned changes** and verify the expected separation and combination of records. `-Action Verify -Id $fixture.id` confirms the input fixtures, not the desktop output.
 4. Optional over-limit input: `./scripts/windows-fixture.ps1 -Action MakeOversized -Id $fixture.id`. Take before/after pictures of `$fixture.oversized`; expect an incomplete-scope warning, not thousands of changes. Test **Cancel watch** with a new Watch. In a **Thorough** cleanup preview, registry observations must never be selected for file quarantine.
 
-If you lack a VM, a **file-only smoke test** on a normal Windows account can exercise Watch without touching installed apps. Create a new folder under `%TEMP%` with two disposable files. Enter only that folder, leave the registry and system checks off, take the baseline, then edit one file, add one and remove the other original. Compare and verify one Added, Changed and Removed entry and different before/after fingerprints for the edited file. Record the OS build, original package hash, and result as **partial smoke evidence**. Do not run the uninstall and cleanup drills on a live profile or treat this test as client sign-off.
+If you lack a VM, a **file-only smoke test** on a normal Windows account can exercise Watch without touching installed apps. Create a new folder under `%TEMP%` with two disposable files. Enter only that folder, leave the registry and system checks off, take the baseline, then edit one file, add one and remove the other original. Compare and verify one Added, Changed and Removed entry and different before/after fingerprints for the edited file. Record the OS build, original package hash, and result as **partial smoke evidence**. Do not run the uninstall and cleanup drills on a live profile or report a file-only smoke as coverage of the full client matrix.
 
 ## 4. Verify inventory, cleanup and recovery
 
@@ -57,7 +59,7 @@ If you lack a VM, a **file-only smoke test** on a normal Windows account can exe
 
 Close ExorSystem, finish or restore its fixture batches and forget the portable entry before removing the fixture. Use `./scripts/windows-fixture.ps1 -Action Remove -Id $fixture.id` or revert the VM snapshot. The script does not recursively remove fixture file folders or touch the desktop database.
 
-## 5. Accessibility and final evidence
+## 5. Accessibility and optional client evidence
 
 ### Docking and accessibility, on each Windows client
 
@@ -69,14 +71,12 @@ Use the exact verified package and a normal test profile. See the [workspace con
 4. Use **Ctrl+`** to hide/show the Activity log panel. Open the optional attached window with enough space on the right and check both views receive the same new messages. Clear from one, check the other and the status bar, then produce another event (e.g. a disposable scan). The activity clear must not erase recorded observations. Move, minimize and restore the main window with the attached log open; inspect behavior across two monitors and with reduced motion. Record any display scenario you could not exercise.
 5. Use Narrator and Windows high contrast; verify tool, dock, tab, separator, and modal names, keyboard focus, panel transitions, and Watch status. Check 100% and 150% display scaling, including the minimum window size. Record actual OS and WebView2 versions, scale and monitor setup. Use fixture paths and redact personal data in screenshots (see the [capture list](SCREENSHOTS.md)).
 
-Copy the [evidence template](WINDOWS-RELEASE-EVIDENCE.md) for this candidate. Record the commit and per-format hash, OS edition/build, VM setup, WebView2 version, status, and logs. Attach the completed record to the PR or release checklist. Mark anything not run **Not run**, not Pass. Publish only when the required native checks pass; the [live-source/driver gates](LIVE-COLLECTION.md) are separate and do not block driverless desktop packaging.
+If you run client checks, use the [evidence template](WINDOWS-RELEASE-EVIDENCE.md) to record the commit, per-format hash, OS build, VM setup, WebView2 version, status, and logs. Attach the record to a PR or issue. Mark anything not run **Not run**, not Pass. The [live-source/driver gates](LIVE-COLLECTION.md) are separate and do not block driverless desktop packaging.
 
 ## 6. Tag and publish the tested candidate
 
-Do not create a tag before both Windows client matrices pass. Use the separate **Release** workflow from the default branch only after recording sign-off:
+Use the separate **Release** workflow to publish. It does not run automatically, and does not require a client evidence link or a sign-off checkbox.
 
-1. Attach the completed evidence record to a PR or issue in this repository. Include the successful Windows candidate **Actions run ID**, source commit, and the SHA-256 of every tested package. The tested commit must be reachable from `main` and have passing CI. If it was squash-merged and is no longer reachable, build and sign off the candidate on the new commit.
-2. In Actions → **Release** → **Run workflow**, enter `candidate_run_id` (the number in the run URL) and `client_evidence_url` (the PR, issue, or comment containing the completed results). Check `client_signoff` only after verifying the results against the exact artifact. The checkbox is the operator's sign-off, not an automated client test.
-3. The workflow downloads the retained artifact from that run, verifies its version, source, sizes, and hashes, then creates the new `v{version}` tag and publishes the **same bytes** along with the checksums and evidence. It refuses to reuse a tag and does not rebuild. Check the new release and its tag target afterward. If the artifact has expired, build a new candidate and verify the new package hashes on both clients before publishing.
-
-Do not use **Release** just to build packages. Until the client results are complete, leave the candidate in Actions and keep the latest stable release unchanged.
+1. Pick a successful **Windows candidate packages (no publish)** run from this repository with a retained artifact. Its exact source commit must be reachable from `main` and have passing CI. If a squash merge made the candidate commit unreachable, run CI and build a candidate on the landed commit instead. If the artifact expired, rerun the candidate workflow and use the new run ID.
+2. In Actions → **Release** → **Run workflow**, select the default branch and enter `candidate_run_id` (the number in the run URL). Do not create the tag first or use this workflow just to build packages.
+3. The workflow downloads the artifact and checks its version, run ID, source commit, sizes, and SHA-256 hashes. It refuses to reuse an existing tag, creates `v{version}` at the candidate commit, and publishes the **same bytes**, checksums, and package report without rebuilding. Check the new release and tag target afterward. The release notes link the automated checks and do not imply a Windows client pass.
