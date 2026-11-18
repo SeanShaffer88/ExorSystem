@@ -6,7 +6,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 |---|---|---|
 | Storage (schema, migrations, DAG, ledger, provenance) | Verified | 18 integration tests, Linux |
 | Engine (walker, trie diff, BLAKE3, noise, policy, quarantine, monitor, collectors, execute) | Verified | 43 tests, Linux, `clippy -D warnings` |
-| Install watch (files, services, tasks, optional registry subtrees) | Partially verified | Engine tests cover missing keys and failed sample pairs with mocks. Browser smoke covers warnings, tab navigation, Finish failure, and Cancel. A Windows-only test checks read-only traversal of an existing subtree and a missing scope; interactive Windows watch and installer correlation remain unverified. |
+| Install watch (files, services, tasks, optional registry subtrees) | Partially verified | Engine tests cover missing keys and failed sample pairs with mocks. Browser smoke covers warnings, tab navigation, Finish failure, and Cancel. Windows CI passed a read-only test of an existing subtree and a missing scope; an interactive Windows 10/11 watch remains unverified. |
 | Failure drills on Linux (ENOSPC, cross-filesystem, corrupt DB, concurrent writers, partial restore) | Verified | tests in `quarantine.rs` and `storage.rs` |
 | Quarantine crash recovery | Verified (simulated) | crash state reproduced in a test; real power loss never exercised |
 | Mock event harness | Verified | deterministic replay tests |
@@ -14,7 +14,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | USN journal reader, driver client (Win32 I/O) | Partially verified | type-checked and clippy-clean against the Windows target; never run on Windows |
 | Dependency licenses (Rust + npm, 588) | Verified | all permissive or MPL-2.0; script enforced in CI |
 | Service enumeration (SCM) | Partially verified | type-checked for the Windows target; never run on Windows |
-| Release script, CI and release workflows | Partially verified | [v0.1.0 packaging run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44039918347) published NSIS, MSI, portable ZIP and hashes. [Base CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44047994722) passed on Linux and Windows; current-branch Windows checks pending. |
+| Release script, CI and release workflows | Partially verified | [v0.1.0 packaging run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44039918347) published NSIS, MSI, portable ZIP and hashes. [Install Watch CI](https://github.com/SeanShaffer88/ExorSystem/pull/20/checks) covers Linux and Windows; the interactive release checklist remains open. |
 | Quarantine GUI view and Tauri commands | Partially verified | `tsc` + `vite build` pass, shell type-checked; never launched |
 | Themes (36 palettes, preview, apply, undo) | Partially verified | WCAG AA contrast script passes; store logic smoke-tested with stubs; never rendered or screen-reader tested |
 | Kernel driver `driver/exordrv.c`, INF | Unverified | not compiled with the WDK, not loaded |
