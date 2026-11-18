@@ -87,6 +87,7 @@ export interface WatchSummary {
 
 export interface InstalledProgram {
   id: string;
+  source: "registry" | "msix" | "portable";
   name: string;
   version: string | null;
   publisher: string | null;
@@ -104,6 +105,17 @@ export interface InstalledProgram {
 export interface ProgramRow {
   program: InstalledProgram;
   session_ids: number[];
+  removed: boolean;
+}
+
+export interface ProgramInventory {
+  programs: ProgramRow[];
+  warnings: string[];
+}
+
+export interface PortableProgram {
+  name: string;
+  executable: string;
 }
 
 export interface SessionItem {
@@ -120,10 +132,21 @@ export interface SessionItems {
   items: SessionItem[];
 }
 
-export interface Leftover {
+export interface LeftoverFolder {
   path: string;
   reason: string;
   confidence: number;
+  can_quarantine: boolean;
+}
+
+export interface LeftoverReview {
+  folders: LeftoverFolder[];
+  system_entries: {
+    kind: "registry_key" | "service" | "task";
+    path: string;
+    reason: string;
+  }[];
+  warnings: string[];
 }
 export interface UninstallRun {
   exit_code: number | null;

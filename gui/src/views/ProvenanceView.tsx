@@ -13,6 +13,7 @@ export function ProvenanceView() {
     if (!path.trim()) return;
     setBusy(true);
     setError("");
+    setResult(null);
     try {
       setResult(await api.provenance(path.trim()));
     } catch (err) {

@@ -2,8 +2,11 @@
 
 All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
-## [Unreleased] - 0.1.0 in progress
+## [Unreleased]
 ### Added
+- Installations lists current-user MSIX/AppX packages alongside classic entries. Settings can add and forget opt-in portable inventory entries without running or removing their files.
+- Find leftovers also suggests registry keys, services and scheduled tasks for classic programs, strictly for review. Recently removed entries stay available for review until ExorSystem closes. File quarantine requires explicit selection from eligible folders.
+- Browser smoke test of the built frontend, with native IPC mocked, runs in GUI CI.
 - Settings tab: pick the cleanup policy (conservative, standard, thorough) used by every preview, quarantine and report; shows version and data folders. Commands `list_templates`, `app_info`.
 - Update risk tab: recorded programs batched low/medium/high with a plain-language reason; `risk::candidates_from_store`, `risk::explain`, command `update_risk`.
 - Make portable copy: copies a recorded installation's files into a new folder with `portable-plan.json` (registry keys to replay, unsupported items); sources untouched. `portable::build_portable`, command `make_portable`.
@@ -18,6 +21,7 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 - Install watch (`exor-engine::watch`): baseline, run the installer, compare. Folder snapshots plus services and scheduled tasks are recorded in one session. A failed probe skips that comparison with a warning instead of reporting everything as new. GUI: "Watch an install" view; Tauri commands `begin_watch`, `finish_watch`, `cancel_watch`.
 - Failure drills as tests: disk full (ENOSPC), cross-filesystem quarantine, vanished file, reappeared file, deleted parent folder, interrupted restore, corrupt database, concurrent writers, upgrade backup usable as a rollback.
 ### Fixed
+- Provenance resolves unambiguous ASCII case variants without merging older case-only records. The v3 migration adds lookup indexes and preserves existing evidence.
 - Layout: Appearance radio buttons no longer stretched; Watch an install form is stacked and its textarea styled (found in the first real Windows screenshots).
 - An interrupted restore can now be retried: items already put back are recognised by content hash and skipped, instead of failing with "already exists".
 - Optional themes: 36 palettes (dark and light) in `gui/src/themes.json`, Appearance view with live preview on selection, Apply / Cancel preview, and a temporary 30 s Undo after applying. Choice persists; the default look is unchanged. `npm run check:themes` enforces WCAG AA contrast and runs in `npm run build` and CI.

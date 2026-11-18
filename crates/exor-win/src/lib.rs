@@ -5,6 +5,8 @@ pub mod proto;
 pub mod usn;
 
 #[cfg(windows)]
+mod packages_source;
+#[cfg(windows)]
 mod programs_source;
 #[cfg(windows)]
 mod registry_source;
@@ -14,7 +16,9 @@ mod services_source;
 mod usn_source;
 
 #[cfg(windows)]
-pub use programs_source::enumerate_programs;
+pub use packages_source::enumerate_packages;
+#[cfg(windows)]
+pub use programs_source::{enumerate_programs, enumerate_software_keys};
 #[cfg(windows)]
 pub use registry_source::DriverRegistrySource;
 #[cfg(windows)]

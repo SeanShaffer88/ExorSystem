@@ -8,7 +8,8 @@
     "dev": "vite --port 1420 --strictPort",
     "build": "node scripts/check-themes.mjs && tsc --noEmit && vite build",
     "check:themes": "node scripts/check-themes.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:ui": "node tests/roadmap-smoke.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.5",
@@ -20,6 +21,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.3.0",
+    "playwright-core": "1.65.1",
     "typescript": "7.0.2",
     "vite": "8.3.8"
   }

@@ -12,6 +12,9 @@
 
 CI-style checks on any OS: `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`.
 
+## Frontend smoke test
+From `gui/`, run `npm ci`, `npm run build`, `npx playwright-core install --only-shell chromium`, then `npm run test:ui`. Linux may need Chromium system libraries (`npx playwright-core install-deps chromium`). The test loads the built UI with mocked Tauri responses; it does not launch a real uninstaller or access the Windows registry. For native checks, use [the Windows release checklist](ROADMAP.md).
+
 ## Administrator rights
 The desktop app's manifest is `requireAdministrator`: the driver port, USN journal, services and HKLM need it. `npm run tauri dev` therefore must be started from an **elevated** terminal, or Windows refuses to launch the debug build. Engine and storage tests need no elevation.
 

@@ -79,3 +79,12 @@ main:has(.panes) { padding: 0; overflow: hidden; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .panes { grid-template-columns: 1fr; grid-template-rows: 35% 1fr auto; } .pane-actions { border-left: 0; border-top: 1px solid var(--border); } .pane-list { border-right: 0; border-bottom: 1px solid var(--border); } }
+
+/* Read-only evidence and explicit folder selection. Long Windows paths must wrap. */
+.leftover-folders { min-width: 0; margin: 0; padding: 8px; }
+.leftover-folders .check { align-items: flex-start; margin-bottom: 8px; }
+.leftover-folders .check input { flex: none; }
+.leftover-folders, .review-list, .portable-list, .action-note { overflow-wrap: anywhere; }
+.review-list, .portable-list { padding-inline-start: 20px; }
+.review-list li + li, .portable-list li + li { margin-top: 8px; }
+.portable-list button { margin-block-start: 4px; }

@@ -1,10 +1,10 @@
-//! Installed-program inventory: what Windows says is installed, tidied for display and linked to
-//! the installation sessions ExorSystem has recorded.
+//! Installed-program inventory: Windows entries plus portable apps added by the user.
 //!
-//! Reading the registry lives in `exor-win`; everything here is plain, testable Rust.
+//! Reading the Windows inventory lives in `exor-win`; display and matching logic is portable.
 
-use exor_storage::Session;
+use exor_storage::{PortableProgram, Session};
 use serde::{Deserialize, Serialize};
+use std::path::{Component, Path};
 
 /// Where an uninstall entry was found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,15 +14,29 @@ pub enum Scope {
     Machine,
     /// `HKLM`, 32-bit view (WOW6432Node).
     Machine32,
-    /// `HKCU`.
+    /// Current Windows user, or a user-added portable app.
     User,
 }
 
-/// One entry from the Windows uninstall list.
+/// How an inventory entry was found. Only registry entries have registered uninstall commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramSource {
+    /// Classic program listed under Uninstall in the Windows registry.
+    Registry,
+    /// App package registered with Windows for the current user.
+    Msix,
+    /// Executable explicitly added by the user; not necessarily installed.
+    Portable,
+}
+
+/// One entry in the program inventory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledProgram {
-    /// Stable id: scope plus registry key name.
+    /// Stable id scoped to the source.
     pub id: String,
+    /// Source of the entry.
+    pub source: ProgramSource,
     /// Display name.
     pub name: String,
     /// Version text.
@@ -71,20 +85,99 @@ impl InstalledProgram {
 /// Tidy for display: drop hidden entries (unless `include_system`), collapse the same program
 /// reported by both registry views, and sort by name ignoring case.
 pub fn visible(programs: Vec<InstalledProgram>, include_system: bool) -> Vec<InstalledProgram> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen_registry = std::collections::HashSet::new();
+    let mut seen_other = std::collections::HashSet::new();
     let mut out: Vec<InstalledProgram> = programs
         .into_iter()
         .filter(|p| !p.name.trim().is_empty() && (include_system || p.is_listed()))
         .filter(|p| {
-            seen.insert((
-                p.name.trim().to_lowercase(),
-                p.version.clone().unwrap_or_default().to_lowercase(),
-                p.publisher.clone().unwrap_or_default().to_lowercase(),
-            ))
+            if p.source == ProgramSource::Registry {
+                seen_registry.insert((
+                    p.name.trim().to_lowercase(),
+                    p.version.clone().unwrap_or_default().to_lowercase(),
+                    p.publisher.clone().unwrap_or_default().to_lowercase(),
+                    p.scope == Scope::User,
+                ))
+            } else {
+                seen_other.insert((p.source, p.id.to_lowercase()))
+            }
         })
         .collect();
     out.sort_by_key(|p| (p.name.to_lowercase(), p.version.clone().unwrap_or_default()));
     out
+}
+
+/// Validate an explicit portable entry. The executable is only checked, never loaded or run.
+pub fn portable_registration(name: &str, executable: &str) -> Result<PortableProgram, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 120 || name.chars().any(char::is_control) {
+        return Err("enter a program name of 1–120 characters".into());
+    }
+    let input = executable.trim();
+    let path = Path::new(
+        input
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(input),
+    );
+    if !path.is_absolute()
+        || path.components().any(|c| c == Component::ParentDir)
+        || !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    {
+        return Err("enter the full local path to an .exe file".into());
+    }
+    #[cfg(windows)]
+    if !matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), std::path::Prefix::Disk(_)))
+    {
+        return Err("enter a local drive path, such as C:\\Tools\\Program.exe".into());
+    }
+    let meta =
+        std::fs::symlink_metadata(path).map_err(|e| format!("cannot check the file: {e}"))?;
+    if !meta.is_file() {
+        return Err("choose an executable file, not a folder or link".into());
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve the file: {e}"))?;
+    #[cfg(windows)]
+    if !matches!(canonical.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+    {
+        return Err("the executable must be on a local drive".into());
+    }
+    let resolved = canonical
+        .to_str()
+        .ok_or_else(|| "the path is not valid text".to_string())?;
+    // Canonical paths on Windows have a verbatim prefix. Use familiar drive spelling in the UI.
+    #[cfg(windows)]
+    let resolved = resolved.strip_prefix(r"\\?\").unwrap_or(resolved);
+    Ok(PortableProgram {
+        name: name.into(),
+        executable: resolved.into(),
+    })
+}
+
+/// Display-only inventory entry. It never has a command to run or a cleanup target.
+pub fn portable_program(entry: PortableProgram) -> InstalledProgram {
+    InstalledProgram {
+        id: format!("portable:{}", entry.executable),
+        source: ProgramSource::Portable,
+        name: entry.name,
+        version: None,
+        publisher: None,
+        install_location: Path::new(&entry.executable)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned()),
+        uninstall_command: None,
+        quiet_uninstall_command: None,
+        install_date: None,
+        size_kb: None,
+        scope: Scope::User,
+        system_component: false,
+        parent_key: None,
+        windows_installer: false,
+    }
 }
 
 pub(crate) fn norm(s: &str) -> String {
@@ -118,6 +211,7 @@ mod tests {
     fn prog(name: &str, ver: &str, scope: Scope) -> InstalledProgram {
         InstalledProgram {
             id: format!("{scope:?}\\{name}"),
+            source: ProgramSource::Registry,
             name: name.into(),
             version: Some(ver.into()),
             publisher: Some("Pub".into()),
@@ -200,6 +294,50 @@ mod tests {
             false,
         );
         assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn different_inventory_sources_remain_distinct() {
+        let registry = prog("Widget", "1.0", Scope::Machine);
+        let mut package = registry.clone();
+        package.id = "msix:Vendor.Widget_abc".into();
+        package.source = ProgramSource::Msix;
+        let mut other = package.clone();
+        other.id = "msix:Other.Widget_def".into();
+        let portable = portable_program(PortableProgram {
+            name: "Widget".into(),
+            executable: "C:/Tools/Widget.exe".into(),
+        });
+        assert!(portable.uninstall_command.is_none());
+        let listed = visible(
+            vec![registry, package.clone(), package, other, portable],
+            false,
+        );
+        assert_eq!(listed.len(), 4);
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|p| p.source == ProgramSource::Msix)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn portable_registration_checks_name_path_and_type_without_executing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.EXE");
+        let exe = path.to_str().unwrap();
+        assert!(portable_registration("App", exe).is_err());
+        std::fs::write(&path, b"not an executable").unwrap();
+        let entry = portable_registration("  App  ", &format!("\"{exe}\"")).unwrap();
+        assert_eq!(entry.name, "App");
+        assert!(portable_registration("", exe).is_err());
+        assert!(portable_registration("App", "app.EXE").is_err());
+        let folder = dir.path().join("folder.exe");
+        std::fs::create_dir(&folder).unwrap();
+        assert!(portable_registration("App", folder.to_str().unwrap()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"not an executable");
     }
 
     #[test]

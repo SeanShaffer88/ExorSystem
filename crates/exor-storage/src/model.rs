@@ -106,6 +106,15 @@ pub struct Session {
     pub status: Option<SessionStatus>,
 }
 
+/// A portable application a user chose to list in the inventory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortableProgram {
+    /// The display name supplied by the user.
+    pub name: String,
+    /// Absolute path of the executable. ExorSystem never launches it.
+    pub executable: String,
+}
+
 /// Node to insert or update.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewNode {

@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfo, TemplateInfo, HistoryRow, RiskView, PortableView, Leftover, UninstallRun, ProgramRow, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
+import type { AppInfo, TemplateInfo, HistoryRow, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchSummary } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -15,9 +15,12 @@ export const api = {
   listQuarantines: () => invoke<QuarantineRow[]>("list_quarantines"),
   restoreQuarantine: (quarantineId: string) => invoke<number>("restore_quarantine", { quarantineId }),
   purgeQuarantine: (quarantineId: string) => invoke<number>("purge_quarantine", { quarantineId }),
-  listPrograms: (includeSystem: boolean) => invoke<ProgramRow[]>("list_programs", { includeSystem }),
+  listPrograms: (includeSystem: boolean) => invoke<ProgramInventory>("list_programs", { includeSystem }),
+  listPortablePrograms: () => invoke<PortableProgram[]>("list_portable_programs"),
+  registerPortableProgram: (name: string, executable: string) => invoke<void>("register_portable_program", { name, executable }),
+  forgetPortableProgram: (executable: string) => invoke<void>("forget_portable_program", { executable }),
   runUninstaller: (programId: string, quiet: boolean) => invoke<UninstallRun>("run_uninstaller", { programId, quiet }),
-  findLeftovers: (programId: string) => invoke<Leftover[]>("find_leftovers", { programId }),
+  findLeftovers: (programId: string) => invoke<LeftoverReview>("find_leftovers", { programId }),
   quarantineLeftovers: (programId: string, folders: string[], sessionId: number | null) =>
     invoke<QuarantineResult>("quarantine_leftovers", { programId, folders, sessionId }),
   history: (filter: string | null, limit: number) => invoke<HistoryRow[]>("history", { filter, limit }),

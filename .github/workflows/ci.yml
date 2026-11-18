@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -55,6 +56,11 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Browser smoke (mocked desktop IPC)
+        working-directory: gui
+        run: |
+          npx playwright-core install --only-shell chromium
+          npm run test:ui
       - name: Tauri shell
         working-directory: gui/src-tauri
         run: |

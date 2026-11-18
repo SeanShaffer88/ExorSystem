@@ -2,7 +2,7 @@
 
 Open-source Windows system management and installation governance suite: a FOSS Total Uninstall replacement built as an intelligent **System State & Provenance Engine**.
 
-Every file, registry key, service and task is recorded as a node in a directed acyclic graph with a probabilistic confidence score, so you can answer "where did this come from, and is it safe to remove?" with evidence.
+ExorSystem records observed system changes in a directed graph with confidence scores, so you can ask where an item came from and review the evidence before deciding what to remove.
 
 ## Layers
 
@@ -14,10 +14,12 @@ Every file, registry key, service and task is recorded as a node in a directed a
 | Windows sources | `crates/exor-win` | windows-rs: USN journal, driver client | type-checked, not run on Windows |
 | Kernel driver | `driver/` | C, minifilter framework, `CmRegisterCallbackEx` | source only, not compiled |
 
-See `docs/ARCHITECTURE.md`, `AUDIT.md` (what is and is not verified) and `CHANGELOG.md`.
+See [architecture](docs/ARCHITECTURE.md), the [roadmap and release checks](docs/ROADMAP.md), the [verification matrix](AUDIT.md), and [changelog](CHANGELOG.md).
 
 ## Features
 
+- **Program inventory**: classic Windows programs, current-user MSIX apps, and portable apps added explicitly in Settings. MSIX and portable entries are listed without uninstall actions.
+- **Guided leftover review**: review possible folders, registry keys, services and tasks after a classic uninstall. System entries are read-only; only selected files from eligible folders can go to quarantine.
 - **BOM & inference graph**: confidence `1.0` manifest-confirmed, `0.7` inferred from timing, `0.3` heuristic/unknown. Edges are cycle-checked.
 - **Noise filtering**: background telemetry, browser caches, indexer and Defender writes dropped in real time, with burst de-duplication.
 - **Differential engine**: async parallel directory walk, Merkle path-trie diff (identical subtrees skipped), BLAKE3 hashing with incremental reuse.
@@ -38,7 +40,7 @@ cd gui && npm ci && npm run build       # frontend
 cd gui && npm run tauri build           # desktop app (Windows, WebView2)
 ```
 
-Requires Rust 1.90+ (edition 2024). The driver needs the WDK; see `driver/README.md`.
+See [development](docs/DEVELOPMENT.md) for the pinned Rust/Node toolchain and browser smoke checks. The optional driver needs the WDK; see [driver development](driver/README.md).
 
 ## Data
 
