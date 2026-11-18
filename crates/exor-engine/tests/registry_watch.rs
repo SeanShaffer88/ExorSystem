@@ -3,7 +3,7 @@
 use exor_engine::collectors::{ServiceInfo, TaskInfo};
 use exor_engine::policy::{candidates_for_session, simulate};
 use exor_engine::registry::{RegistryKeyState, RegistryScope, RegistryScopes};
-use exor_engine::watch::{InstallWatch, SystemProbe};
+use exor_engine::watch::{InstallWatch, ScopeCoverage, SystemProbe, WatchPlan};
 use exor_engine::{Cancel, report, templates};
 use exor_storage::{
     ChangeKind, ChangeSource, Evidence, NodeType, PolicyAction, RelationshipType, SessionStatus,
@@ -68,14 +68,25 @@ async fn watch_records_only_complete_registry_pairs_as_advisory_evidence() {
         Arc::clone(&store),
         "Example",
         Some("setup.exe"),
-        &[],
-        &scopes,
+        WatchPlan {
+            folders: &[],
+            registry: &scopes,
+            services: false,
+            tasks: false,
+        },
         probe.clone(),
         &cancel,
     )
     .await
     .unwrap();
     let sid = watch.session_id();
+    assert_eq!(
+        watch.coverage().registry,
+        ScopeCoverage {
+            requested: 4,
+            usable: 3
+        }
+    );
     assert_eq!(watch.warnings().len(), 1);
     assert!(watch.warnings()[0].contains(NO_BASELINE));
     assert!(watch.warnings()[0].contains("before"));
@@ -83,7 +94,13 @@ async fn watch_records_only_complete_registry_pairs_as_advisory_evidence() {
     let summary = watch.finish(&cancel).await.unwrap();
     assert_eq!(summary.session_id, sid);
     assert_eq!(summary.registry_keys_changed, 4);
-    assert_eq!(summary.registry_scopes_compared, 2);
+    assert_eq!(
+        summary.coverage.registry,
+        ScopeCoverage {
+            requested: 4,
+            usable: 2
+        }
+    );
     assert_eq!(summary.warnings.len(), 2);
     assert!(summary.warnings[1].contains(NO_AFTER));
     assert!(summary.warnings[1].contains("after"));

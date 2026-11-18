@@ -27,7 +27,7 @@ Record the format used for each functional run. Repeat it for another format if 
 | Non-elevated launch, elevated refusal and profile lock | Not run | Not run |
 | Classic/MSIX/portable inventory, scope and persistence | Not run | Not run |
 | Classic uninstall, fallback and leftover review | Not run | Not run |
-| Watch → session Change inspector / History: registry/file split, A/B isolation, warnings, removals, hashes, pages, literal filter | Not run | Not run |
+| Watch → session Change inspector / History: selected/captured/skipped scopes, registry/file split, A/B isolation, warnings, removals, hashes, pages, literal filter | Not run | Not run |
 | Case-insensitive trace, relationship links, and registry/service/task review only | Not run | Not run |
 | Quarantine, conflicting destination, restore hash, purge confirmation, and storage totals | Not run | Not run |
 | Sharing violation, junction, cross-volume NTFS and long paths | Not run | Not run |

@@ -5,7 +5,7 @@ use exor_engine::leftovers::{self, Leftover, ReviewLeftover};
 use exor_engine::programs::InstalledProgram;
 use exor_engine::registry::RegistryScopes;
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
-use exor_engine::watch::{InstallWatch, SystemProbe, WatchSummary};
+use exor_engine::watch::{InstallWatch, SystemProbe, WatchCoverage, WatchPlan, WatchSummary};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
 use exor_storage::{
     ChangeDomain, Edge, LedgerEntry, Node, NodeType, PolicyAction, RelationshipType, Session, Store,
@@ -995,7 +995,14 @@ fn probe() -> Arc<dyn SystemProbe> {
 #[derive(Serialize)]
 struct WatchStart {
     session_id: i64,
+    coverage: WatchCoverage,
     warnings: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct WatchSystem {
+    services: bool,
+    tasks: bool,
 }
 
 /// Take the baseline. Run the installer after the snapshots have finished.
@@ -1006,13 +1013,14 @@ async fn begin_watch(
     app_name: String,
     installer_path: Option<String>,
     folders: Vec<String>,
-    registry_subtrees: Option<String>,
+    registry_subtrees: String,
+    system: WatchSystem,
 ) -> Result<WatchStart, String> {
     let name = app_name.trim();
     if name.is_empty() {
         return Err("enter the application name".into());
     }
-    let scopes = RegistryScopes::parse(registry_subtrees.as_deref().unwrap_or_default())?;
+    let scopes = RegistryScopes::parse(&registry_subtrees)?;
     let roots: Vec<PathBuf> = folders
         .iter()
         .map(|f| f.trim())
@@ -1040,8 +1048,12 @@ async fn begin_watch(
         Arc::clone(&state.store),
         name,
         installer,
-        &roots,
-        &scopes,
+        WatchPlan {
+            folders: &roots,
+            registry: &scopes,
+            services: system.services,
+            tasks: system.tasks,
+        },
         probe(),
         &Cancel::new(),
     )
@@ -1049,14 +1061,19 @@ async fn begin_watch(
     .map_err(|e| e.to_string())?;
     let start = WatchStart {
         session_id: w.session_id(),
+        coverage: w.coverage(),
         warnings: w.warnings().to_vec(),
     };
     *slot = Some(w);
-    dock::log(
-        &app,
-        "info",
-        format!("Watching {name}. Run the installer, then finish."),
-    );
+    if start.warnings.is_empty() {
+        dock::log(&app, "info", format!("Baseline ready for {name}."));
+    } else {
+        dock::log(
+            &app,
+            "warn",
+            format!("Baseline ready for {name}; some scopes were skipped."),
+        );
+    }
     Ok(start)
 }
 
@@ -1076,7 +1093,15 @@ async fn finish_watch(
     dock::log(&app, "info", "Taking the 'after' picture and comparing…");
     let r = w.finish(&Cancel::new()).await.map_err(|e| e.to_string());
     match &r {
-        Ok(_) => dock::log(&app, "info", "Installation recorded."),
+        Ok(s) if !s.coverage.has_usable() => {
+            dock::log(&app, "warn", "No watch scopes could be compared.")
+        }
+        Ok(s) if !s.warnings.is_empty() => dock::log(
+            &app,
+            "warn",
+            "Watch compared the available scopes; some were skipped.",
+        ),
+        Ok(_) => dock::log(&app, "info", "Watch comparison complete."),
         Err(e) => dock::log(&app, "error", format!("Recording failed: {e}")),
     }
     r

@@ -3,7 +3,7 @@ import { api } from "../api";
 import type { RiskRow, RiskView as Risk } from "../types";
 
 const tiers: { key: keyof Risk; title: string; advice: string }[] = [
-  { key: "low", title: "Low risk", advice: "Safe to change together." },
+  { key: "low", title: "Lower observed risk", advice: "Few risk indicators in the available evidence. Skipped or unrequested checks are not proof that an update is safe." },
   { key: "medium", title: "Medium risk", advice: "Look at each one first." },
   { key: "high", title: "High risk", advice: "Change one at a time, after making a restore point." },
 ];

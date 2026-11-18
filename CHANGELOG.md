@@ -9,6 +9,13 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 - Guided uninstall with a read-only terminal preview, explicit vendor launch and quarantine confirmations, and a cleanup summary. The engine re-reads the live registration before starting the reviewed invocation.
 - One-hop relationship graph with evidence and confidence for each recorded link; storage charts of logical file lengths by quarantine outcome.
 
+### Changed
+- Watch starts with explicit scopes. Services and scheduled tasks are independent opt-ins; baseline and comparison cards distinguish skipped checks, checks not requested, and successful comparisons with zero changes.
+
+### Fixed
+- Unreadable folder snapshots and incomplete task snapshots no longer produce misleading additions, changes, or removals. Registry coverage remains per selected subtree.
+- Keep the sidebar labels and the Script preview inventory shortcut on one line at smaller window sizes.
+
 ## [0.2.0]
 
 See the [0.2.0 release notes](docs/releases/v0.2.0.md), including the required upgrade backup.

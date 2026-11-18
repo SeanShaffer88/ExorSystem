@@ -8,6 +8,7 @@ ExorSystem records system changes and helps people review the evidence before cl
 - **Inventory and leftover review** ([PR #19](https://github.com/SeanShaffer88/ExorSystem/pull/19)): classic Windows programs, current-user MSIX packages, and opt-in portable entries. Registry, service and task suggestions are read-only. Provenance can find an unambiguous ASCII case-insensitive match without merging older records.
 - **Driverless Watch and History** ([PR #20](https://github.com/SeanShaffer88/ExorSystem/pull/20), [PR #21](https://github.com/SeanShaffer88/ExorSystem/pull/21)): opt-in registry subtree snapshots, persistent Watch controls across tabs, and a link to the completed watch's History. History includes removals, evidence sources, literal path search, session filtering and paging.
 - **Unelevated desktop and release verification** ([PR #22](https://github.com/SeanShaffer88/ExorSystem/pull/22)): per-user storage, guarded uninstall and quarantine, a build-only package workflow, and a Windows 10/11 test fixture. The [Windows Server package run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44247905086) passed for NSIS, MSI, and portable ZIP. Interactive client sign-off remains open.
+- **Workspace dashboard** ([PR #24](https://github.com/SeanShaffer88/ExorSystem/pull/24)): inventory, guided uninstall and script preview, split Change inspector, cleanup outcomes and relationship graph. A file-only Watch → inspector smoke test on a real Windows PC observed additions, modifications and removals, with different fingerprints on the edited file. This is partial evidence, not exact-package Windows 10/11 sign-off.
 
 ## Development priorities
 
@@ -20,9 +21,10 @@ ExorSystem records system changes and helps people review the evidence before cl
 
 ## Watch an install
 
+- Enter full paths to the folders you want to watch. No folders are selected by default. Select Services or Scheduled tasks only if you want their read-only metadata checked.
 - To opt in to registry tracking, enter up to eight specific Software subtrees, one per line. Use `HKCU\Software\Example` for the calling user, `HKLM\Software\Example` for the 64-bit machine view, or `HKLM32\Software\Example` for the 32-bit machine view. Leave it blank to skip the registry. Whole hives and whole Software roots are not accepted.
-- Wait for the baseline before running the installer. You can switch tabs and return to finish or cancel. Subtrees that could not be fully read at either end are skipped with a warning, not treated as empty.
-- After Finish, choose **View recorded changes** to open the **Change inspector** filtered to the watch session. Use **Timeline** to see all observation types. Key paths and last-write metadata show what changed between checks, not which process changed it. Registry value names and contents are not collected, and short-lived changes between snapshots may be missed.
+- Wait for the baseline before making changes. You can switch tabs and return to compare or cancel. The results distinguish checks that were not requested, skipped, partly covered, or compared. Unreadable scopes are skipped with a reason, not treated as empty.
+- After **Compare snapshots**, choose **View recorded changes** to open the **Change inspector** filtered to the watch session. Use **Timeline** to see all observation types. Key paths and last-write metadata show what changed between checks, not which process changed it. Registry value names and contents are not collected, and short-lived changes between snapshots may be missed.
 
 ## Before publishing a Windows build
 

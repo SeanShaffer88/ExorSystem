@@ -493,7 +493,7 @@ fn execute_quarantine_restore_purge_with_ledger() {
 async fn install_watch_records_files_and_services_with_registry_opted_out() {
     use exor_engine::collectors::{ServiceInfo, TaskInfo};
     use exor_engine::registry::{RegistryKeyState, RegistryScope, RegistryScopes};
-    use exor_engine::watch::{InstallWatch, SystemProbe};
+    use exor_engine::watch::{InstallWatch, ScopeCoverage, SystemProbe, WatchPlan};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Mock(AtomicUsize);
@@ -527,21 +527,35 @@ async fn install_watch_records_files_and_services_with_registry_opted_out() {
         Arc::clone(&store),
         "Foo",
         None,
-        &[dir.path().to_path_buf()],
-        &RegistryScopes::default(),
+        WatchPlan {
+            folders: &[dir.path().to_path_buf()],
+            registry: &RegistryScopes::default(),
+            services: true,
+            tasks: true,
+        },
         Arc::new(Mock(AtomicUsize::new(0))),
         &cancel,
     )
     .await
     .unwrap();
     let sid = w.session_id();
+    let captured = ScopeCoverage {
+        requested: 1,
+        usable: 1,
+    };
+    let denied = ScopeCoverage {
+        requested: 1,
+        usable: 0,
+    };
+    assert_eq!(w.coverage().services, captured);
+    assert_eq!(w.coverage().tasks, denied);
     write(&dir.path().join("foo.dll"), b"new");
     let s = w.finish(&cancel).await.unwrap();
     assert_eq!(s.session_id, sid);
-    assert_eq!(
-        (s.registry_keys_changed, s.registry_scopes_compared),
-        (0, 0)
-    );
+    assert_eq!(s.registry_keys_changed, 0);
+    assert_eq!(s.coverage.registry, ScopeCoverage::default());
+    assert_eq!(s.coverage.services, captured);
+    assert_eq!(s.coverage.tasks, denied);
     assert_eq!(
         (s.files_changed, s.services_changed, s.tasks_changed),
         (1, 1, 0)
@@ -569,26 +583,19 @@ async fn install_watch_records_files_and_services_with_registry_opted_out() {
 #[tokio::test]
 async fn install_watch_abandon_and_failed_baseline_close_the_session() {
     use exor_engine::registry::RegistryScopes;
-    use exor_engine::watch::{InstallWatch, NullProbe};
+    use exor_engine::watch::{InstallWatch, NullProbe, WatchPlan};
     let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
     let cancel = exor_engine::Cancel::new();
     let dir = tempfile::tempdir().unwrap();
-    // a watch folder the installer will create later is fine: it baselines as empty
-    let later = dir.path().join("Foo");
-    InstallWatch::begin(
-        Arc::clone(&store),
-        "Later",
-        None,
-        std::slice::from_ref(&later),
-        &RegistryScopes::default(),
-        Arc::new(NullProbe),
-        &cancel,
-    )
-    .await
-    .unwrap()
-    .abandon()
-    .unwrap();
-    // a cancelled baseline fails and closes its session
+    let root = dir.path().to_path_buf();
+    let registry = RegistryScopes::default();
+    let plan = || WatchPlan {
+        folders: std::slice::from_ref(&root),
+        registry: &registry,
+        services: false,
+        tasks: false,
+    };
+    // A cancelled baseline fails and closes its session.
     let stop = exor_engine::Cancel::new();
     stop.cancel();
     assert!(
@@ -596,8 +603,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
             Arc::clone(&store),
             "Bad",
             None,
-            &[dir.path().to_path_buf()],
-            &RegistryScopes::default(),
+            plan(),
             Arc::new(NullProbe),
             &stop
         )
@@ -608,8 +614,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
         Arc::clone(&store),
         "Ok",
         None,
-        &[],
-        &RegistryScopes::default(),
+        plan(),
         Arc::new(NullProbe),
         &cancel,
     )
