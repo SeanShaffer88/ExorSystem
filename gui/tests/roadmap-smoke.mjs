@@ -23,6 +23,7 @@ try {
       scope: 'user', system_component: false, parent_key: null, windows_installer: false,
     };
     const app = { ...standard, name: 'Zed Widget', source: 'registry', id: 'HKLM\\Zed', scope: 'machine', uninstall_command: 'C:\\Program Files\\Zed Widget\\uninstall.exe' };
+    const userApp = { ...app, id: 'HKCU\\Fixture', name: 'Per-user Fixture', scope: 'user' };
     const msix = { ...standard, name: 'Alpha Package', source: 'msix', id: 'msix:AlphaPackage' };
     const moveable = 'C:\\Program Files\\Zed Widget';
     let portable = [];
@@ -96,6 +97,7 @@ try {
           case 'list_programs': return { programs: [
             { program: removed ? { ...app, uninstall_command: null } : app, session_ids: [], removed },
             { program: msix, session_ids: [], removed: false },
+            { program: userApp, session_ids: [], removed: false },
             ...portable.map((p) => ({program: {...standard, ...p, source: 'portable', id: 'portable:'+p.executable}, session_ids: [], removed: false})),
           ], warnings: ['One inventory source could not be checked.'] };
           case 'run_uninstaller':
@@ -117,7 +119,11 @@ try {
             if (args.programId !== app.id || args.folders.length !== 1 || args.folders[0] !== moveable) throw new Error('unexpected quarantine target');
             return { quarantine_id: 'fixture', moved: 2, skipped: 0, summary: 'Moved 2 files to quarantine.' };
           case 'list_templates': return [{name:'standard', description:'Default'}];
-          case 'app_info': return {version:'0.1.0', data_folder:'data', quarantine_folder:'data\\quarantine'};
+          case 'list_quarantines': return [];
+          case 'app_info': return {
+            version: '0.1.0', data_folder: 'profile', quarantine_folder: 'profile\\quarantine',
+            legacy_data_folder: 'portable\\data', recovery_warnings: ['Batch fixture: original already exists.'],
+          };
           case 'list_portable_programs': return portable;
           case 'register_portable_program':
             if (args.executable === 'does-not-exist.exe') throw new Error('enter the full local path');
@@ -135,6 +141,10 @@ try {
   await page.goto('https://exor.test/');
   await page.getByText('One inventory source could not be checked.').waitFor();
   const actions = page.locator('.pane-actions');
+  await page.getByRole('option', { name: /Per-user Fixture/ }).click();
+  await actions.getByText(/Use Windows Settings → Apps to uninstall this per-user program/).waitFor();
+  assert.equal(await actions.getByRole('button', {name:'Uninstall', exact:true}).count(), 0);
+  assert.equal(await actions.getByRole('button', {name:'Find leftovers'}).count(), 1);
   const classic = page.getByRole('option', { name: /Zed Widget/ });
   await classic.click();
   await actions.getByRole('button', {name:'Uninstall', exact:true}).waitFor();
@@ -156,8 +166,11 @@ try {
   assert.equal(await actions.getByRole('button', {name:'Find leftovers'}).count(), 0);
   assert.equal(await actions.getByRole('button', {name:'Uninstall', exact:true}).count(), 0);
   assert.equal(await actions.getByRole('heading', {name:'System items (review only)'}).count(), 0);
+  await page.getByRole('tab', {name:'Quarantine'}).click();
+  await page.getByRole('alert').getByText('Batch fixture: original already exists.').waitFor();
   await page.getByRole('tab', {name:'Settings'}).click();
   await page.getByRole('heading', {name:'Portable apps'}).waitFor();
+  await page.getByText(/Older portable data is unchanged/).waitFor();
   await page.getByLabel('Program name').fill('Portable Fixture');
   await page.getByLabel('Full path to the .exe file').fill('does-not-exist.exe');
   await page.getByRole('button', {name:'Save portable app'}).click();

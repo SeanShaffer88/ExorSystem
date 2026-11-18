@@ -3,8 +3,8 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <!-- Kernel driver port, USN journal, services and HKLM need administrator rights. -->
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+        <!-- Desktop observations and cleanup run without elevation. Driver tooling is separate. -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

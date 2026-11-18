@@ -4,6 +4,8 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased]
 ### Added
+- A build-only Windows candidate workflow verifies hashes and actual NSIS/MSI/portable package metadata. A disposable file/HKCU fixture, native Windows 10/11 runbook, and evidence template document the separate interactive checks.
+- An isolated, read-only lab probe and promotion criteria for experimental USN and driver sources; the driverless desktop is unchanged by these probes.
 - Watch an install can compare explicitly selected `HKCU`, `HKLM` and `HKLM32` Software subtrees without the registry driver. It records key-level changes as read-only snapshot evidence and warns when a subtree could not be compared.
 - Installations lists current-user MSIX/AppX packages alongside classic entries. Settings can add and forget opt-in portable inventory entries without running or removing their files.
 - Find leftovers also suggests registry keys, services and scheduled tasks for classic programs, strictly for review. Recently removed entries stay available for review until ExorSystem closes. File quarantine requires explicit selection from eligible folders.
@@ -20,8 +22,12 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 - CI license gate: `scripts/check-licenses.py` fails on any non-free dependency.
 - Release workflow can also be started from the Actions tab (`workflow_dispatch`); it creates the tag itself.
 - Install watch (`exor-engine::watch`): baseline, run the installer, compare. Folder snapshots plus services and scheduled tasks are recorded in one session. A failed probe skips that comparison with a warning instead of reporting everything as new. GUI: "Watch an install" view; Tauri commands `begin_watch`, `finish_watch`, `cancel_watch`.
-- Failure drills as tests: disk full (ENOSPC), cross-filesystem quarantine, vanished file, reappeared file, deleted parent folder, interrupted restore, corrupt database, concurrent writers, upgrade backup usable as a rollback.
+- Failure drills as tests: database record/ledger writes, no-overwrite, cross-filesystem quarantine, vanished file, reappeared file, deleted parent folder, interrupted restore, corrupt database, concurrent writers, upgrade backup usable as a rollback.
+### Changed
+- The Windows desktop now runs without elevation and refuses an already-elevated token. All formats use the current user's `%LOCALAPPDATA%\ExorSystem` profile. Old executable-adjacent data and quarantine are left unchanged, not migrated automatically.
+- Only supported live machine-wide classic registrations can launch uninstall commands; per-user installs use Windows Settings. Restore never overwrites an existing file.
 ### Fixed
+- Both cleanup entry points persist the quarantine record and ledger atomically, roll back a failed write, and reconcile interrupted batches. Restore/purge derive storage paths by validated ID and refuse redirected directories. Conflicts retain held files with a warning.
 - Switching tabs no longer loses the active Watch controls or its result. Failed Finish returns to a fresh baseline. System items stay out of file quarantine even under the Thorough policy.
 - Provenance resolves unambiguous ASCII case variants without merging older case-only records. The v3 migration adds lookup indexes and preserves existing evidence.
 - Layout: Appearance radio buttons no longer stretched; Watch an install form is stacked and its textarea styled (found in the first real Windows screenshots).
@@ -33,7 +39,7 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 - Quarantine view in the GUI (two-step confirm for move and permanent delete); Tauri commands `quarantine_session`, `list_quarantines`, `restore_quarantine`, `purge_quarantine`.
 - GitHub Actions: `ci.yml` (fmt, clippy `-D warnings`, tests on Linux and Windows, GUI build) and tag-triggered `release.yml`.
 - `scripts/release.ps1`: `ExorSystem-v{VERSION}-x64-Setup.exe`, `.msi`, `-Portable.zip`, `SHA256SUMS.txt`.
-- App manifest requesting Administrator, PerMonitorV2 DPI, Win10/11 compatibility.
+- PerMonitorV2 DPI and Windows 10/11 compatibility in the app manifest.
 - Tauri v2 IPC channel streaming: `scan`/`cancel_scan` commands and Scan folder view with live progress; engine `capture_with_progress`.
 - Driver test-signing loader `driver/scripts/dev-load.ps1` and troubleshooting table.
 - Toolchain pinning: `rust-toolchain.toml` (1.97.0, MSVC target), static CRT config, `docs/DEVELOPMENT.md`.

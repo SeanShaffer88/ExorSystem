@@ -175,7 +175,7 @@ fn run(volume: char, tx: &mpsc::Sender<RawEvent>) -> Result<(), WinError> {
             };
             let dir = dir_path(&vol, r.parent_frn, &mut cache)
                 .unwrap_or_else(|| format!("{volume}:\\?{:x}", r.parent_frn));
-            let ts_ms = u64::try_from(r.filetime).unwrap_or(0) / 10_000;
+            let ts_ms = crate::filetime_to_unix_ms(u64::try_from(r.filetime).unwrap_or(0));
             let ev = RawEvent::Fs {
                 usn: u64::try_from(r.usn).unwrap_or(0),
                 path: format!("{dir}\\{}", r.name),

@@ -82,6 +82,16 @@ fn ledger_row(r: &Row<'_>) -> rusqlite::Result<LedgerEntry> {
         observed_at: r.get(8)?,
     })
 }
+fn quarantine_row(r: &Row<'_>) -> rusqlite::Result<QuarantineRecord> {
+    Ok(QuarantineRecord {
+        quarantine_id: r.get(0)?,
+        rule_id: r.get(1)?,
+        session_id: r.get(2)?,
+        status: col(r, 3)?,
+        manifest_path: r.get(4)?,
+        manifest_json: r.get(5)?,
+    })
+}
 fn rule_row(r: &Row<'_>) -> rusqlite::Result<PolicyRule> {
     let json: String = r.get(2)?;
     let condition = serde_json::from_str(&json).map_err(|e| {
@@ -526,12 +536,16 @@ impl Store {
 
     /// Append to the immutable change ledger.
     pub fn append_ledger(&self, e: &NewLedgerEntry) -> Result<i64> {
-        self.conn.execute(
+        Self::insert_ledger(&self.conn, e)
+    }
+
+    fn insert_ledger(conn: &Connection, e: &NewLedgerEntry) -> Result<i64> {
+        conn.execute(
             "INSERT INTO change_ledger(session_id, node_id, path, change_kind, old_hash, new_hash, source)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![e.session_id, e.node_id, e.path, e.change_kind.as_str(), e.old_hash, e.new_hash, e.source.as_str()],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
 
     /// Ledger of a session, oldest first.
@@ -627,12 +641,26 @@ impl Store {
 
     /// Record a quarantine manifest.
     pub fn record_quarantine(&self, q: &QuarantineRecord) -> Result<()> {
-        self.conn.execute(
+        self.record_quarantine_with_ledger(q, &[])
+    }
+
+    /// Persist the record and all of its ledger rows together. If any insert fails, no rows
+    /// are committed and the caller can put the staged files back.
+    pub fn record_quarantine_with_ledger(
+        &self,
+        q: &QuarantineRecord,
+        entries: &[NewLedgerEntry],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO quarantine_manifests(quarantine_id, rule_id, session_id, status, manifest_path, manifest_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![q.quarantine_id, q.rule_id, q.session_id, q.status.as_str(), q.manifest_path, q.manifest_json],
         )?;
-        Ok(())
+        for entry in entries {
+            Self::insert_ledger(&tx, entry)?;
+        }
+        Ok(tx.commit()?)
     }
 
     /// Change a quarantine's status.
@@ -641,16 +669,53 @@ impl Store {
         quarantine_id: &str,
         status: QuarantineStatus,
     ) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE quarantine_manifests SET status = ?2 WHERE quarantine_id = ?1",
-            params![quarantine_id, status.as_str()],
-        )?;
-        if n == 0 {
+        self.set_quarantine_status_with_ledger(quarantine_id, status, &[])
+    }
+
+    /// Persist a state change with its ledger rows. A retry after commit adds no duplicates.
+    pub fn set_quarantine_status_with_ledger(
+        &self,
+        quarantine_id: &str,
+        status: QuarantineStatus,
+        entries: &[NewLedgerEntry],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let current: Option<QuarantineStatus> = tx
+            .query_row(
+                "SELECT status FROM quarantine_manifests WHERE quarantine_id = ?1",
+                [quarantine_id],
+                |r| col(r, 0),
+            )
+            .optional()?;
+        if current == Some(status) {
+            return Ok(());
+        }
+        if current.is_none() {
             return Err(StorageError::NotFound(format!(
                 "quarantine {quarantine_id}"
             )));
         }
-        Ok(())
+        tx.execute(
+            "UPDATE quarantine_manifests SET status = ?2 WHERE quarantine_id = ?1",
+            params![quarantine_id, status.as_str()],
+        )?;
+        for entry in entries {
+            Self::insert_ledger(&tx, entry)?;
+        }
+        Ok(tx.commit()?)
+    }
+
+    /// Find the record for a single batch. The manifest path is for display, not authority.
+    pub fn quarantine_record(&self, quarantine_id: &str) -> Result<Option<QuarantineRecord>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT quarantine_id, rule_id, session_id, status, manifest_path, manifest_json
+             FROM quarantine_manifests WHERE quarantine_id = ?1",
+                [quarantine_id],
+                quarantine_row,
+            )
+            .optional()?)
     }
 
     /// All quarantine records, newest first.
@@ -659,16 +724,7 @@ impl Store {
             "SELECT quarantine_id, rule_id, session_id, status, manifest_path, manifest_json
              FROM quarantine_manifests ORDER BY created_at DESC, rowid DESC",
         )?;
-        let rows = st.query_map([], |r| {
-            Ok(QuarantineRecord {
-                quarantine_id: r.get(0)?,
-                rule_id: r.get(1)?,
-                session_id: r.get(2)?,
-                status: col(r, 3)?,
-                manifest_path: r.get(4)?,
-                manifest_json: r.get(5)?,
-            })
-        })?;
+        let rows = st.query_map([], quarantine_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }

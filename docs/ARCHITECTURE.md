@@ -24,16 +24,16 @@ GUI (Tauri v2 + React)  --invoke-->  exorsystem-gui (src-tauri)
 1. **Edge direction**: an edge reads `child <relationship> parent` (artifact `created_by` installer; app `depends_on` library). `parent_node_id` is the origin or dependency.
 2. **Schema**: `0001` is the blueprint schema verbatim. The two PRAGMAs run per connection (they cannot run inside a migration transaction). `0002` adds the change ledger, quarantine records and a unique edge index, which the blueprint's pillars require but its schema lacks. `0003` adds opt-in portable inventory and case-insensitive read indexes without changing node identity.
 3. **Confidence ladder**: manifest 1.0, temporal 0.7, heuristic 0.3. Re-adding an edge keeps the highest score, so evidence only ever raises confidence.
-4. **Quarantine safety**: `quarantine` writes the manifest as `in_progress` before moving anything. On startup, `recover_interrupted` puts any blob still held back at its original path (never over a file that reappeared) and marks the manifest `rolled_back`.
+4. **Quarantine safety**: write an `in_progress` manifest before moving anything; persist the record and ledger in a single SQLite transaction, then finalize. On startup, a matching committed record finishes the manifest; otherwise verified, unblocked blobs go back to their original paths. A conflict keeps its blob and produces a warning. Restore/purge derive paths from the configured root and ID, do not use SQLite as path authority, and never overwrite an original.
 5. **Policy precedence**: when several rules match, the most protective wins (keep, review, quarantine). No match means review; non-file artifacts cannot be quarantined.
 6. **Case-insensitive paths** in the trie (Windows semantics on every platform). Provenance tries exact spelling, then a unique SQLite `NOCASE` match. Case-only variants are not merged.
 7. **Safety**: `exor-storage` and `exor-engine` forbid `unsafe`; all FFI is isolated in `exor-win` with a SAFETY note per block. No `unwrap`/`expect` outside tests (clippy-enforced).
 8. **USN reads** are kernel-side waits on the blocking pool with a 1 s timeout; no sleep polling.
 9. **Live registry visibility** is observe-only in the optional driver; live file visibility stays in user mode via the USN journal.
-10. **GUI data** is portable: `data/exor.db` beside the executable.
+10. **GUI data** is per-user: `%LOCALAPPDATA%\ExorSystem` on Windows (SQLite and `quarantine`). A profile lock serializes desktop instances. An `asInvoker` manifest and token check remove the elevated desktop boundary; old adjacent `data` is not imported.
 
 ## Program inventory and review
-The desktop shell merges classic uninstall entries, the current user's WinRT package list, and portable entries from SQLite. Only the live classic registry source supplies an uninstall command. After a guided uninstall, the shell keeps a command-free copy in memory for leftover review; it is discarded on exit. The engine compares a bounded list of Software key names, SCM services, and task definitions. System findings are advisory and never flow to the filesystem quarantine command.
+The desktop shell merges classic uninstall entries, the current user's WinRT package list, and portable entries from SQLite. Only a live machine-wide classic registry entry can supply a supported uninstall command. The desktop launches it without a shell or elevation; per-user or unsupported registrations are handled in Windows Settings. After a guided uninstall, the shell keeps a command-free copy in memory for leftover review; it is discarded on exit. The engine compares a bounded list of Software key names, SCM services, and task definitions. System findings are advisory and never flow to the filesystem quarantine command.
 
 ## Driverless install watch
 

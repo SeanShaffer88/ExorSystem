@@ -26,6 +26,9 @@ jobs:
       - name: Build artifacts
         shell: pwsh
         run: ./scripts/release.ps1
+      - name: Verify the built packages
+        shell: pwsh
+        run: ./scripts/check-release.ps1
       - name: Publish GitHub release
         shell: pwsh
         env:

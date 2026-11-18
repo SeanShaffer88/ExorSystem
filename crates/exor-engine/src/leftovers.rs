@@ -8,10 +8,7 @@
 use crate::collectors::{ServiceInfo, TaskInfo};
 use crate::error::{EngineError, Result};
 use crate::programs::{InstalledProgram, norm};
-use crate::quarantine::{self, QuarantineItem};
-use exor_storage::{
-    ChangeKind, ChangeSource, NewLedgerEntry, QuarantineRecord, QuarantineStatus, Store,
-};
+use exor_storage::Store;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
@@ -346,33 +343,7 @@ pub fn quarantine_leftovers(
             "no files found in those folders".into(),
         ));
     }
-    let (manifest, manifest_path) = quarantine::quarantine(quarantine_root, &files, &[])?;
-    store.record_quarantine(&QuarantineRecord {
-        quarantine_id: manifest.quarantine_id.clone(),
-        rule_id: None,
-        session_id,
-        status: QuarantineStatus::Quarantined,
-        manifest_path: manifest_path.to_string_lossy().into_owned(),
-        manifest_json: serde_json::to_string(&manifest)?,
-    })?;
-    for it in &manifest.items {
-        if let QuarantineItem::File {
-            original_path,
-            blake3,
-            ..
-        } = it
-        {
-            store.append_ledger(&NewLedgerEntry {
-                session_id,
-                node_id: None,
-                path: original_path.clone(),
-                change_kind: ChangeKind::Quarantined,
-                old_hash: Some(blake3.clone()),
-                new_hash: None,
-                source: ChangeSource::Policy,
-            })?;
-        }
-    }
+    let (manifest, _) = crate::execute::record_files(store, quarantine_root, session_id, &files)?;
     Ok((manifest.quarantine_id, files.len()))
 }
 
@@ -545,7 +516,7 @@ mod tests {
         let (id, n) = quarantine_leftovers(&store, &q, None, std::slice::from_ref(&dir)).unwrap();
         assert_eq!(n, 2);
         assert!(!dir.join("a.txt").exists());
-        crate::execute::restore_by_id(&store, &id, false).unwrap();
+        crate::execute::restore_by_id(&store, &q, &id).unwrap();
         assert_eq!(std::fs::read(dir.join("sub/b.txt")).unwrap(), b"b");
         assert!(quarantine_leftovers(&store, &q, None, &[PathBuf::from("/tmp")]).is_err());
     }

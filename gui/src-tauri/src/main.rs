@@ -7,13 +7,13 @@ use exor_engine::registry::RegistryScopes;
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
 use exor_engine::watch::{InstallWatch, SystemProbe, WatchSummary};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
-use exor_storage::{Edge, LedgerEntry, Session, Store};
+use exor_storage::{Edge, LedgerEntry, PolicyAction, Session, Store};
 use serde::Serialize;
 mod dock;
 mod inventory;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::ipc::Channel;
@@ -24,7 +24,11 @@ struct AppState {
     watch: AsyncMutex<Option<InstallWatch>>,
     scan_cancel: Mutex<Option<Cancel>>,
     recent_uninstalls: Mutex<BTreeMap<String, InstalledProgram>>,
+    data_dir: PathBuf,
     quarantine_root: PathBuf,
+    legacy_data: Option<PathBuf>,
+    recovery_warnings: Vec<String>,
+    _profile_lock: std::fs::File,
 }
 
 /// Events streamed to the UI over a Tauri v2 IPC channel while a scan runs.
@@ -135,6 +139,24 @@ struct QuarantineResult {
     summary: String,
 }
 
+fn inside_folder(path: &Path, folder: &Path) -> bool {
+    let (Ok(path), Ok(folder)) = (path.canonicalize(), folder.canonicalize()) else {
+        return false;
+    };
+    path.ancestors().any(|ancestor| {
+        #[cfg(windows)]
+        {
+            ancestor
+                .as_os_str()
+                .eq_ignore_ascii_case(folder.as_os_str())
+        }
+        #[cfg(not(windows))]
+        {
+            ancestor == folder
+        }
+    })
+}
+
 /// Move the files a policy marks `quarantine` into a manifest-backed quarantine. Reversible.
 #[tauri::command]
 fn quarantine_session(
@@ -149,6 +171,11 @@ fn quarantine_session(
     let candidates =
         policy::candidates_for_session(&store, session_id).map_err(|e| e.to_string())?;
     let report = policy::simulate(&rules, &candidates).map_err(|e| e.to_string())?;
+    if report.decisions.iter().any(|d| {
+        d.action == PolicyAction::Quarantine && inside_folder(Path::new(&d.path), &state.data_dir)
+    }) {
+        return Err("An ExorSystem profile file was selected. Nothing was moved.".into());
+    }
     let out = execute::quarantine_decided(&store, &state.quarantine_root, session_id, &report)
         .map_err(|e| e.to_string())?;
     let moved = out.manifest.items.len();
@@ -201,7 +228,7 @@ fn restore_quarantine(
     quarantine_id: String,
 ) -> Result<usize, String> {
     let store = lock(&state)?;
-    let r = execute::restore_by_id(&store, &quarantine_id, false)
+    let r = execute::restore_by_id(&store, &state.quarantine_root, &quarantine_id)
         .map(|m| m.items.len())
         .map_err(|e| e.to_string());
     match &r {
@@ -223,7 +250,7 @@ fn purge_quarantine(
     quarantine_id: String,
 ) -> Result<usize, String> {
     let store = lock(&state)?;
-    let r = execute::purge_by_id(&store, &quarantine_id)
+    let r = execute::purge_by_id(&store, &state.quarantine_root, &quarantine_id)
         .map(|m| m.items.len())
         .map_err(|e| e.to_string());
     match &r {
@@ -274,8 +301,33 @@ struct UninstallRun {
     summary: String,
 }
 
-/// Start the program's own uninstaller and wait for it to finish. No shell is used. The command
-/// comes from Windows' registry entry for the program, never from the UI.
+fn start_uninstaller(exe: &str, args: &[String]) -> Result<std::process::ExitStatus, String> {
+    #[cfg(windows)]
+    {
+        let exe = exor_win::uninstall_executable(exe)?;
+        let dir = exe
+            .parent()
+            .ok_or("the uninstall command has no executable directory")?;
+        std::process::Command::new(&exe)
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .map_err(|e| {
+                if e.raw_os_error() == Some(740) {
+                    "This uninstaller needs administrator rights. Use Windows Settings → Apps instead.".into()
+                } else {
+                    e.to_string()
+                }
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (exe, args);
+        Err("Windows uninstall commands are not supported on this platform".into())
+    }
+}
+
+/// Start a live machine-wide registered uninstaller without elevation, then report its exit.
 #[tauri::command]
 async fn run_uninstaller(
     app: tauri::AppHandle,
@@ -286,35 +338,25 @@ async fn run_uninstaller(
     let mut p = inventory::registry_program(program_id)
         .await?
         .ok_or_else(|| "that program is no longer in Windows' uninstall list".to_string())?;
-    let cmd = if quiet {
-        p.quiet_uninstall_command
-            .as_ref()
-            .or(p.uninstall_command.as_ref())
-    } else {
-        p.uninstall_command.as_ref()
-    }
-    .ok_or_else(|| "this program has no uninstaller registered".to_string())?
-    .clone();
-    let (exe, args) = leftovers::split_command(&cmd)
+    let cmd = p.registered_uninstall(quiet).map_err(str::to_string)?;
+    let (exe, args) = leftovers::split_command(cmd)
         .ok_or_else(|| "the registered uninstall command could not be read".to_string())?;
     dock::log(
         &app,
         "info",
         format!("Running the uninstaller for {}…", p.name),
     );
-    let status = tauri::async_runtime::spawn_blocking(move || {
-        std::process::Command::new(exe).args(args).status()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| {
-        dock::log(
-            &app,
-            "error",
-            format!("Could not start the uninstaller: {e}"),
-        );
-        format!("could not start the uninstaller: {e}")
-    })?;
+    let status = tauri::async_runtime::spawn_blocking(move || start_uninstaller(&exe, &args))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| {
+            dock::log(
+                &app,
+                "error",
+                format!("Could not start the uninstaller: {e}"),
+            );
+            format!("could not start the uninstaller: {e}")
+        })?;
     let code = status.code();
     p.uninstall_command = None;
     p.quiet_uninstall_command = None;
@@ -423,6 +465,12 @@ async fn quarantine_leftovers(
         return Err("only the suggested folders inside application roots can be quarantined; run Find leftovers again".into());
     }
     let chosen: Vec<PathBuf> = folders.into_iter().map(PathBuf::from).collect();
+    if chosen
+        .iter()
+        .any(|p| inside_folder(p, &state.data_dir) || inside_folder(&state.data_dir, p))
+    {
+        return Err("ExorSystem profile folders are not eligible for quarantine.".into());
+    }
     let store = lock(&state)?;
     let (id, moved) =
         leftovers::quarantine_leftovers(&store, &state.quarantine_root, session_id, &chosen)
@@ -612,15 +660,22 @@ struct AppInfo {
     version: String,
     data_folder: String,
     quarantine_folder: String,
+    legacy_data_folder: Option<String>,
+    recovery_warnings: Vec<String>,
 }
 
 /// Version and where ExorSystem keeps its files.
 #[tauri::command]
 fn app_info(state: State<'_, AppState>) -> AppInfo {
     AppInfo {
+        recovery_warnings: state.recovery_warnings.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        data_folder: data_dir().to_string_lossy().into_owned(),
+        data_folder: state.data_dir.to_string_lossy().into_owned(),
         quarantine_folder: state.quarantine_root.to_string_lossy().into_owned(),
+        legacy_data_folder: state
+            .legacy_data
+            .as_ref()
+            .map(|dir| dir.to_string_lossy().into_owned()),
     }
 }
 
@@ -953,8 +1008,8 @@ fn cancel_scan(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Portable by default: data lives next to the executable (`data/exor.db`).
-fn data_dir() -> PathBuf {
+/// Locate the old portable data, without trusting or importing it into the new profile.
+fn portable_data_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("data")))
@@ -962,19 +1017,39 @@ fn data_dir() -> PathBuf {
 }
 
 fn run() -> Result<(), String> {
-    let dir = data_dir();
+    #[cfg(windows)]
+    if exor_win::process_is_elevated()? {
+        return Err("ExorSystem does not run with administrator rights. Open it normally from Start or File Explorer, not from an elevated terminal.".into());
+    }
+    #[cfg(windows)]
+    let (dir, legacy_data) = {
+        let legacy = portable_data_dir();
+        (
+            exor_win::prepare_user_data_dir()?,
+            legacy.is_dir().then_some(legacy),
+        )
+    };
+    #[cfg(not(windows))]
+    let (dir, legacy_data) = (portable_data_dir(), None);
+    #[cfg(not(windows))]
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let profile_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("desktop.lock"))
+        .map_err(|e| format!("cannot open the profile lock: {e}"))?;
+    profile_lock.try_lock().map_err(|e| format!("Cannot lock the ExorSystem profile. Close any other copy of ExorSystem and try again. ({e})"))?;
     let store = Store::open(&dir.join("exor.db")).map_err(|e| e.to_string())?;
     let quarantine_root = dir.join("quarantine");
-    // A crash mid-quarantine must never strand files: undo any interrupted run before the UI opens.
-    match execute::recover_interrupted(&quarantine_root) {
-        Ok(done) if !done.is_empty() => eprintln!(
-            "ExorSystem: rolled back {} interrupted quarantine(s)",
-            done.len()
-        ),
-        Ok(_) => {}
-        Err(e) => eprintln!("ExorSystem: quarantine recovery failed: {e}"),
-    }
+    let recovery = execute::recover_interrupted(&store, &quarantine_root).unwrap_or_else(|e| {
+        execute::RecoveryReport {
+            warnings: vec![e.to_string()],
+            ..Default::default()
+        }
+    });
+    let recovery_warnings = recovery.warnings.clone();
     tauri::Builder::default()
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -987,9 +1062,13 @@ fn run() -> Result<(), String> {
             watch: AsyncMutex::new(None),
             scan_cancel: Mutex::new(None),
             recent_uninstalls: Mutex::new(BTreeMap::new()),
+            data_dir: dir,
             quarantine_root,
+            legacy_data,
+            recovery_warnings,
+            _profile_lock: profile_lock,
         })
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             if let Some(main) = app.get_webview_window("main") {
                 main.on_window_event(move |e| match e {
@@ -1000,6 +1079,19 @@ fn run() -> Result<(), String> {
                 });
             }
             dock::log(app.handle(), "info", "ExorSystem started.");
+            if recovery.rolled_back > 0 || recovery.finalized > 0 {
+                dock::log(
+                    app.handle(),
+                    "info",
+                    format!(
+                        "Quarantine recovery: {} rolled back, {} finalized.",
+                        recovery.rolled_back, recovery.finalized
+                    ),
+                );
+            }
+            for warning in &recovery.warnings {
+                dock::log(app.handle(), "warn", warning.clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1041,6 +1133,8 @@ fn run() -> Result<(), String> {
 fn main() {
     if let Err(e) = run() {
         eprintln!("ExorSystem failed to start: {e}");
+        #[cfg(windows)]
+        exor_win::show_startup_error(&e);
         std::process::exit(1);
     }
 }
