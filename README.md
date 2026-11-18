@@ -8,6 +8,8 @@ ExorSystem records observed system changes in a directed graph with confidence s
 
 Get the Windows x64 NSIS installer, MSI, or portable ZIP from [GitHub Releases](https://github.com/SeanShaffer88/ExorSystem/releases). Compare the package's SHA-256 with the `SHA256SUMS.txt` attached to the same release before running it.
 
+**Upgrading from v0.2.0:** Close ExorSystem and back up `%LOCALAPPDATA%\ExorSystem`, including SQLite files and quarantine batches, before opening v0.3.0. The profile upgrades to schema v5. See the [0.3.0 release notes](docs/releases/v0.3.0.md) for rollback guidance.
+
 **Upgrading from v0.1.0:** The newer desktop runs without administrator rights and starts with a per-user profile. Back up your old executable-adjacent `data` folder, including any quarantine batches, before upgrading. The new version does not import or restore those batches automatically. See [Data](#data) and the [0.2.0 release notes](docs/releases/v0.2.0.md).
 
 ## Layers

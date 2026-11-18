@@ -4,6 +4,10 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
+See the [0.3.0 release notes](docs/releases/v0.3.0.md), including the profile backup and schema v5 upgrade.
+
 ### Added
 - Change inspector and installation reports show saved Watch coverage, including scopes compared with zero changes and scopes skipped or not requested. Older sessions do not gain assumed coverage.
 - Save local Watch scope presets and reopen the six most recent saved comparisons, including zero-change and coverage-only results.
@@ -94,6 +98,7 @@ Initial Windows x64 release: NSIS, MSI, and portable ZIP.
 - GUI (`gui/`): Tauri v2 + React shell with Installations, Provenance and Cleanup simulator views; quarantine view behind a feature flag; window size/position persistence.
 - Docs: README, ARCHITECTURE, AUDIT, CREDITS, DESCRIPTION, SCREENSHOTS capture list.
 
-[Unreleased]: https://github.com/SeanShaffer88/ExorSystem/compare/v0.2.0...main
+[Unreleased]: https://github.com/SeanShaffer88/ExorSystem/compare/v0.3.0...main
+[0.3.0]: https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.3.0
 [0.2.0]: https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.2.0
 [0.1.0]: https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.1.0

@@ -161,7 +161,7 @@ export function startDemo() {
           for (const callback of subscriptions.get("log-cleared") ?? []) callback(clearedThrough);
           return clearedThrough;
         }
-        case "app_info": return { version: "0.2.0", data_folder: String.raw`C:\Users\Demo\AppData\Local\ExorSystem`, quarantine_folder: String.raw`C:\Users\Demo\AppData\Local\ExorSystem\quarantine`, legacy_data_folder: null, recovery_warnings: [] } satisfies AppInfo;
+        case "app_info": return { version: "0.3.0", data_folder: String.raw`C:\Users\Demo\AppData\Local\ExorSystem`, quarantine_folder: String.raw`C:\Users\Demo\AppData\Local\ExorSystem\quarantine`, legacy_data_folder: null, recovery_warnings: [] } satisfies AppInfo;
         case "list_templates": return templates;
         case "list_programs": return { programs: [
           ...rows.filter((r) => r.program.source !== "portable"),
