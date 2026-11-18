@@ -35,6 +35,18 @@ const SESSION_COLS: &str =
     "session_id, app_name, installer_path, fingerprint_family, started_at, ended_at, status";
 const LEDGER_COLS: &str =
     "entry_id, session_id, node_id, path, change_kind, old_hash, new_hash, source, observed_at";
+// Removals can have no node. Classify the persisted path formats in that case, including
+// HKLM32 (a distinct view). The typed node wins when it exists.
+const LEDGER_DOMAIN: &str = r"COALESCE(
+    (SELECT CASE n.node_type
+        WHEN 'registry_key' THEN 'registry' WHEN 'registry_value' THEN 'registry'
+        WHEN 'service' THEN 'system' WHEN 'task' THEN 'system' ELSE 'file' END
+     FROM system_nodes n WHERE n.node_id = change_ledger.node_id),
+    CASE WHEN source = 'registry_callback' OR lower(path) GLOB 'hkcu\*'
+        OR lower(path) GLOB 'hklm\*' OR lower(path) GLOB 'hklm32\*'
+        OR lower(path) GLOB 'hkey_*\*' OR lower(path) GLOB '\registry\*' THEN 'registry'
+    WHEN lower(path) GLOB 'service:*' OR lower(path) GLOB 'task:*' THEN 'system'
+    ELSE 'file' END)";
 
 fn node_row(r: &Row<'_>) -> rusqlite::Result<Node> {
     Ok(Node {
@@ -80,6 +92,7 @@ fn ledger_row(r: &Row<'_>) -> rusqlite::Result<LedgerEntry> {
             source: col(r, 7)?,
         },
         observed_at: r.get(8)?,
+        domain: col(r, 9)?,
     })
 }
 fn quarantine_row(r: &Row<'_>) -> rusqlite::Result<QuarantineRecord> {
@@ -409,7 +422,7 @@ impl Store {
         // Ledger evidence attached to a different case-only sibling belongs to that node. For
         // observations without a node ID, keep exact spelling or use the fold if it's unambiguous.
         let mut st = self.conn.prepare(&format!(
-            "SELECT {LEDGER_COLS} FROM change_ledger
+            "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger
              WHERE path = ?1 COLLATE NOCASE AND (node_id = ?2 OR (node_id IS NULL AND (
                  path = ?1 OR NOT EXISTS (
                      SELECT 1 FROM system_nodes n
@@ -551,7 +564,7 @@ impl Store {
     /// Ledger of a session, oldest first.
     pub fn ledger_for_session(&self, session_id: i64) -> Result<Vec<LedgerEntry>> {
         let mut st = self.conn.prepare(&format!(
-            "SELECT {LEDGER_COLS} FROM change_ledger WHERE session_id = ?1 ORDER BY entry_id"
+            "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger WHERE session_id = ?1 ORDER BY entry_id"
         ))?;
         Ok(st
             .query_map([session_id], ledger_row)?
@@ -564,7 +577,7 @@ impl Store {
         limit: usize,
         path_contains: Option<&str>,
     ) -> Result<Vec<LedgerEntry>> {
-        self.query_ledger(limit, path_contains, None, None)
+        self.query_ledger(limit, path_contains, None, None, None)
     }
 
     /// Newest matching entries first. A cursor restricts the query to strictly older entry IDs,
@@ -578,8 +591,21 @@ impl Store {
         session_id: Option<i64>,
         before_id: Option<i64>,
     ) -> Result<LedgerPage> {
+        self.ledger_page_in_domain(limit, path_contains, session_id, before_id, None)
+    }
+
+    /// Like [`Self::ledger_page`], with an optional registry, file, or system domain filter.
+    pub fn ledger_page_in_domain(
+        &self,
+        limit: usize,
+        path_contains: Option<&str>,
+        session_id: Option<i64>,
+        before_id: Option<i64>,
+        domain: Option<ChangeDomain>,
+    ) -> Result<LedgerPage> {
         let limit = limit.clamp(1, 1000);
-        let mut entries = self.query_ledger(limit + 1, path_contains, session_id, before_id)?;
+        let mut entries =
+            self.query_ledger(limit + 1, path_contains, session_id, before_id, domain)?;
         let next_before_id = if entries.len() > limit {
             entries.truncate(limit);
             entries.last().map(|entry| entry.entry_id)
@@ -598,11 +624,14 @@ impl Store {
         path_contains: Option<&str>,
         session_id: Option<i64>,
         before_id: Option<i64>,
+        domain: Option<ChangeDomain>,
     ) -> Result<Vec<LedgerEntry>> {
         // Add only fixed clauses and bind every value. Avoid optional OR predicates here so
         // SQLite can use idx_ledger_session (with its rowid suffix) and the entry_id range.
-        let mut sql = format!("SELECT {LEDGER_COLS} FROM change_ledger WHERE 1 = 1");
-        let mut args = Vec::with_capacity(4);
+        let mut sql = format!(
+            "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger WHERE 1 = 1"
+        );
+        let mut args = Vec::with_capacity(5);
         if let Some(id) = session_id {
             sql.push_str(" AND session_id = ?");
             args.push(Value::Integer(id));
@@ -619,6 +648,10 @@ impl Store {
             sql.push_str(" AND path LIKE ? ESCAPE '\\'");
             args.push(Value::Text(format!("%{escaped}%")));
         }
+        if let Some(domain) = domain {
+            sql.push_str(" AND domain = ?");
+            args.push(Value::Text(domain.as_str().into()));
+        }
         sql.push_str(" ORDER BY entry_id DESC LIMIT ?");
         args.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
         let mut statement = self.conn.prepare(&sql)?;
@@ -630,7 +663,7 @@ impl Store {
     /// Ledger of a path, oldest first.
     pub fn ledger_for_path(&self, path: &str) -> Result<Vec<LedgerEntry>> {
         let mut st = self.conn.prepare(&format!(
-            "SELECT {LEDGER_COLS} FROM change_ledger WHERE path = ?1 COLLATE NOCASE ORDER BY entry_id"
+            "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger WHERE path = ?1 COLLATE NOCASE ORDER BY entry_id"
         ))?;
         Ok(st
             .query_map([path], ledger_row)?

@@ -14,18 +14,19 @@ Get the Windows x64 NSIS installer, MSI, or portable ZIP from [GitHub Releases](
 
 | Layer | Path | Tech | Status |
 |---|---|---|---|
-| GUI | `gui/` | Tauri v2 + React/TypeScript, keyboard-first, plain-language reports | tabs, three-pane programs list, status bar, slide-out log; type-checked |
+| GUI | `gui/` | Tauri v2 + React/TypeScript, keyboard-first, plain-language reports | workspace dashboard, split inspector, guided uninstall, docked log |
 | User-space engine | `crates/exor-engine` | Rust + tokio, BLAKE3 | implemented, 100% safe Rust, tested |
 | Storage | `crates/exor-storage` | SQLite, WAL | implemented, tested |
 | Windows sources | `crates/exor-win` | windows-rs: registry snapshots, inventory, USN journal, driver client | see [verification matrix](AUDIT.md) |
 | Kernel driver | `driver/` | C, minifilter framework, `CmRegisterCallbackEx` | source only, not compiled |
 
-See [architecture](docs/ARCHITECTURE.md), the [roadmap and release checks](ROADMAP.md), the [verification matrix](AUDIT.md), and [changelog](CHANGELOG.md).
+See the [dashboard guide](docs/DASHBOARD.md), [architecture](docs/ARCHITECTURE.md), the [roadmap and release checks](ROADMAP.md), the [verification matrix](AUDIT.md), and [changelog](CHANGELOG.md).
 
 ## Features
 
+- **Workspace dashboard**: installed inventory, recent changes, cleanup metrics, and links into focused review tools. Storage totals reflect recorded file sizes, not measured free space.
 - **Program inventory**: classic Windows programs, current-user MSIX apps, and portable apps added explicitly in Settings. MSIX and portable entries are listed without uninstall actions.
-- **Guided leftover review**: review possible folders, registry keys, services and tasks after a classic uninstall. ExorSystem runs without elevation and launches only supported live machine-wide registrations; use Windows Settings for per-user or incompatible uninstallers. System findings are read-only.
+- **Guided leftover review**: preview the registered command, confirm the vendor uninstall, and separately review possible leftover folders, registry keys, services and tasks. ExorSystem runs without elevation and launches only supported live machine-wide registrations; use Windows Settings for per-user or incompatible uninstallers. System findings are read-only.
 - **BOM & inference graph**: confidence `1.0` manifest-confirmed, `0.7` inferred from timing, `0.3` heuristic/unknown. Edges are cycle-checked.
 - **Noise filtering**: background telemetry, browser caches, indexer and Defender writes dropped in real time, with burst de-duplication.
 - **Differential engine**: async parallel directory walk, Merkle path-trie diff (identical subtrees skipped), BLAKE3 hashing with incremental reuse.
@@ -33,7 +34,7 @@ See [architecture](docs/ARCHITECTURE.md), the [roadmap and release checks](ROADM
 - **Optional themes**: 36 dark and light palettes with live preview and a temporary Undo; all pass WCAG AA contrast.
 - **Cleanup policy simulator**: JSONLogic rules, pure dry run; most protective rule wins (keep, then review, then quarantine). Templates: conservative, standard, thorough.
 - **Evidence-preserving quarantine**: BLAKE3-verified file batches, no-overwrite restore, explicit permanent delete, and manifests kept as evidence. Interrupted batches are recovered when safe; conflicts retain the held files. No VSS snapshots.
-- **Provenance & change history**: trace recorded artifacts and review an installation's observations in the append-only ledger. History supports path and session filters, older pages, and evidence source labels.
+- **Provenance & change history**: trace recorded artifacts and review an installation's observations in the append-only ledger. The split change inspector shows before/after evidence; its timeline supports session and path filters, older pages, and evidence source labels. Trace recorded dependencies in the relationship graph.
 - **Governance extras**: shared-component impact maps, orphaned-dependency review, installer family fingerprinting (silent switches), update batching by risk, portable-app transition plan, accessibility-first summaries.
 - **Mock harnesses**: seeded USN/registry event generators so the whole pipeline runs under `cargo test` without a driver.
 

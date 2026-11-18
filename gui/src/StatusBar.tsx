@@ -1,53 +1,42 @@
 import { useEffect, useState } from "react";
 import { logApi } from "./logApi";
+import { Icon } from "./components/Icon";
 
-export interface Shortcut {
-  id: string;
-  label: string;
-  hint: string;
-  onClick: () => void;
-}
-
-/** Bottom bar: latest activity on the left, shortcut and tool buttons on the right. */
-export function StatusBar({ shortcuts }: { shortcuts: Shortcut[] }) {
-  const [last, setLast] = useState("Ready.");
+export function StatusBar({ onTerminal }: { onTerminal: () => void }) {
+  const [last, setLast] = useState("Ready");
   const [open, setOpen] = useState(false);
-
+  const [error, setError] = useState("");
   useEffect(() => {
     let live = true;
-    const a = logApi.onLine((l) => live && setLast(l.msg));
-    const b = logApi.onOpen((o) => live && setOpen(o));
-    logApi.isOpen().then((o) => live && setOpen(o)).catch(() => {});
-    logApi.get().then((l) => live && l.length && setLast(l[l.length - 1]!.msg)).catch(() => {});
-    return () => {
-      live = false;
-      a.then((f) => f());
-      b.then((f) => f());
-    };
+    const a = logApi.onLine((l) => { if (live) setLast(l.msg); });
+    const b = logApi.onOpen((o) => { if (live) setOpen(o); });
+    // Attach rejection handlers immediately; a plain browser may not have Tauri IPC.
+    const listeners = [a, b].map((p) => p.catch(() => () => {}));
+    logApi.isOpen().then((o) => { if (live) setOpen(o); }).catch(() => {});
+    logApi.get().then((l) => { if (live && l.length) setLast(l[l.length - 1]!.msg); }).catch(() => {});
+    return () => { live = false; for (const listener of listeners) void listener.then((stop) => stop()).catch(() => {}); };
   }, []);
 
+  const toggleLog = () => {
+    setError("");
+    void logApi.setOpen(!open).catch((e: unknown) => setError(String(e)));
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === "`") {
+      if (!document.querySelector("dialog[open]") && e.ctrlKey && e.key === "`") {
         e.preventDefault();
-        void logApi.setOpen(!open);
+        void logApi.setOpen(!open).catch((err: unknown) => setError(String(err)));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  return (
-    <footer className="statusbar" aria-label="Status bar">
-      <span className="status-text" title={last}>{last}</span>
-      <span className="status-actions">
-        {shortcuts.map((s) => (
-          <button key={s.id} type="button" onClick={s.onClick} title={s.hint}>{s.label}</button>
-        ))}
-        <button type="button" aria-pressed={open} onClick={() => void logApi.setOpen(!open)} title="Show or hide the activity log (Ctrl+`)">
-          Log
-        </button>
-      </span>
-    </footer>
-  );
+  return <footer className="statusbar" aria-label="Status bar">
+    <span className="status-message"><i className="dot tone-safe" aria-hidden="true"/><span className="status-text" title={error || last}>{error || last}</span></span>
+    <span className="status-actions">
+      <button type="button" onClick={onTerminal} title="Open script preview"><Icon name="terminal" size={14}/> <span>Script preview</span></button>
+      <button type="button" aria-pressed={open} onClick={toggleLog} title="Show or hide the activity log (Ctrl+`)"><Icon name="list" size={14}/> Log</button>
+    </span>
+  </footer>;
 }

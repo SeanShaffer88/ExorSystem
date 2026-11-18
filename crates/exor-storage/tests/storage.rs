@@ -670,3 +670,50 @@ fn ledger_pages_filter_before_limiting_and_keep_their_boundary_after_appends() {
             .is_empty()
     );
 }
+
+#[test]
+fn inspector_pages_classify_unlinked_removals_and_filter_before_limit() {
+    let s = Store::open_in_memory().unwrap();
+    let append = |path: &str| {
+        s.append_ledger(&NewLedgerEntry {
+            session_id: None,
+            node_id: None,
+            path: path.into(),
+            change_kind: ChangeKind::Deleted,
+            old_hash: None,
+            new_hash: None,
+            source: ChangeSource::SnapshotDiff,
+        })
+        .unwrap()
+    };
+    let user = append(r"hkcu\Software\Example");
+    let machine32 = append(r"HKLM32\Software\Example");
+    let path = append(r"C:\Example\main.exe");
+    let task = append(r"task:\Example\Updater");
+    let page = s
+        .ledger_page_in_domain(1, Some("example"), None, None, Some(ChangeDomain::Registry))
+        .unwrap();
+    assert_eq!(page.entries[0].entry_id, machine32);
+    assert_eq!(page.entries[0].domain, ChangeDomain::Registry);
+    assert_eq!(page.next_before_id, Some(machine32));
+    let older = s
+        .ledger_page_in_domain(
+            1,
+            None,
+            None,
+            page.next_before_id,
+            Some(ChangeDomain::Registry),
+        )
+        .unwrap();
+    assert_eq!(older.entries[0].entry_id, user);
+    assert!(older.next_before_id.is_none());
+    let all = s.ledger_page(4, None, None, None).unwrap();
+    assert_eq!(
+        (all.entries[0].entry_id, all.entries[0].domain),
+        (task, ChangeDomain::System)
+    );
+    assert_eq!(
+        (all.entries[1].entry_id, all.entries[1].domain),
+        (path, ChangeDomain::File)
+    );
+}

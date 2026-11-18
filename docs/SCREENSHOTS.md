@@ -1,7 +1,9 @@
 # README screenshot capture list (real runs on Windows only)
 
-1. `installations.png`: Installations view with at least two recorded sessions.
-2. `provenance.png`: Provenance view after tracing a file installed by a monitored setup.
-3. `simulator.png`: Cleanup simulator showing the dry-run summary and decision table.
+1. `overview.png`: Overview with application inventory, recent observations, and storage totals.
+2. `applications.png`: Installed application details with linked evidence and the uninstall wizard’s plan step.
+3. `inspector.png`: Registry and file system panes, plus before/after evidence for a changed file.
+4. `relationships.png`: One-hop graph from a recorded artifact with a dependency or shared edge.
+5. `cleanup.png`: Cleanup summary with held, purged, and restored batches, or the simulator with policy decisions.
 
-Capture at 100% and 150% DPI, dark theme. No placeholders are committed until real captures exist.
+Capture at 100% and 150% DPI. Use fixture paths or redact user data. Browser demo screenshots are not native release evidence.

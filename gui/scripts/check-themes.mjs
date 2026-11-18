@@ -7,6 +7,10 @@ const lin = (v) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) **
 const lum = (h) => { const [r, g, b] = rgb(h).map(lin); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
 const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
 
+// CSS color-mix(in srgb, a weight, b) rounded to display channels.
+const mix = (a, b, weight) => '#' + rgb(a).map((v, i) =>
+  Math.round(weight * v + (1 - weight) * rgb(b)[i]).toString(16).padStart(2, '0')).join('');
+
 // [foreground token, background token, minimum ratio, why]
 const rules = [
   ["fg", "bg", 4.5, "body text"], ["fg", "panel", 4.5, "text on panels"],
@@ -26,6 +30,21 @@ for (const t of themes) {
   for (const [f, b, min, why] of rules) {
     const r = ratio(t.tokens[f], t.tokens[b]);
     if (r < min) { console.error(`${t.id}: ${f} on ${b} is ${r.toFixed(2)} < ${min} (${why})`); bad++; }
+  }
+  // The corresponding blended text/background rules live in dashboard.css.
+  const { fg, bg, panel, accent, danger, muted } = t.tokens;
+  const light = t.mode === "light";
+  const primaryBg = mix(accent, light ? "#070d18" : "#eafdf7", light ? .79 : .88);
+  const accentText = t.id === "default" ? accent : mix(accent, fg, .5);
+  const tones = light ? ["#08735c", "#845500", "#634db0", "#205ca2"] : ["#64e4bf", "#f5c784", "#b8a8ff", "#8abfff"];
+  const dashboardRules = [
+    [light ? "#effcf7" : "#091c17", primaryBg, "primary button"],
+    ...[bg, panel, mix(panel, accent, .88), mix(panel, fg, .94)].map((surface) => [accentText, surface, "accent text"]),
+    ...[...tones, danger, muted].map((tone) => [mix(tone, fg, t.id === "default" ? .78 : .65), mix(panel, tone, .91), "status badge"]),
+  ];
+  for (const [ink, surface, why] of dashboardRules) {
+    const r = ratio(ink, surface);
+    if (r < 4.5) { console.error(`${t.id}: ${why} contrast is ${r.toFixed(2)} < 4.5`); bad++; }
   }
 }
 if (bad) { console.error(`${bad} problem(s)`); process.exit(1); }

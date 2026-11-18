@@ -22,7 +22,7 @@ ExorSystem records system changes and helps people review the evidence before cl
 
 - To opt in to registry tracking, enter up to eight specific Software subtrees, one per line. Use `HKCU\Software\Example` for the calling user, `HKLM\Software\Example` for the 64-bit machine view, or `HKLM32\Software\Example` for the 32-bit machine view. Leave it blank to skip the registry. Whole hives and whole Software roots are not accepted.
 - Wait for the baseline before running the installer. You can switch tabs and return to finish or cancel. Subtrees that could not be fully read at either end are skipped with a warning, not treated as empty.
-- After Finish, choose **View recorded changes** to open **History** filtered to the watch session. Key paths and last-write metadata show what changed between checks, not which process changed it. Registry value names and contents are not collected, and short-lived changes between snapshots may be missed.
+- After Finish, choose **View recorded changes** to open the **Change inspector** filtered to the watch session. Use **Timeline** to see all observation types. Key paths and last-write metadata show what changed between checks, not which process changed it. Registry value names and contents are not collected, and short-lived changes between snapshots may be missed.
 
 ## Before publishing a Windows build
 
