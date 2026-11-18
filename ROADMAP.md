@@ -7,6 +7,7 @@ ExorSystem records system changes and helps people review the evidence before cl
 - **Foundation** ([PR #5](https://github.com/SeanShaffer88/ExorSystem/pull/5)): file, service and task observations; policy preview; recoverable file quarantine; automated checks and Windows packaging. [v0.1.0](https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.1.0) published NSIS, MSI and portable ZIP builds with SHA-256 hashes.
 - **Inventory and leftover review** ([PR #19](https://github.com/SeanShaffer88/ExorSystem/pull/19)): classic Windows programs, current-user MSIX packages, and opt-in portable entries. Registry, service and task suggestions are read-only. Provenance can find an unambiguous ASCII case-insensitive match without merging older records.
 - **Driverless Watch and History** ([PR #20](https://github.com/SeanShaffer88/ExorSystem/pull/20), [PR #21](https://github.com/SeanShaffer88/ExorSystem/pull/21)): opt-in registry subtree snapshots, persistent Watch controls across tabs, and a link to the completed watch's History. History includes removals, evidence sources, literal path search, session filtering and paging.
+- **Unelevated desktop and release verification** ([PR #22](https://github.com/SeanShaffer88/ExorSystem/pull/22)): per-user storage, guarded uninstall and quarantine, a build-only package workflow, and a Windows 10/11 test fixture. The [Windows Server package run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44247905086) passed for NSIS, MSI, and portable ZIP. Interactive client sign-off remains open.
 
 ## Development priorities
 
@@ -30,7 +31,7 @@ Use the [Windows runbook](docs/WINDOWS-RELEASE.md), not a live user profile. Che
 - Pass Linux/Windows CI and the **Windows candidate packages (no publish)** workflow. These are automated gates, not desktop sign-off.
 - [ ] Verify installation/extraction, normal launch, WebView2, elevation behavior, upgrade/removal and data location on both Windows 10 and 11 x64 for each installer format where applicable.
 - [ ] Verify real Watch → History, inventory and uninstall/review, quarantine/restore/purge, and Windows-specific failure drills with disposable fixture data.
-- [ ] Verify keyboard navigation, Narrator, high contrast, 100%/150% DPI, and activity-log docking across two monitors. Attach completed evidence before publishing.
+- [ ] Verify keyboard navigation, Narrator, high contrast, 100%/150% DPI, and activity-log docking across two monitors. Attach completed evidence before [tagging and publishing the same packages](docs/WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate).
 
 ## Driver work is separate
 

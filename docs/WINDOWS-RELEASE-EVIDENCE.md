@@ -3,7 +3,7 @@
 Copy for each candidate. Attach `PACKAGE-CHECKS.json`, `SHA256SUMS.txt`, and relevant logs to the PR. Avoid personal file paths, account identifiers, and registry value data in screenshots or logs.
 
 - Source commit / app version:
-- CI run / candidate package run:
+- Passing CI run / successful Windows candidate Actions run ID and link:
 - Tester / UTC date:
 - Windows 10 x64 edition, build and VM snapshot:
 - Windows 11 x64 edition, build and VM snapshot:

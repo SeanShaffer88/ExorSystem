@@ -19,7 +19,7 @@ From `gui/`, run `npm ci`, `npm run build`, `npx playwright-core install --only-
 The `asInvoker` desktop uses the normal user token and refuses an elevated startup before opening storage. Run `npm run tauri dev` from a **non-elevated** terminal. A separate already-open desktop using the same `%LOCALAPPDATA%\ExorSystem` profile must be closed first. Engine/storage tests do not require elevation, and the normal watch does not need a driver.
 
 ## Build-only packages
-See the [Windows release runbook](WINDOWS-RELEASE.md) for `scripts/release.ps1`, package checks, the disposable fixture, and interactive evidence. The **Release** Actions workflow publishes; use **Windows candidate packages (no publish)** for test artifacts.
+See the [Windows release runbook](WINDOWS-RELEASE.md) for `scripts/release.ps1`, package checks, the disposable fixture, and interactive evidence. Use **Windows candidate packages (no publish)** for test artifacts. The separate **Release** workflow tags and promotes the exact artifact only after an operator confirms [Windows client sign-off](WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate).
 
 ## Optional live-source lab
 See [the isolated lab runbook](LIVE-COLLECTION.md) and [driver development](../driver/README.md). Do not launch the desktop as Administrator to connect to a collector.

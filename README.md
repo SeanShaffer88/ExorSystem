@@ -4,6 +4,12 @@ Open-source Windows system management and installation governance suite: a FOSS 
 
 ExorSystem records observed system changes in a directed graph with confidence scores, so you can ask where an item came from and review the evidence before deciding what to remove.
 
+## Downloads
+
+Get the Windows x64 NSIS installer, MSI, or portable ZIP from [GitHub Releases](https://github.com/SeanShaffer88/ExorSystem/releases). Compare the package's SHA-256 with the `SHA256SUMS.txt` attached to the same release before running it.
+
+**Upgrading from v0.1.0:** The newer desktop runs without administrator rights and starts with a per-user profile. Back up your old executable-adjacent `data` folder, including any quarantine batches, before upgrading. The new version does not import or restore those batches automatically. See [Data](#data) and the [0.2.0 release notes](docs/releases/v0.2.0.md).
+
 ## Layers
 
 | Layer | Path | Tech | Status |

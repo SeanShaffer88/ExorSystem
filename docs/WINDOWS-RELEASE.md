@@ -11,7 +11,7 @@ Use the **Windows candidate packages (no publish)** Actions workflow on the cand
 ./scripts/check-release.ps1 -ArtifactDir ./dist
 ```
 
-Keep `SHA256SUMS.txt` and `PACKAGE-CHECKS.json` with the artifacts. The verification script checks all three hashes, the NSIS PE header, the MSI x64 template, and the portable ZIP contents plus its executable's x64, `asInvoker`, and PerMonitorV2 manifests. It does **not** install or launch the packages. Use the separate **Release** workflow only after the gates below pass; that workflow publishes to GitHub. Do not reuse an existing release tag for a new candidate.
+Use the **workflow artifact** for sign-off and eventual publication. Keep `SHA256SUMS.txt` and `PACKAGE-CHECKS.json` with the three packages. The verification script checks their hashes, the NSIS PE header, the MSI x64 template, and the portable ZIP contents plus its executable's x64, `asInvoker`, and PerMonitorV2 manifest. It does **not** install or launch the packages. Local builds are useful for troubleshooting but are not a substitute for the exact workflow artifact you intend to release.
 
 ## 2. Install, start, and remove each format
 
@@ -60,3 +60,13 @@ Close ExorSystem, finish or restore its fixture batches and forget the portable 
 Check keyboard navigation (Tab, Shift+Tab, arrow keys and Home/End on tabs), visible focus, History focus after Watch, Narrator names and status announcements, high contrast, 100%/150% DPI and moving the app with the activity log across two monitors. Include screenshots or short notes; see the [capture list](SCREENSHOTS.md).
 
 Copy the [evidence template](WINDOWS-RELEASE-EVIDENCE.md) for this candidate. Record the commit and per-format hash, OS edition/build, VM setup, WebView2 version, status, and logs. Attach the completed record to the PR or release checklist. Mark anything not run **Not run**, not Pass. Publish only when the required native checks pass; the [live-source/driver gates](LIVE-COLLECTION.md) are separate and do not block driverless desktop packaging.
+
+## 6. Tag and publish the tested candidate
+
+Do not create a tag before both Windows client matrices pass. Use the separate **Release** workflow from the default branch only after recording sign-off:
+
+1. Attach the completed evidence record to a PR or issue in this repository. Include the successful Windows candidate **Actions run ID**, source commit, and the SHA-256 of every tested package. The tested commit must be reachable from `main` and have passing CI. If it was squash-merged and is no longer reachable, build and sign off the candidate on the new commit.
+2. In Actions → **Release** → **Run workflow**, enter `candidate_run_id` (the number in the run URL) and `client_evidence_url` (the PR, issue, or comment containing the completed results). Check `client_signoff` only after verifying the results against the exact artifact. The checkbox is the operator's sign-off, not an automated client test.
+3. The workflow downloads the retained artifact from that run, verifies its version, source, sizes, and hashes, then creates the new `v{version}` tag and publishes the **same bytes** along with the checksums and evidence. It refuses to reuse a tag and does not rebuild. Check the new release and its tag target afterward. If the artifact has expired, build a new candidate and verify the new package hashes on both clients before publishing.
+
+Do not use **Release** just to build packages. Until the client results are complete, leave the candidate in Actions and keep the latest stable release unchanged.
