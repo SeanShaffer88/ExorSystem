@@ -196,7 +196,7 @@ fn restore_quarantine(
     quarantine_id: String,
 ) -> Result<usize, String> {
     let store = lock(&state)?;
-    let r = execute::restore_by_id(&store, &quarantine_id, false)
+    let r = execute::restore_by_id(&store, &state.quarantine_root, &quarantine_id, false)
         .map(|m| m.items.len())
         .map_err(|e| e.to_string());
     match &r {
@@ -218,7 +218,7 @@ fn purge_quarantine(
     quarantine_id: String,
 ) -> Result<usize, String> {
     let store = lock(&state)?;
-    let r = execute::purge_by_id(&store, &quarantine_id)
+    let r = execute::purge_by_id(&store, &state.quarantine_root, &quarantine_id)
         .map(|m| m.items.len())
         .map_err(|e| e.to_string());
     match &r {
@@ -326,6 +326,12 @@ async fn run_uninstaller(
     quiet: bool,
 ) -> Result<UninstallRun, String> {
     let p = program_by_id(program_id).await?;
+    if !programs::elevated_uninstall_allowed(p.scope) {
+        return Err(
+            "For safety, ExorSystem will not run a per-user uninstaller with administrator rights. Uninstall it from Windows Settings."
+                .into(),
+        );
+    }
     let cmd = if quiet {
         p.quiet_uninstall_command
             .as_ref()
@@ -920,11 +926,39 @@ fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("data"))
 }
 
+fn quarantine_dir(data_dir: &std::path::Path) -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        let system_data = exor_win::program_data_dir().map_err(|e| e.to_string())?;
+        let canonical_data = data_dir
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve {}: {e}", data_dir.display()))?;
+        let identity = exor_engine::hashing::hash_bytes(
+            canonical_data.to_string_lossy().to_lowercase().as_bytes(),
+        );
+        Ok(system_data
+            .join("ExorSystem")
+            .join(identity)
+            .join("quarantine"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(data_dir.join("quarantine"))
+    }
+}
+
 fn run() -> Result<(), String> {
     let dir = data_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let store = Store::open(&dir.join("exor.db")).map_err(|e| e.to_string())?;
-    let quarantine_root = dir.join("quarantine");
+    let quarantine_root = quarantine_dir(&dir)?;
+    std::fs::create_dir_all(&quarantine_root)
+        .map_err(|e| format!("cannot create protected quarantine storage: {e}"))?;
+    #[cfg(windows)]
+    exor_win::secure_quarantine_dir(&quarantine_root).map_err(|e| e.to_string())?;
+    let quarantine_root = quarantine_root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve protected quarantine storage: {e}"))?;
     // A crash mid-quarantine must never strand files: undo any interrupted run before the UI opens.
     match execute::recover_interrupted(&quarantine_root) {
         Ok(done) if !done.is_empty() => eprintln!(

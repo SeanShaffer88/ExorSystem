@@ -24,6 +24,9 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | IPC streaming (`scan` + `cancel_scan` over Tauri channel) | Partially verified | engine progress API tested (monotonic, ends `done`); channel path type-checked only |
 | Installed programs enumeration (`exor-win`) | Partially verified | type-checked for the Windows target; filtering and matching unit-tested; registry never read at runtime |
 | Guided uninstall (run uninstaller, leftovers) | Partially verified | command splitting, leftover search and quarantine/restore unit-tested; real uninstallers, UAC prompts and MSI never run |
+| Elevated uninstall scope gate | Unverified | HKCU entries are blocked in code; regression test added but not run |
+| Protected quarantine storage | Unverified | Windows ProgramData DACL and ID-bound restore/purge paths added; regression tests added but not run |
+| Quarantine DB-failure rollback | Unverified | restore-on-record-failure and regression test added but not run |
 | History, report export, portable copy, update risk, settings | Partially verified | engine and storage parts unit-tested; GUI built and type-checked; never rendered on Windows; Documents-folder output paths untested on real profiles |
 | Log window slide, z-order, docking | Unverified | type-checked only; behavior on real Windows (animation, staying behind main, multi-monitor, DPI) never observed |
 | `driver/scripts/dev-load.ps1` | Unverified | never run |

@@ -199,7 +199,13 @@ export function SessionsView() {
           <p>Select a program.</p>
         ) : (
           <>
-            {p && p.uninstall_command && (
+            {p && p.uninstall_command && p.scope === "user" && (
+              <p role="note">
+                For safety, ExorSystem will not run a per-user uninstaller with administrator rights.
+                Uninstall it from Windows Settings.
+              </p>
+            )}
+            {p && p.uninstall_command && p.scope !== "user" && (
               <>
                 <h3>Uninstall</h3>
                 <label className="check">
