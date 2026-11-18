@@ -190,7 +190,7 @@
 .app-detail {
   position: sticky; inset-block-start: 8px; max-block-size: calc(100cqb - 16px);
   min-inline-size: 0; overflow: auto; overscroll-behavior: contain;
-  padding: 16px; overflow-wrap: anywhere; scrollbar-color: var(--border) transparent;
+  padding: 16px; overflow-wrap: anywhere; scrollbar-color: var(--border) transparent; scrollbar-gutter: stable;
   scroll-margin-block: 8px;
 }
 .app-detail:focus-visible { outline-offset: -3px; }

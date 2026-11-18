@@ -79,7 +79,12 @@ fn reconcile(app: &AppHandle, open: bool) -> Result<(), String> {
         .get_webview_window("log")
         .ok_or("activity log window not found")?;
     let result = |e: tauri::Error| e.to_string();
+    #[cfg(windows)]
+    let log_hwnd = log.hwnd().map_err(result)?;
     if !open {
+        #[cfg(windows)]
+        exor_win::show_activity_window(log_hwnd, false)?;
+        #[cfg(not(windows))]
         log.hide().map_err(result)?;
     }
     if main.is_minimized().map_err(result)? {
@@ -97,7 +102,7 @@ fn reconcile(app: &AppHandle, open: bool) -> Result<(), String> {
             let area = monitor.work_area();
             let placement = exor_win::place_activity_window(
                 main.hwnd().map_err(result)?,
-                log.hwnd().map_err(result)?,
+                log_hwnd,
                 (
                     area.position.x,
                     area.position.y,
@@ -112,8 +117,10 @@ fn reconcile(app: &AppHandle, open: bool) -> Result<(), String> {
             placement?;
         }
     }
-    if open && !log.is_visible().map_err(result)? {
-        // Configured with focus=false, so showing it does not steal focus from the owner's WebView.
+    if open {
+        #[cfg(windows)]
+        exor_win::show_activity_window(log_hwnd, true)?;
+        #[cfg(not(windows))]
         log.show().map_err(result)?;
     }
     Ok(())
@@ -121,6 +128,8 @@ fn reconcile(app: &AppHandle, open: bool) -> Result<(), String> {
 
 fn set_open(app: &AppHandle, open: bool) -> Result<(), String> {
     let dock = app.state::<Dock>();
+    // Initial placement can itself send DPI/resize notifications. Let them queue a follow pass.
+    dock.open.store(open, Ordering::SeqCst);
     let result = reconcile(app, open);
     if open && result.is_err() {
         // If the owner was resized but the attachment failed, give the space back.

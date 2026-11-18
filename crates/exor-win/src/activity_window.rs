@@ -6,8 +6,9 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, GetWindowThreadProcessId, IsZoomed, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, IsZoomed, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    ShowWindow,
 };
 
 impl From<RECT> for Rect {
@@ -19,6 +20,27 @@ impl From<RECT> for Rect {
             bottom: r.bottom,
         }
     }
+}
+
+fn on_gui_thread(window: HWND) -> bool {
+    // SAFETY: the query accepts arbitrary handles and returns 0 for an invalid HWND.
+    unsafe { GetWindowThreadProcessId(window, None) == GetCurrentThreadId() }
+}
+
+/// Show the owned log without activating it, or hide it. Call on its GUI thread. Use this for
+/// every visibility change after creation: Tao's `focus: false` only applies at creation time.
+pub fn show_activity_window(window: HWND, visible: bool) -> Result<(), String> {
+    if !on_gui_thread(window) {
+        return Err("activity window must belong to the GUI thread".into());
+    }
+    // SAFETY: the window belongs to the calling thread. ShowWindow returns the previous visibility,
+    // not a success flag. Do not disable focusability: users can still click into the log.
+    unsafe {
+        if !visible || !IsWindowVisible(window).as_bool() {
+            let _ = ShowWindow(window, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
+        }
+    }
+    Ok(())
 }
 
 fn outer_bounds(window: HWND) -> Result<Rect, String> {
@@ -94,12 +116,7 @@ pub fn place_activity_window(
     open: bool,
     reserved: &mut bool,
 ) -> Result<(), String> {
-    // SAFETY: both functions accept arbitrary handles/return 0 on invalid HWNDs. No pointers are passed.
-    let on_window_thread = unsafe {
-        let id = GetCurrentThreadId();
-        GetWindowThreadProcessId(main, None) == id && GetWindowThreadProcessId(log, None) == id
-    };
-    if !on_window_thread || main == log {
+    if main == log || !on_gui_thread(main) || !on_gui_thread(log) {
         return Err("activity windows must belong to the same GUI thread".into());
     }
     let (x, y, width, height) = work;
@@ -139,8 +156,8 @@ pub fn place_activity_window(
 mod tests {
     use super::*;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetWindowPlacement, SW_MAXIMIZE, SW_RESTORE,
-        SW_SHOWNOACTIVATE, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT,
+        CreateWindowExW, DestroyWindow, GetForegroundWindow, GetWindowPlacement, SW_MAXIMIZE,
+        SW_MINIMIZE, SW_RESTORE, WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPLACEMENT,
         WS_OVERLAPPEDWINDOW, WS_POPUP,
     };
     use windows::core::w;
@@ -223,6 +240,22 @@ mod tests {
             }
         );
 
+        // SAFETY: GetForegroundWindow takes no arguments and returns a handle for comparison.
+        let focused = unsafe { GetForegroundWindow() };
+        show_activity_window(log.0, true).unwrap();
+        // SAFETY: the visibility query uses the test's live log window.
+        assert!(unsafe { IsWindowVisible(log.0).as_bool() });
+        // SAFETY: only compares handles. Opening the log doesn't take foreground focus.
+        assert_eq!(unsafe { GetForegroundWindow() }, focused);
+        // SAFETY: both windows are live; Windows hides an owned window with its minimized owner.
+        unsafe {
+            let _ = ShowWindow(main.0, SW_MINIMIZE);
+            assert!(!IsWindowVisible(log.0).as_bool());
+            let _ = ShowWindow(main.0, SW_RESTORE);
+            assert!(IsZoomed(main.0).as_bool());
+            assert!(IsWindowVisible(log.0).as_bool());
+        }
+        show_activity_window(log.0, false).unwrap();
         place_activity_window(main.0, log.0, work, 1.0, false, &mut reserved).unwrap();
         assert!(!reserved);
         // SAFETY: the test's window is still alive; closing the log must not unmaximize it.

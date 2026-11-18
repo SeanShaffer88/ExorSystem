@@ -24,7 +24,7 @@ mod services_source;
 mod usn_source;
 
 #[cfg(windows)]
-pub use activity_window::place_activity_window;
+pub use activity_window::{place_activity_window, show_activity_window};
 #[cfg(windows)]
 pub use desktop::{
     prepare_user_data_dir, process_is_elevated, show_startup_error, uninstall_executable,
