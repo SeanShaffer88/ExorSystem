@@ -11,6 +11,7 @@ use exor_storage::{
     ChangeKind, ChangeSource, NewLedgerEntry, NodeType, PolicyAction, QuarantineRecord,
     QuarantineStatus, Store,
 };
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 /// Outcome of [`quarantine_decided`].
@@ -156,6 +157,75 @@ fn checked_batch(
         quarantine::finish_stage(&path, &mut m)?;
     }
     Ok((rec, m, path))
+}
+
+/// Original path and logical file size from the recorded manifest, not a live file probe.
+#[derive(Debug, Serialize)]
+pub struct BatchFile {
+    /// Where the file originally lived.
+    pub original_path: String,
+    /// Logical bytes at move time.
+    pub size: u64,
+}
+
+/// One page of the local database's batch record. No quarantined blobs are read or modified.
+#[derive(Debug, Serialize)]
+pub struct BatchPreview {
+    /// Database lifecycle state (not a live restore eligibility check).
+    pub status: QuarantineStatus,
+    /// Creation time stored in the manifest.
+    pub created_unix_ms: u64,
+    /// Number of files recorded in the batch.
+    pub total_files: usize,
+    /// Requested page of recorded file paths and lengths; no registry export data.
+    pub files: Vec<BatchFile>,
+    /// Offset of the next page if another exists.
+    pub next_offset: Option<usize>,
+}
+
+/// Inspect the manifest copy in SQLite. Do not resolve, validate against disk or finalize the
+/// active manifest here; only the restore and purge commands may perform those operations.
+pub fn preview_batch(store: &Store, id: &str, offset: usize) -> Result<BatchPreview> {
+    const PAGE_SIZE: usize = 24;
+    let record = store
+        .quarantine_record(id)?
+        .ok_or_else(|| EngineError::Quarantine("unknown quarantine batch".into()))?;
+    let manifest: QuarantineManifest = serde_json::from_str(&record.manifest_json)?;
+    if manifest.quarantine_id != record.quarantine_id || manifest.version != 1 {
+        return Err(EngineError::Quarantine(
+            "unsupported or mismatched recorded manifest".into(),
+        ));
+    }
+    let total_files = manifest
+        .items
+        .iter()
+        .filter(|item| matches!(item, QuarantineItem::File { .. }))
+        .count();
+    let files = manifest
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            QuarantineItem::File {
+                original_path,
+                size,
+                ..
+            } => Some(BatchFile {
+                original_path,
+                size,
+            }),
+            QuarantineItem::Registry { .. } => None,
+        })
+        .skip(offset)
+        .take(PAGE_SIZE)
+        .collect::<Vec<_>>();
+    let next = offset.saturating_add(files.len());
+    Ok(BatchPreview {
+        status: record.status,
+        created_unix_ms: manifest.created_unix_ms,
+        total_files,
+        files,
+        next_offset: (next < total_files).then_some(next),
+    })
 }
 
 /// Restore a named batch without overwrite and commit its status and ledger together. A retry

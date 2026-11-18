@@ -199,6 +199,16 @@ impl Store {
         Ok(())
     }
 
+    /// Mark unfinished sessions failed after a desktop restart. Call only while holding the
+    /// profile's exclusive process lock, before starting any capture. Do not invent an ending
+    /// timestamp, comparison coverage or ledger rows for interrupted sessions.
+    pub fn recover_unfinished_sessions(&self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE installation_sessions SET status = 'failed', ended_at = NULL WHERE status = 'monitoring'",
+            [],
+        )?)
+    }
+
     /// Fetch one session.
     pub fn session(&self, session_id: i64) -> Result<Option<Session>> {
         Ok(self
@@ -279,6 +289,29 @@ impl Store {
             .optional()?;
         json.map(|text| serde_json::from_str(&text).map_err(StorageError::from))
             .transpose()
+    }
+
+    /// Newest saved comparisons by session ID, including those with no observations. Bounded to
+    /// 1–50 runs. The watch table, not ledger presence, defines the result set.
+    pub fn recent_watch_runs(&self, limit: u32) -> Result<Vec<WatchRun>> {
+        let mut statement = self.conn.prepare(
+            "SELECT s.app_name, s.ended_at, w.summary_json
+             FROM watch_comparisons w JOIN installation_sessions s USING (session_id)
+             ORDER BY w.session_id DESC LIMIT ?1",
+        )?;
+        statement
+            .query_map([limit.clamp(1, 50)], |r| {
+                Ok((r.get::<_, String>(0)?, r.get(1)?, r.get::<_, String>(2)?))
+            })?
+            .map(|row| {
+                let (app_name, ended_at, json) = row?;
+                Ok(WatchRun {
+                    app_name,
+                    ended_at,
+                    summary: serde_json::from_str(&json)?,
+                })
+            })
+            .collect()
     }
 
     // ---- portable inventory ----
@@ -386,6 +419,53 @@ impl Store {
         Ok(st
             .query_map([session_id], node_row)?
             .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Page through all nodes recorded for a session. Filter on the full path, treating wildcard
+    /// characters literally. Only the requested page of nodes is materialized.
+    pub fn session_nodes_page(
+        &self,
+        session_id: i64,
+        path_contains: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<SessionNodePage> {
+        let total = self.conn.query_row(
+            "SELECT COUNT(*) FROM system_nodes WHERE first_detected_in = ?1",
+            [session_id],
+            |r| r.get(0),
+        )?;
+        let filter = path_contains.filter(|s| !s.is_empty());
+        let selection = "FROM system_nodes WHERE first_detected_in = ?1
+                         AND (?2 IS NULL OR instr(lower(path), lower(?2)) > 0)";
+        let matching = if filter.is_some() {
+            self.conn.query_row(
+                &format!("SELECT COUNT(*) {selection}"),
+                params![session_id, filter],
+                |r| r.get(0),
+            )?
+        } else {
+            total
+        };
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} {selection} ORDER BY path COLLATE NOCASE, node_id LIMIT ?3 OFFSET ?4"
+        ))?;
+        let nodes = statement
+            .query_map(
+                params![
+                    session_id,
+                    filter,
+                    i64::try_from(limit.clamp(1, 100)).unwrap_or(100),
+                    i64::try_from(offset).unwrap_or(i64::MAX).min(matching),
+                ],
+                node_row,
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(SessionNodePage {
+            total,
+            matching,
+            nodes,
+        })
     }
 
     // ---- DAG ----
@@ -637,7 +717,13 @@ impl Store {
         limit: usize,
         path_contains: Option<&str>,
     ) -> Result<Vec<LedgerEntry>> {
-        self.query_ledger(limit, path_contains, None, None, None)
+        self.query_ledger(
+            limit,
+            LedgerQuery {
+                path_contains,
+                ..Default::default()
+            },
+        )
     }
 
     /// Newest matching entries first. A cursor restricts the query to strictly older entry IDs,
@@ -663,9 +749,22 @@ impl Store {
         before_id: Option<i64>,
         domain: Option<ChangeDomain>,
     ) -> Result<LedgerPage> {
+        self.ledger_query(
+            limit,
+            LedgerQuery {
+                path_contains,
+                session_id,
+                before_id,
+                domain,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Typed ledger page shared by the inspector and observation exports.
+    pub fn ledger_query(&self, limit: usize, query: LedgerQuery<'_>) -> Result<LedgerPage> {
         let limit = limit.clamp(1, 1000);
-        let mut entries =
-            self.query_ledger(limit + 1, path_contains, session_id, before_id, domain)?;
+        let mut entries = self.query_ledger(limit + 1, query)?;
         let next_before_id = if entries.len() > limit {
             entries.truncate(limit);
             entries.last().map(|entry| entry.entry_id)
@@ -678,29 +777,22 @@ impl Store {
         })
     }
 
-    fn query_ledger(
-        &self,
-        limit: usize,
-        path_contains: Option<&str>,
-        session_id: Option<i64>,
-        before_id: Option<i64>,
-        domain: Option<ChangeDomain>,
-    ) -> Result<Vec<LedgerEntry>> {
+    fn query_ledger(&self, limit: usize, query: LedgerQuery<'_>) -> Result<Vec<LedgerEntry>> {
         // Add only fixed clauses and bind every value. Avoid optional OR predicates here so
         // SQLite can use idx_ledger_session (with its rowid suffix) and the entry_id range.
         let mut sql = format!(
             "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger WHERE 1 = 1"
         );
-        let mut args = Vec::with_capacity(5);
-        if let Some(id) = session_id {
+        let mut args = Vec::with_capacity(6);
+        if let Some(id) = query.session_id {
             sql.push_str(" AND session_id = ?");
             args.push(Value::Integer(id));
         }
-        if let Some(id) = before_id {
+        if let Some(id) = query.before_id {
             sql.push_str(" AND entry_id < ?");
             args.push(Value::Integer(id));
         }
-        if let Some(filter) = path_contains {
+        if let Some(filter) = query.path_contains {
             let escaped = filter
                 .replace('\\', "\\\\")
                 .replace('%', "\\%")
@@ -708,9 +800,13 @@ impl Store {
             sql.push_str(" AND path LIKE ? ESCAPE '\\'");
             args.push(Value::Text(format!("%{escaped}%")));
         }
-        if let Some(domain) = domain {
+        if let Some(domain) = query.domain {
             sql.push_str(" AND domain = ?");
             args.push(Value::Text(domain.as_str().into()));
+        }
+        if let Some(kind) = query.change_kind {
+            sql.push_str(" AND change_kind = ?");
+            args.push(Value::Text(kind.as_str().into()));
         }
         sql.push_str(" ORDER BY entry_id DESC LIMIT ?");
         args.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));

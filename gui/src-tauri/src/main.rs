@@ -8,9 +8,10 @@ use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
 use exor_engine::watch::{InstallWatch, SystemProbe, WatchCoverage, WatchPlan, WatchSummary};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
 use exor_storage::{
-    ChangeDomain, Edge, LedgerEntry, Node, NodeType, PolicyAction, RelationshipType, Session, Store,
+    Edge, LedgerEntry, Node, NodeType, PolicyAction, RelationshipType, Session, Store,
 };
 use serde::{Deserialize, Serialize};
+mod archive;
 mod dock;
 mod inventory;
 
@@ -24,6 +25,7 @@ use tauri::{Manager, State, WindowEvent};
 struct AppState {
     store: Arc<Mutex<Store>>,
     watch: AsyncMutex<Option<InstallWatch>>,
+    watch_capture: Mutex<Option<(u64, Cancel)>>,
     scan_cancel: Mutex<Option<Cancel>>,
     recent_uninstalls: Mutex<BTreeMap<String, InstalledProgram>>,
     data_dir: PathBuf,
@@ -832,151 +834,6 @@ fn app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
-#[derive(Serialize)]
-struct HistoryRow {
-    id: i64,
-    when: Option<String>,
-    path: String,
-    what: String,
-    source: String,
-    session_id: Option<i64>,
-    domain: ChangeDomain,
-    old_hash: Option<String>,
-    new_hash: Option<String>,
-}
-
-#[derive(Serialize)]
-struct HistoryPage {
-    rows: Vec<HistoryRow>,
-    next_before_id: Option<i64>,
-}
-
-/// Read the saved scope coverage for this session without re-reading the system.
-#[tauri::command]
-async fn watch_comparison(
-    state: State<'_, AppState>,
-    session_id: i64,
-) -> Result<Option<WatchSummary>, String> {
-    let store = Arc::clone(&state.store);
-    tauri::async_runtime::spawn_blocking(move || {
-        store
-            .lock()
-            .map_err(|_| "internal lock poisoned".to_string())?
-            .watch_comparison(session_id)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Read one page of evidence by installation and path, including changes without a known node.
-#[tauri::command]
-async fn history(
-    state: State<'_, AppState>,
-    filter: Option<String>,
-    limit: usize,
-    session_id: Option<i64>,
-    before_id: Option<i64>,
-    domain: Option<ChangeDomain>,
-) -> Result<HistoryPage, String> {
-    let store = Arc::clone(&state.store);
-    let page = tauri::async_runtime::spawn_blocking(move || {
-        let filter = filter.as_deref().map(str::trim).filter(|f| !f.is_empty());
-        store
-            .lock()
-            .map_err(|_| "internal lock poisoned".to_string())?
-            .ledger_page_in_domain(limit, filter, session_id, before_id, domain)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    Ok(HistoryPage {
-        rows: page
-            .entries
-            .into_iter()
-            .map(|e| HistoryRow {
-                id: e.entry_id,
-                when: e.observed_at,
-                path: e.entry.path,
-                what: e.entry.change_kind.as_str().to_string(),
-                source: e.entry.source.as_str().to_string(),
-                session_id: e.entry.session_id,
-                domain: e.domain,
-                old_hash: e.entry.old_hash,
-                new_hash: e.entry.new_hash,
-            })
-            .collect(),
-        next_before_id: page.next_before_id,
-    })
-}
-
-#[derive(Serialize)]
-struct SessionItem {
-    path: String,
-    node_type: String,
-    confidence: f64,
-    shared: bool,
-}
-
-#[derive(Serialize)]
-struct SessionItems {
-    total: usize,
-    shared: usize,
-    by_type: std::collections::BTreeMap<String, usize>,
-    /// First 500 items, least certain last.
-    items: Vec<SessionItem>,
-}
-
-/// Everything one recorded installation left behind, with how sure we are about each item.
-#[tauri::command]
-fn session_items(state: State<'_, AppState>, session_id: i64) -> Result<SessionItems, String> {
-    let store = lock(&state)?;
-    let cands = policy::candidates_for_session(&store, session_id).map_err(|e| e.to_string())?;
-    let mut by_type = std::collections::BTreeMap::new();
-    let mut shared = 0;
-    let mut items: Vec<SessionItem> = cands
-        .iter()
-        .map(|c| {
-            let node_type = serde_json::to_value(c.node_type)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            *by_type.entry(node_type.clone()).or_insert(0) += 1;
-            let is_shared = c
-                .attrs
-                .get("shared")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if is_shared {
-                shared += 1;
-            }
-            SessionItem {
-                path: c.path.clone(),
-                node_type,
-                confidence: c
-                    .attrs
-                    .get("confidence")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.3),
-                shared: is_shared,
-            }
-        })
-        .collect();
-    items.sort_by(|a, b| {
-        b.confidence
-            .total_cmp(&a.confidence)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    let total = items.len();
-    items.truncate(500);
-    Ok(SessionItems {
-        total,
-        shared,
-        by_type,
-        items,
-    })
-}
-
 /// Real system snapshots on Windows; elsewhere the engine's "not available" probe.
 #[cfg(windows)]
 struct SystemState;
@@ -1023,17 +880,73 @@ struct WatchSystem {
     tasks: bool,
 }
 
-/// Take the baseline. Run the installer after the snapshots have finished.
+/// Leases the cancellation token for one capture, not for the watch waiting between captures.
+struct CaptureLease<'a> {
+    slot: &'a Mutex<Option<(u64, Cancel)>>,
+    token: Cancel,
+}
+
+impl<'a> CaptureLease<'a> {
+    fn acquire(slot: &'a Mutex<Option<(u64, Cancel)>>, capture_id: u64) -> Result<Self, String> {
+        let mut active = slot
+            .lock()
+            .map_err(|_| "internal lock poisoned".to_string())?;
+        if active.is_some() {
+            return Err("a watch capture is already in progress".into());
+        }
+        let token = Cancel::new();
+        *active = Some((capture_id, token.clone()));
+        Ok(Self { slot, token })
+    }
+}
+
+impl Drop for CaptureLease<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.slot.lock() {
+            *active = None;
+        }
+    }
+}
+
 #[tauri::command]
-async fn begin_watch(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+fn stop_watch_capture(state: State<'_, AppState>, capture_id: u64) -> Result<bool, String> {
+    let slot = state
+        .watch_capture
+        .lock()
+        .map_err(|_| "internal lock poisoned".to_string())?;
+    if let Some((_, token)) = slot.as_ref().filter(|(id, _)| *id == capture_id) {
+        token.cancel();
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchRequest {
     app_name: String,
     installer_path: Option<String>,
     folders: Vec<String>,
     registry_subtrees: String,
     system: WatchSystem,
-) -> Result<WatchStart, String> {
+}
+
+/// Take the baseline. Run the installer after the snapshots have finished.
+#[tauri::command]
+async fn begin_watch(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: WatchRequest,
+    capture_id: u64,
+    on_ready: Channel<()>,
+) -> Result<Option<WatchStart>, String> {
+    let WatchRequest {
+        app_name,
+        installer_path,
+        folders,
+        registry_subtrees,
+        system,
+    } = request;
     let name = app_name.trim();
     if name.is_empty() {
         return Err("enter the application name".into());
@@ -1057,12 +970,14 @@ async fn begin_watch(
     if slot.is_some() {
         return Err("an installation is already being watched".into());
     }
+    let capture = CaptureLease::acquire(&state.watch_capture, capture_id)?;
+    let _ = on_ready.send(());
     dock::log(
         &app,
         "info",
         format!("Taking the 'before' picture for {name}…"),
     );
-    let w = InstallWatch::begin(
+    let result = InstallWatch::begin(
         Arc::clone(&state.store),
         name,
         installer,
@@ -1073,10 +988,30 @@ async fn begin_watch(
             tasks: system.tasks,
         },
         probe(),
-        &Cancel::new(),
+        &capture.token,
     )
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    let w = match result {
+        Ok(w) if capture.token.is_cancelled() => {
+            w.abandon().map_err(|e| e.to_string())?;
+            dock::log(
+                &app,
+                "info",
+                "Watch baseline cancelled. No changes were recorded.",
+            );
+            return Ok(None);
+        }
+        Ok(w) => w,
+        Err(EngineError::Cancelled) => {
+            dock::log(
+                &app,
+                "info",
+                "Watch baseline cancelled. No changes were recorded.",
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(e.to_string()),
+    };
     let start = WatchStart {
         session_id: w.session_id(),
         coverage: w.coverage(),
@@ -1092,7 +1027,7 @@ async fn begin_watch(
             format!("Baseline ready for {name}; some scopes were skipped."),
         );
     }
-    Ok(start)
+    Ok(Some(start))
 }
 
 /// Take the after snapshots and record the observed changes in one session.
@@ -1100,16 +1035,20 @@ async fn begin_watch(
 async fn finish_watch(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-) -> Result<WatchSummary, String> {
+    capture_id: u64,
+    on_ready: Channel<()>,
+) -> Result<Option<WatchSummary>, String> {
     let mut slot = state
         .watch
         .try_lock()
         .map_err(|_| "the install watch is already taking a snapshot".to_string())?;
+    let capture = CaptureLease::acquire(&state.watch_capture, capture_id)?;
     let w = slot
         .take()
         .ok_or_else(|| "no installation is being watched".to_string())?;
+    let _ = on_ready.send(());
     dock::log(&app, "info", "Taking the 'after' picture and comparing…");
-    let r = w.finish(&Cancel::new()).await.map_err(|e| e.to_string());
+    let r = w.finish(&capture.token).await;
     match &r {
         Ok(s) if !s.coverage.has_usable() => {
             dock::log(&app, "warn", "No watch scopes could be compared.")
@@ -1120,9 +1059,17 @@ async fn finish_watch(
             "Watch compared the available scopes; some were skipped.",
         ),
         Ok(_) => dock::log(&app, "info", "Watch comparison complete."),
+        Err(EngineError::Cancelled) => {
+            dock::log(
+                &app,
+                "info",
+                "Watch comparison cancelled. No changes were recorded.",
+            );
+            return Ok(None);
+        }
         Err(e) => dock::log(&app, "error", format!("Recording failed: {e}")),
     }
-    r
+    r.map(Some).map_err(|e| e.to_string())
 }
 
 /// Stop watching without recording anything.
@@ -1245,6 +1192,9 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("cannot open the profile lock: {e}"))?;
     profile_lock.try_lock().map_err(|e| format!("Cannot lock the ExorSystem profile. Close any other copy of ExorSystem and try again. ({e})"))?;
     let store = Store::open(&dir.join("exor.db")).map_err(|e| e.to_string())?;
+    let interrupted = store
+        .recover_unfinished_sessions()
+        .map_err(|e| e.to_string())?;
     let quarantine_root = dir.join("quarantine");
     let recovery = execute::recover_interrupted(&store, &quarantine_root).unwrap_or_else(|e| {
         execute::RecoveryReport {
@@ -1263,6 +1213,7 @@ fn run() -> Result<(), String> {
         .manage(AppState {
             store: Arc::new(Mutex::new(store)),
             watch: AsyncMutex::new(None),
+            watch_capture: Mutex::new(None),
             scan_cancel: Mutex::new(None),
             recent_uninstalls: Mutex::new(BTreeMap::new()),
             data_dir: dir,
@@ -1296,6 +1247,9 @@ fn run() -> Result<(), String> {
                 });
             }
             dock::log(app.handle(), "info", "ExorSystem started.");
+            if interrupted > 0 {
+                dock::log(app.handle(), "warn", format!("Closed {interrupted} unfinished installation session(s). Their snapshots could not be recovered."));
+            }
             if recovery.rolled_back > 0 || recovery.finalized > 0 {
                 dock::log(
                     app.handle(),
@@ -1323,14 +1277,17 @@ fn run() -> Result<(), String> {
             cancel_scan,
             quarantine_session,
             list_quarantines,
+            archive::quarantine_batch,
             restore_quarantine,
             purge_quarantine,
             inventory::list_programs,
             inventory::list_portable_programs,
             inventory::register_portable_program,
             inventory::forget_portable_program,
-            history,
-            watch_comparison,
+            archive::history,
+            archive::save_changes,
+            archive::watch_comparison,
+            archive::recent_watch_runs,
             export_report,
             list_templates,
             app_info,
@@ -1340,9 +1297,10 @@ fn run() -> Result<(), String> {
             run_uninstaller,
             find_leftovers,
             quarantine_leftovers,
-            session_items,
+            archive::session_items,
             begin_watch,
             finish_watch,
+            stop_watch_capture,
             cancel_watch
         ])
         .run(tauri::generate_context!())

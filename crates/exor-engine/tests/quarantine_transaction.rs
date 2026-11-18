@@ -103,3 +103,53 @@ fn restore_can_retry_ledger_commit_without_writing_files_twice() {
         .collect();
     assert_eq!(kinds, [ChangeKind::Quarantined, ChangeKind::Restored]);
 }
+
+#[test]
+fn preview_pages_read_only_the_saved_copy_and_do_not_authorize_restore() {
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory().unwrap();
+    let session_id = store.begin_session("Preview fixture", None, None).unwrap();
+    let root = d.path().join("q");
+    let originals: Vec<_> = (0..26)
+        .map(|i| {
+            let path = d.path().join(format!("sample-{i:02}.bin"));
+            std::fs::write(&path, vec![42_u8; i + 1]).unwrap();
+            path
+        })
+        .collect();
+    let paths: Vec<_> = originals.iter().map(|p| p.as_path()).collect();
+    let out = quarantine_decided(&store, &root, session_id, &report(&paths)).unwrap();
+    let id = &out.manifest.quarantine_id;
+    let manifest = root.join(id).join("manifest.json");
+    let hidden = root.join(id).join("manifest.temp");
+    std::fs::rename(&manifest, &hidden).unwrap();
+    let first = exor_engine::execute::preview_batch(&store, id, 0).unwrap();
+    let last = exor_engine::execute::preview_batch(&store, id, first.next_offset.unwrap()).unwrap();
+    assert_eq!(first.status, QuarantineStatus::Quarantined);
+    assert_eq!(first.total_files, 26);
+    assert_eq!(first.created_unix_ms, out.manifest.created_unix_ms);
+    assert_eq!(first.files.len(), 24);
+    assert_eq!(last.files.len(), 2);
+    assert_eq!(Path::new(&last.files[1].original_path), paths[25]);
+    assert_eq!(last.files[1].size, 26);
+    assert_eq!(last.next_offset, None);
+    assert!(exor_engine::execute::preview_batch(&store, "../unknown", 0).is_err());
+    assert!(
+        restore_by_id(&store, &root, id).is_err(),
+        "restoring must read the disk manifest"
+    );
+    assert!(!manifest.exists());
+    assert!(originals.iter().all(|path| !path.exists()));
+    assert_eq!(store.ledger_for_session(session_id).unwrap().len(), 26);
+
+    std::fs::rename(&hidden, &manifest).unwrap();
+    std::fs::write(paths[25], b"replacement").unwrap();
+    assert!(restore_by_id(&store, &root, id).is_err());
+    assert_eq!(std::fs::read(paths[25]).unwrap(), b"replacement");
+    assert_eq!(store.ledger_for_session(session_id).unwrap().len(), 26);
+    std::fs::remove_file(paths[25]).unwrap();
+    restore_by_id(&store, &root, id).unwrap();
+    let saved = exor_engine::execute::preview_batch(&store, id, 24).unwrap();
+    assert_eq!(saved.status, QuarantineStatus::Restored);
+    assert_eq!(saved.files[1].original_path, last.files[1].original_path);
+}

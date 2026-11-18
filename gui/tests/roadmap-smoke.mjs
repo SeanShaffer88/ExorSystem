@@ -297,7 +297,7 @@ try {
   assert.equal(calls.filter(([c]) => c === 'run_uninstaller').length, 3);
   assert.equal(calls.filter(([c]) => c === 'purge_quarantine').length, 1);
   assert.equal(calls.filter(([c]) => c === 'quarantine_leftovers').length, 1);
-  const begun = calls.filter(([c]) => c === 'begin_watch').map(([, args]) => args);
+  const begun = calls.filter(([c]) => c === 'begin_watch').map(([, args]) => args.request);
   assert.deepEqual(begun.map((args) => args.registrySubtrees), [subtrees, '', '', '', '']);
   assert.deepEqual(begun.map((args) => args.folders), [[watchFolder], [watchFolder], [watchFolder], [], []]);
   assert.deepEqual(begun.map((args) => args.system), [

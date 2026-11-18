@@ -424,3 +424,27 @@
   .nav-tab[aria-current="page"], .row-button[aria-pressed="true"], .segments button[aria-pressed="true"] { outline: 1px solid Highlight; outline-offset: -2px; }
   .diff-plus, .diff-minus { border-left-color: Highlight; }
 }
+
+/* Saved scopes and paged local evidence. Keep long paths/names inside the owning dock. */
+.watch-setup { display: grid; gap: 12px; }
+.watch-presets { padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-low); }
+.watch-presets fieldset { display: grid; gap: 8px; min-inline-size: 0; border: 0; padding: 0; margin: 0; }
+.watch-presets .field { min-inline-size: 0; max-inline-size: 100%; }
+.watch-presets select, .watch-presets input { max-inline-size: 100%; }
+.watch-presets p, .change-export p, .batch-review p { overflow-wrap: anywhere; }
+.watch-presets summary, .change-export summary { cursor: pointer; font-weight: 650; }
+.watch-run-list .row-button { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; padding: 9px 16px; width: 100%; }
+.watch-run-list .row-button > span:first-child { min-inline-size: 0; overflow-wrap: anywhere; }
+.watch-run-list small { display: block; }
+.evidence-search { margin-block: 10px; }
+.evidence-pager, .batch-pager { padding-inline: 0; }
+.pager button[aria-disabled="true"] { opacity: .55; cursor: default; }
+.batch-view { display: block; margin-block-start: 3px; }
+.batch-review { scroll-margin-block: 8px; }
+.batch-review-heading, .batch-review-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.batch-review-heading h2 { margin: 4px 0 0; font-size: 16px; }
+.batch-review-meta { justify-content: flex-start; }
+.batch-files li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 8px; padding-block: 6px; }
+.batch-files code { overflow-wrap: anywhere; }
+.batch-files li > span { white-space: nowrap; color: var(--muted); }
+.batch-review > .quiet-button { margin-block-start: 9px; }

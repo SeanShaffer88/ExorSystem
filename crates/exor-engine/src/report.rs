@@ -1,9 +1,16 @@
 //! Accessibility-first plain-language summaries: no colour, symbols or layout carry meaning.
 
-use crate::error::{EngineError, Result};
+use crate::error::{EngineError, Result, io_err};
 use crate::policy::{self, SimulationReport};
 use crate::templates;
-use exor_storage::{ChangeSource, NodeType, PolicyAction, Provenance, Store, WatchSummary};
+use exor_storage::{
+    ChangeKind, ChangeSource, LedgerEntry, LedgerQuery, NodeType, PolicyAction, Provenance, Store,
+    WatchSummary,
+};
+use serde::Serialize;
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
+use std::path::Path;
 
 /// Words for a confidence score.
 pub fn confidence_words(c: f64) -> &'static str {
@@ -135,6 +142,159 @@ fn append_watch_coverage(out: &mut String, summary: Option<&WatchSummary>) {
     out.push_str("\nThese counts are for the saved snapshot comparison only. They do not identify which process changed an item.\n\n");
 }
 
+/// An attributed artifact, including the same shared-evidence marker as policy review.
+#[derive(Debug, Serialize)]
+pub struct SessionEvidence {
+    /// Recorded path (or system identifier).
+    pub path: String,
+    /// Recorded artifact kind.
+    pub node_type: NodeType,
+    /// Confidence in the attribution, not a safety score.
+    pub confidence: f64,
+    /// A shared relation or a dependent from another session was observed.
+    pub shared: bool,
+}
+
+/// Browse one bounded page without re-reading the filesystem or the registry.
+#[derive(Debug, Serialize)]
+pub struct SessionEvidencePage {
+    /// Number of recorded nodes in the session before path filtering.
+    pub total: i64,
+    /// Number of matching nodes.
+    pub matching: i64,
+    /// Page of matching nodes, with confidence and shared markers.
+    pub items: Vec<SessionEvidence>,
+}
+
+/// Page through all attributed nodes, computing the relationship markers only for the displayed
+/// nodes. Change Inspector remains the place to look up observations that have no node.
+pub fn session_evidence_page(
+    store: &Store,
+    session_id: i64,
+    path_contains: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> Result<SessionEvidencePage> {
+    let page = store.session_nodes_page(session_id, path_contains, offset, limit)?;
+    let items = page
+        .nodes
+        .iter()
+        .map(|node| {
+            let c = policy::candidate_from_node(store, node)?;
+            Ok(SessionEvidence {
+                path: c.path,
+                node_type: c.node_type,
+                confidence: c
+                    .attrs
+                    .get("confidence")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.3),
+                shared: c
+                    .attrs
+                    .get("shared")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(SessionEvidencePage {
+        total: page.total,
+        matching: page.matching,
+        items,
+    })
+}
+
+const CHANGE_EXPORT_LIMIT: usize = 1000;
+
+/// Summary returned to the UI after saving the filtered ledger file.
+#[derive(Debug, Serialize)]
+pub struct ChangeExport {
+    /// Where the new file was saved.
+    pub path: String,
+    /// Number of matching observations written.
+    pub records: usize,
+    /// Older matches exist beyond the export limit.
+    pub truncated: bool,
+}
+
+#[derive(Serialize)]
+struct ExportFilters<'a> {
+    session_id: Option<i64>,
+    path_contains: Option<&'a str>,
+    change_kind: Option<ChangeKind>,
+}
+
+#[derive(Serialize)]
+struct ChangeArchive<'a> {
+    format: &'static str,
+    version: u32,
+    filters: ExportFilters<'a>,
+    truncated: bool,
+    observations: Vec<LedgerEntry>,
+}
+
+/// Save the newest matching observations across all domains (at most 1000). Export is read-only
+/// with respect to the ledger and uses create-new file semantics even across racing writers.
+pub fn export_changes(
+    store: &Store,
+    directory: &Path,
+    session_id: Option<i64>,
+    path_contains: Option<&str>,
+    change_kind: Option<ChangeKind>,
+) -> Result<ChangeExport> {
+    let page = store.ledger_query(
+        CHANGE_EXPORT_LIMIT,
+        LedgerQuery {
+            path_contains,
+            session_id,
+            change_kind,
+            ..Default::default()
+        },
+    )?;
+    let truncated = page.next_before_id.is_some();
+    let records = page.entries.len();
+    let archive = ChangeArchive {
+        format: "exorsystem.observations",
+        version: 1,
+        filters: ExportFilters {
+            session_id,
+            path_contains,
+            change_kind,
+        },
+        truncated,
+        observations: page.entries,
+    };
+    let bytes = serde_json::to_vec_pretty(&archive)?;
+    for n in 1..=1000 {
+        let name = if n == 1 {
+            "ExorSystem changes.json".into()
+        } else {
+            format!("ExorSystem changes ({n}).json")
+        };
+        let path = directory.join(name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(io_err(path)(error));
+                }
+                return Ok(ChangeExport {
+                    path: path.to_string_lossy().into_owned(),
+                    records,
+                    truncated,
+                });
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io_err(path)(e)),
+        }
+    }
+    Err(io_err(directory)(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "no unused changes export name",
+    )))
+}
+
 /// Plain-language provenance sentence for one artifact.
 pub fn describe_provenance(p: &Provenance) -> String {
     if let Some(s) = &p.session
@@ -173,6 +333,88 @@ pub fn describe_provenance(p: &Provenance) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod report_tests {
     use super::*;
+
+    #[test]
+    fn export_uses_the_filters_includes_all_domains_and_never_overwrites() {
+        use exor_storage::NewLedgerEntry;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let session = store.begin_session("Fixture", None, None).unwrap();
+        let append = |session_id, path: String, change_kind| {
+            store
+                .append_ledger(&NewLedgerEntry {
+                    session_id,
+                    node_id: None,
+                    path,
+                    change_kind,
+                    old_hash: None,
+                    new_hash: None,
+                    source: ChangeSource::SnapshotDiff,
+                })
+                .unwrap();
+        };
+        for i in 0..1001 {
+            append(
+                Some(session),
+                if i % 2 == 0 {
+                    format!(r"C:\App_%\{i}")
+                } else {
+                    format!(r"HKCU\Software\App_%\{i}")
+                },
+                ChangeKind::Deleted,
+            );
+        }
+        append(
+            Some(session),
+            r"C:\App_%\WrongKind".into(),
+            ChangeKind::Created,
+        );
+        append(
+            Some(session),
+            r"C:\App_A\WildcardNotLiteral".into(),
+            ChangeKind::Deleted,
+        );
+        append(None, r"C:\App_%\Unassigned".into(), ChangeKind::Deleted);
+        let original = dir.path().join("ExorSystem changes.json");
+        std::fs::write(&original, b"keep me").unwrap();
+        let report = export_changes(
+            &store,
+            dir.path(),
+            Some(session),
+            Some("app_%"),
+            Some(ChangeKind::Deleted),
+        )
+        .unwrap();
+        assert_eq!(report.records, 1000);
+        assert!(report.truncated);
+        assert_eq!(std::fs::read(&original).unwrap(), b"keep me");
+        assert!(report.path.ends_with("ExorSystem changes (2).json"));
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report.path).unwrap()).unwrap();
+        assert_eq!(json["format"], "exorsystem.observations");
+        assert_eq!(json["version"], 1);
+        assert_eq!(
+            json["filters"],
+            serde_json::json!({ "session_id": session, "path_contains": "app_%", "change_kind": "deleted" })
+        );
+        assert_eq!(json["truncated"], true);
+        let rows: Vec<LedgerEntry> = serde_json::from_value(json["observations"].clone()).unwrap();
+        assert_eq!(rows.len(), 1000);
+        assert_eq!(rows[0].entry.path, r"C:\App_%\1000");
+        assert_eq!(rows[999].entry.path, r"HKCU\Software\App_%\1");
+        assert!(
+            rows.iter().all(|r| r.entry.session_id == Some(session)
+                && r.entry.change_kind == ChangeKind::Deleted)
+        );
+        assert_eq!(
+            store.ledger_recent(10, None).unwrap()[0].entry.path,
+            r"C:\App_%\Unassigned"
+        );
+        let empty =
+            export_changes(&store, dir.path(), Some(session), Some("missing"), None).unwrap();
+        assert_eq!((empty.records, empty.truncated), (0, false));
+        assert!(empty.path.ends_with("ExorSystem changes (3).json"));
+    }
 
     #[test]
     fn unknown_session_and_policy_are_errors() {

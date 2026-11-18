@@ -1,4 +1,5 @@
 // Mirrors the serde output of exor-storage / exor-engine.
+export type ChangeKind = "created" | "modified" | "deleted" | "renamed" | "quarantined" | "restored";
 export type ChangeDomain = "file" | "registry" | "system";
 export type PolicyAction = "keep" | "quarantine" | "flag_for_review";
 
@@ -85,6 +86,14 @@ export interface QuarantineRow {
   file_bytes: number | null;
 }
 
+export interface BatchPreview {
+  status: QuarantineRow["status"];
+  created_unix_ms: number;
+  total_files: number;
+  files: { original_path: string; size: number }[];
+  next_offset: number | null;
+}
+
 export interface QuarantineResult {
   quarantine_id: string;
   moved: number;
@@ -116,6 +125,12 @@ export interface WatchSummary extends WatchStart {
   services_changed: number;
   tasks_changed: number;
   registry_keys_changed: number;
+}
+
+export interface WatchRun {
+  app_name: string;
+  ended_at: string | null;
+  summary: WatchSummary;
 }
 
 export interface InstalledProgram {
@@ -160,8 +175,7 @@ export interface SessionItem {
 
 export interface SessionItems {
   total: number;
-  shared: number;
-  by_type: Record<string, number>;
+  matching: number;
   items: SessionItem[];
 }
 
@@ -206,6 +220,12 @@ export interface HistoryRow {
 export interface HistoryPage {
   rows: HistoryRow[];
   next_before_id: number | null;
+}
+
+export interface ChangeExport {
+  path: string;
+  records: number;
+  truncated: boolean;
 }
 
 export interface PortableView {

@@ -119,7 +119,7 @@ pub fn simulate(rules: &[PolicyRule], candidates: &[Candidate]) -> Result<Simula
     })
 }
 
-fn candidate_from_node(store: &Store, n: &Node) -> Result<Candidate> {
+pub(crate) fn candidate_from_node(store: &Store, n: &Node) -> Result<Candidate> {
     let origins = store.edges_as_child(n.node_id)?;
     let confidence = origins
         .iter()

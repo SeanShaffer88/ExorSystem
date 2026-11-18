@@ -6,6 +6,10 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ### Added
 - Change inspector and installation reports show saved Watch coverage, including scopes compared with zero changes and scopes skipped or not requested. Older sessions do not gain assumed coverage.
+- Save local Watch scope presets and reopen the six most recent saved comparisons, including zero-change and coverage-only results.
+- Filter the Change inspector by change type and export up to 1,000 matching observations to a new JSON file in Documents.
+- Sort Applications by name or reported size and search or page through all recorded items for a linked session.
+- Preview quarantine batches from their recorded manifests and review original destinations before confirming restore.
 
 ### Changed
 - Activity log opens as a separate window below the Windows workspace. Closing it returns the reserved space to a maximized main window.
@@ -13,7 +17,8 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ### Fixed
 - Selected application details stay reachable in short and narrow docks, including long registration paths and recorded evidence.
-- Watch commits comparison evidence, coverage, and session status together. If capture is cancelled or recording fails, earlier comparisons do not appear as a partially committed result.
+- Stop either Watch capture without recording partial evidence. Watch commits comparison evidence, coverage, and session status together; a late stop does not discard a committed comparison.
+- Close interrupted sessions on restart without inventing a comparison or ending time.
 
 ## [0.2.0] - 2026-11-18
 

@@ -9,7 +9,7 @@
     "build": "node scripts/check-themes.mjs && tsc --noEmit && vite build",
     "check:themes": "node scripts/check-themes.mjs",
     "tauri": "tauri",
-    "test:ui": "node tests/roadmap-smoke.mjs && node tests/docking-smoke.mjs"
+    "test:ui": "node tests/roadmap-smoke.mjs && node tests/docking-smoke.mjs && node tests/desktop-slices.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.5",
