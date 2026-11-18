@@ -9,16 +9,9 @@ ExorSystem records system changes and helps people review the evidence before cl
 - **Driverless Watch and History** ([PR #20](https://github.com/SeanShaffer88/ExorSystem/pull/20), [PR #21](https://github.com/SeanShaffer88/ExorSystem/pull/21)): opt-in registry subtree snapshots, persistent Watch controls across tabs, and a link to the completed watch's History. History includes removals, evidence sources, literal path search, session filtering and paging.
 - **Unelevated desktop and release verification** ([PR #22](https://github.com/SeanShaffer88/ExorSystem/pull/22)): per-user storage, guarded uninstall and quarantine, a build-only package workflow, and a Windows 10/11 test fixture. The [Windows Server package run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44247905086) passed for NSIS, MSI, and portable ZIP. Full interactive client testing remains open.
 - **Workspace dashboard** ([PR #24](https://github.com/SeanShaffer88/ExorSystem/pull/24)): inventory, guided uninstall and script preview, split Change inspector, cleanup outcomes and relationship graph. A file-only Watch → inspector smoke test on a real Windows PC observed additions, modifications and removals, with different fingerprints on the edited file. This is partial smoke evidence, not a Windows 10/11 client matrix.
-
-## Development priorities
-
-| Roadmap item | Delivered | Remaining verification |
-|---|---|---|
-| Modular workspace | Move, resize and reopen panels with mouse or keyboard; presets, compact docks and local layout persistence | Verify the exact Windows 10/11 client packages using the [docking checklist](docs/WINDOWS-RELEASE.md#docking-and-accessibility-on-each-windows-client). |
-| Review install evidence | Session-scoped History, storage regression tests and built-bundle browser smoke | Run Watch → History against real HKCU and file changes on Windows 10 and 11, including removals and two separate sessions. |
-| Cleanup boundaries ([original review #18](https://github.com/SeanShaffer88/ExorSystem/pull/18)) | Remove desktop elevation instead of adding privileged storage. Enforce live machine-registration uninstall commands and use a new per-user profile; preserve older portable data. Derive quarantine paths by ID, refuse links and overwrites, and recover both cleanup entry points after failed record/ledger writes. | Exercise standard/elevated startup, the supported classic uninstall path and cleanup failure drills in the native release matrix. |
-| Repeatable release checks | Build-only package workflow, static artifact inspection, disposable Windows fixture, end-to-end [runbook](docs/WINDOWS-RELEASE.md) and [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md) | Optional Windows 10/11 coverage for NSIS, MSI and portable ZIP. Windows Server CI is not a client test. |
-| Optional live collection | Separate [source review and lab probe](docs/LIVE-COLLECTION.md); neither source is enabled in the desktop | Validate real USN and registry callback capture separately. Do not ship the driver without the WDK, altitude and signing gates. |
+- **Watch coverage** ([PR #25](https://github.com/SeanShaffer88/ExorSystem/pull/25)): opt-in scopes, explicit baseline and comparison coverage, and exclusion of incomplete captures rather than treating them as removals. File-only Watch skips registry, service, and task checks.
+- **Dockable workspace** ([PR #26](https://github.com/SeanShaffer88/ExorSystem/pull/26)): move and resize panels, save layouts, use a compact dock switcher, and retain Watch/Scan progress while switching tools. The activity log is separate from the read-only Script preview.
+- **Stable package promotion** ([PR #23](https://github.com/SeanShaffer88/ExorSystem/pull/23), [PR #27](https://github.com/SeanShaffer88/ExorSystem/pull/27)): publish a retained candidate using its original SHA-256-verified packages rather than rebuilding. Passing CI and package verification are required; interactive testing is optional.
 
 ## Watch an install
 
@@ -31,13 +24,24 @@ ExorSystem records system changes and helps people review the evidence before cl
 
 Pass Linux/Windows CI and the **Windows candidate packages (no publish)** workflow. Use [Release](docs/WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) to verify and promote the retained packages from a commit reachable from `main`, without rebuilding or reusing a tag. Interactive client sign-off is not required.
 
+### v0.2.0 release handoff
+
+**Status on 2026-11-18: candidate ready, publication pending.** `v0.1.0` is still the latest stable release.
+
+- [x] Version `0.2.0` is aligned in the workspace and desktop manifests. [Release notes](docs/releases/v0.2.0.md) cover the upgrade backup and per-user profile.
+- [x] [CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786809) and [Windows candidate verification](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786871) passed for `c3aa8c0c0c2d8ac20d107f62b91c38b5eb67b142`, which is reachable from `main`. [Artifact 14413771647](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786871/artifacts/14413771647) contains the NSIS installer, MSI, portable ZIP, `SHA256SUMS.txt`, and `PACKAGE-CHECKS.json`. It expires **2026-12-18 09:12:52 UTC**.
+- [x] The manual workflow on `main` accepts `candidate_run_id` and does not require interactive test results.
+- [ ] Dispatch [Actions → Release → Run workflow](https://github.com/SeanShaffer88/ExorSystem/actions/workflows/release.yml) on `main`, using `44272786871` as `candidate_run_id`. A maintainer with Actions write access must start it: the integration's dispatch attempt was denied and created no run. If the artifact expires, use a new verified candidate run instead.
+- [ ] After the workflow passes, verify that `v0.2.0` is the latest public stable release, its tag points to the selected candidate commit, and the three packages and two verification files are attached.
+
 ### Optional Windows client testing
 
-Use the [Windows runbook](docs/WINDOWS-RELEASE.md), not a live user profile. If you run client tests, record the exact commit, package SHA-256, OS build, results, and logs in the [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md).
+The full interactive matrix has **not run** on the v0.2.0 candidate. Use the [Windows runbook](docs/WINDOWS-RELEASE.md), not a live user profile. If you run client tests, record the exact commit, package SHA-256, OS build, results, and logs in the [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md).
+
 - [ ] Verify installation/extraction, normal launch, WebView2, elevation behavior, upgrade/removal and data location on both Windows 10 and 11 x64 for each installer format where applicable.
 - [ ] Verify real Watch → History, inventory and uninstall/review, quarantine/restore/purge, and Windows-specific failure drills with disposable fixture data.
 - [ ] Verify dock moves and splitters, persistence, Watch/Scan continuity, keyboard navigation, Narrator, high contrast, 100%/150% DPI, and Activity log on both clients.
 
 ## Driver work is separate
 
-The normal desktop release does not require a driver. Keep the [live-source lab gates](docs/LIVE-COLLECTION.md#distribution-gates-open) separate from desktop publishing. WDK build/load, Microsoft altitude assignment, and signing remain open.
+The normal desktop release does not require a driver. Keep the [live-source lab gates](docs/LIVE-COLLECTION.md#distribution-gates-open) separate from desktop publishing. Real USN and registry callback capture, WDK build/load, Microsoft altitude assignment, and signing remain open. Neither live source is enabled in the v0.2.0 desktop candidate.
