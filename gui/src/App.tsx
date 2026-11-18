@@ -81,7 +81,9 @@ export function App({ demo = false }: { demo?: boolean }) {
     if (id) { e.preventDefault(); open(id, false); document.getElementById(`tool-${id}`)?.focus(); }
   };
 
-  return <div className="shell">
+  // Tauri's file drop handler is off for the main WebView to let HTML tab drags through.
+  // Dock targets handle internal drags; do not let other drops navigate the WebView or insert data.
+  return <div className="shell" onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "none"; }} onDrop={(e) => e.preventDefault()}>
     <a className="skip" href="#main" onClick={(e) => {
       e.preventDefault(); (current && document.getElementById(`panel-${current}`) || document.getElementById("main"))?.focus();
     }}>Skip to workspace</a>

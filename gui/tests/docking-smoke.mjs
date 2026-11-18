@@ -1,7 +1,11 @@
 import { chromium } from 'playwright-core';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { mockDesktop } from './ipc-fixture.mjs';
 
+// WebView2's HTML drop events do not reach the app with Tauri's native drop handler enabled.
+const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+assert.equal(config.app.windows.find(window => window.label === 'main').dragDropEnabled, false);
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
 const layoutKey = 'exor.workspace.layout.v1';
 try {
@@ -53,6 +57,12 @@ try {
 
   await page.goto('https://exor.test/?deferred-log');
   await panel('Overview').waitFor();
+  assert(await panel('Overview').evaluate(el => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(['fixture'], 'external-file.txt'));
+    const drop = new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer });
+    return !el.dispatchEvent(drop) && drop.defaultPrevented;
+  }));
   await page.keyboard.press('Tab');
   assert(await focused(page.getByRole('link', { name: 'Skip to workspace' })));
   await page.keyboard.press('Enter');
