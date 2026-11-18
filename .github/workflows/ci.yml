@@ -34,8 +34,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - run: bash scripts/desktop-ci-diagnostics.sh cargo clippy --workspace --all-targets --locked -- -D warnings
+        shell: bash
+      - run: bash scripts/desktop-ci-diagnostics.sh cargo test --workspace --locked
+        shell: bash
 
   gui:
     name: GUI build and Tauri shell check
@@ -63,6 +65,7 @@ jobs:
           npm run test:ui
       - name: Tauri shell
         working-directory: gui/src-tauri
+        shell: bash
         run: |
           cargo fmt --check
-          cargo clippy --locked -- -D warnings
+          bash ../../scripts/desktop-ci-diagnostics.sh cargo clippy --locked -- -D warnings
