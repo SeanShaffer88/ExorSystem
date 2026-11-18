@@ -192,34 +192,6 @@ pub fn show_startup_error(error: &str) {
     };
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_process_token_and_resolves_the_actual_msi_executable() {
-        assert!(process_is_elevated().is_ok());
-        assert!(user_data_dir().unwrap().ends_with("ExorSystem"));
-        let msi = uninstall_executable("MsiExec.exe").unwrap();
-        assert!(msi.is_absolute() && msi.is_file());
-    }
-
-    #[test]
-    fn refuses_ambiguous_executable_paths_without_launching_anything() {
-        for path in [
-            "tool.exe",
-            "C:tool.exe",
-            r"C:\temp\..\tool.exe",
-            r"C:\temp\tool.cmd",
-            r"C:\temp\cmd.exe",
-            r"\\server\share\tool.exe",
-        ] {
-            assert!(uninstall_executable(path).is_err(), "{path}");
-        }
-    }
-}
-
 /// Decode a registered command using Windows' own quoting rules, never a shell. An unquoted
 /// path containing spaces is unsupported: the first token must itself be an allowed executable.
 pub fn uninstall_arguments(command: &str) -> Result<(PathBuf, Vec<String>), String> {
@@ -321,5 +293,33 @@ pub fn pick_path(owner: isize, directory: bool) -> Result<Option<String>, String
         let path = ptr.to_string();
         CoTaskMemFree(Some(ptr.0.cast()));
         path.map(Some).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_process_token_and_resolves_the_actual_msi_executable() {
+        assert!(process_is_elevated().is_ok());
+        assert!(user_data_dir().unwrap().ends_with("ExorSystem"));
+        let msi = uninstall_executable("MsiExec.exe").unwrap();
+        assert!(msi.is_absolute() && msi.is_file());
+    }
+
+    #[test]
+    fn refuses_ambiguous_executable_paths_without_launching_anything() {
+        for path in [
+            "tool.exe",
+            "C:tool.exe",
+            r"C:\temp\..\tool.exe",
+            r"C:\temp\tool.cmd",
+            r"C:\temp\cmd.exe",
+            r"\\server\share\tool.exe",
+        ] {
+            assert!(uninstall_executable(path).is_err(), "{path}");
+        }
     }
 }
