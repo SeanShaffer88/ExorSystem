@@ -1,5 +1,6 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfo, TemplateInfo, HistoryPage, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchStart, WatchSummary } from "./types";
+import { Channel } from "@tauri-apps/api/core";
+import { invoke, isDemo } from "./bridge";
+import type { AppInfo, ChangeDomain, TemplateInfo, HistoryPage, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallPreview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchStart, WatchSummary } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -7,6 +8,7 @@ export const api = {
   simulate: (sessionId: number, template: string) => invoke<SimulationView>("simulate", { sessionId, template }),
   /** Streams progress through a Tauri v2 channel; resolves when the scan has ended. */
   scan: (root: string, onEvent: (e: ScanEvent) => void) => {
+    if (isDemo()) return invoke<ScanEvent>("scan", { root }).then(onEvent);
     const channel = new Channel<ScanEvent>();
     channel.onmessage = onEvent;
     return invoke<void>("scan", { root, onEvent: channel });
@@ -19,12 +21,13 @@ export const api = {
   listPortablePrograms: () => invoke<PortableProgram[]>("list_portable_programs"),
   registerPortableProgram: (name: string, executable: string) => invoke<void>("register_portable_program", { name, executable }),
   forgetPortableProgram: (executable: string) => invoke<void>("forget_portable_program", { executable }),
-  runUninstaller: (programId: string, quiet: boolean) => invoke<UninstallRun>("run_uninstaller", { programId, quiet }),
+  previewUninstaller: (programId: string) => invoke<UninstallPreview>("preview_uninstaller", { programId }),
+  runUninstaller: (programId: string, expected: UninstallPreview) => invoke<UninstallRun>("run_uninstaller", { programId, quiet: false, expected }),
   findLeftovers: (programId: string) => invoke<LeftoverReview>("find_leftovers", { programId }),
   quarantineLeftovers: (programId: string, folders: string[], sessionId: number | null) =>
     invoke<QuarantineResult>("quarantine_leftovers", { programId, folders, sessionId }),
-  history: (filter: string | null, limit: number, sessionId: number | null, beforeId: number | null) =>
-    invoke<HistoryPage>("history", { filter, limit, sessionId, beforeId }),
+  history: (filter: string | null, limit: number, sessionId: number | null, beforeId: number | null, domain: ChangeDomain | null = null) =>
+    invoke<HistoryPage>("history", { filter, limit, sessionId, beforeId, domain }),
   exportReport: (sessionId: number, template: string) => invoke<string>("export_report", { sessionId, template }),
   makePortable: (sessionId: number) => invoke<PortableView>("make_portable", { sessionId }),
   updateRisk: () => invoke<RiskView>("update_risk"),

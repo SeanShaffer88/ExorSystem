@@ -1,4 +1,5 @@
 // Mirrors the serde output of exor-storage / exor-engine.
+export type ChangeDomain = "file" | "registry" | "system";
 export type PolicyAction = "keep" | "quarantine" | "flag_for_review";
 
 export interface Session {
@@ -30,8 +31,21 @@ export interface ProvenanceView {
   found: boolean;
   summary: string;
   confidence: number;
-  origins: Edge[];
+  graph: RelationshipGraph | null;
   ledger: LedgerEntry[];
+}
+
+export interface GraphNode {
+  id: number;
+  path: string;
+  kind: Decision["node_type"];
+  session_name: string | null;
+}
+
+export interface RelationshipGraph {
+  focus: GraphNode;
+  links: { edge: Edge; node: GraphNode }[];
+  total_edges: number;
 }
 
 export interface Decision {
@@ -68,6 +82,7 @@ export interface QuarantineRow {
   session_id: number | null;
   status: "in_progress" | "quarantined" | "restored" | "purged" | "rolled_back" | string;
   files: number;
+  file_bytes: number | null;
 }
 
 export interface QuarantineResult {
@@ -154,6 +169,11 @@ export interface LeftoverReview {
   }[];
   warnings: string[];
 }
+export interface UninstallPreview {
+  executable: string;
+  args: string[];
+}
+
 export interface UninstallRun {
   exit_code: number | null;
   summary: string;
@@ -166,6 +186,9 @@ export interface HistoryRow {
   what: string;
   source: string;
   session_id: number | null;
+  domain: ChangeDomain;
+  old_hash: string | null;
+  new_hash: string | null;
 }
 
 export interface HistoryPage {

@@ -2,6 +2,13 @@
 
 All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
+## [Unreleased]
+
+### Added
+- Local workspace dashboard with filterable applications, a registry snapshot monitor, and an evidence inspector with independent registry/file pages and before/after details.
+- Guided uninstall with a read-only terminal preview, explicit vendor launch and quarantine confirmations, and a cleanup summary. The engine re-reads the live registration before starting the reviewed invocation.
+- One-hop relationship graph with evidence and confidence for each recorded link; storage charts of logical file lengths by quarantine outcome.
+
 ## [0.2.0]
 
 See the [0.2.0 release notes](docs/releases/v0.2.0.md), including the required upgrade backup.

@@ -47,6 +47,8 @@ function paint(id: string) {
   if (!t) return;
   const root = document.documentElement;
   for (const [k, v] of Object.entries(t.tokens)) root.style.setProperty(`--${k}`, v);
+  root.dataset.theme = t.id;
+  root.dataset.mode = t.mode;
   root.style.colorScheme = t.mode;
 }
 

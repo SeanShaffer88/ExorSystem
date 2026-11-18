@@ -7,8 +7,10 @@ use exor_engine::registry::RegistryScopes;
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
 use exor_engine::watch::{InstallWatch, SystemProbe, WatchSummary};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
-use exor_storage::{Edge, LedgerEntry, PolicyAction, Session, Store};
-use serde::Serialize;
+use exor_storage::{
+    ChangeDomain, Edge, LedgerEntry, Node, NodeType, PolicyAction, RelationshipType, Session, Store,
+};
+use serde::{Deserialize, Serialize};
 mod dock;
 mod inventory;
 
@@ -58,8 +60,92 @@ struct ProvenanceView {
     found: bool,
     summary: String,
     confidence: f64,
-    origins: Vec<Edge>,
+    graph: Option<RelationshipGraph>,
     ledger: Vec<LedgerEntry>,
+}
+
+#[derive(Serialize)]
+struct GraphNode {
+    id: i64,
+    path: String,
+    kind: NodeType,
+    session_name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GraphLink {
+    edge: Edge,
+    node: GraphNode,
+}
+
+#[derive(Serialize)]
+struct RelationshipGraph {
+    focus: GraphNode,
+    links: Vec<GraphLink>,
+    total_edges: usize,
+}
+
+fn graph_node(
+    store: &Store,
+    node: Node,
+    names: &mut BTreeMap<i64, Option<String>>,
+) -> exor_storage::Result<GraphNode> {
+    let session_name = if let Some(id) = node.first_detected_in {
+        match names.entry(id) {
+            std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(store.session(id)?.map(|s| s.app_name)).clone()
+            }
+        }
+    } else {
+        None
+    };
+    Ok(GraphNode {
+        id: node.node_id,
+        path: node.path,
+        kind: node.node_type,
+        session_name,
+    })
+}
+
+fn relationship_graph(
+    store: &Store,
+    node: Node,
+    mut edges: Vec<Edge>,
+) -> exor_storage::Result<RelationshipGraph> {
+    // Prefer dependency/share evidence to attribution when an artifact has many edges.
+    edges.sort_by_key(|e| {
+        (
+            !matches!(
+                e.relationship_type,
+                RelationshipType::DependsOn | RelationshipType::SharedWith
+            ),
+            e.edge_id,
+        )
+    });
+    edges.dedup_by_key(|e| e.edge_id);
+    let total_edges = edges.len();
+    let mut names = BTreeMap::new();
+    let focus = graph_node(store, node, &mut names)?;
+    let mut links = Vec::new();
+    for edge in edges.into_iter().take(60) {
+        let other = if edge.child_node_id == focus.id {
+            edge.parent_node_id
+        } else {
+            edge.child_node_id
+        };
+        if let Some(node) = store.node(other)? {
+            links.push(GraphLink {
+                edge,
+                node: graph_node(store, node, &mut names)?,
+            });
+        }
+    }
+    Ok(RelationshipGraph {
+        focus,
+        links,
+        total_edges,
+    })
 }
 
 #[derive(Serialize)]
@@ -87,7 +173,14 @@ fn provenance(state: State<'_, AppState>, path: String) -> Result<ProvenanceView
             found: true,
             summary: report::describe_provenance(&p),
             confidence: p.confidence,
-            origins: p.origins,
+            graph: Some(
+                relationship_graph(
+                    &store,
+                    p.node,
+                    p.origins.into_iter().chain(p.dependents).collect(),
+                )
+                .map_err(|e| e.to_string())?,
+            ),
             ledger: p.ledger,
         }),
         None => Ok(ProvenanceView {
@@ -96,7 +189,7 @@ fn provenance(state: State<'_, AppState>, path: String) -> Result<ProvenanceView
                 "{path} is not in the system record. It may predate monitoring or have been filtered as background noise."
             ),
             confidence: 0.0,
-            origins: Vec::new(),
+            graph: None,
             ledger: Vec::new(),
         }),
     }
@@ -129,6 +222,8 @@ struct QuarantineRow {
     session_id: Option<i64>,
     status: String,
     files: usize,
+    /// Logical lengths recorded when the files were moved, not allocated disk space.
+    file_bytes: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -195,29 +290,47 @@ fn quarantine_session(
     })
 }
 
-#[tauri::command]
-fn list_quarantines(state: State<'_, AppState>) -> Result<Vec<QuarantineRow>, String> {
-    let store = lock(&state)?;
-    let rows = store.quarantines().map_err(|e| e.to_string())?;
-    Ok(rows
+fn quarantine_sizes(json: &str) -> (usize, Option<u64>) {
+    use exor_engine::quarantine::{QuarantineItem, QuarantineManifest};
+    let Ok(manifest) = serde_json::from_str::<QuarantineManifest>(json) else {
+        return (0, None);
+    };
+    manifest
+        .items
         .into_iter()
-        .map(|r| {
-            let files = serde_json::from_str::<serde_json::Value>(&r.manifest_json)
-                .ok()
-                .and_then(|v| v.get("items").and_then(|i| i.as_array().map(Vec::len)))
-                .unwrap_or(0);
-            let status = serde_json::to_value(r.status)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            QuarantineRow {
-                quarantine_id: r.quarantine_id,
-                session_id: r.session_id,
-                status,
-                files,
+        .fold((0, Some(0_u64)), |(files, bytes), item| match item {
+            QuarantineItem::File { size, .. } => {
+                (files + 1, bytes.and_then(|b| b.checked_add(size)))
             }
+            QuarantineItem::Registry { .. } => (files, bytes),
         })
-        .collect())
+}
+
+#[tauri::command]
+async fn list_quarantines(state: State<'_, AppState>) -> Result<Vec<QuarantineRow>, String> {
+    let store = Arc::clone(&state.store);
+    tauri::async_runtime::spawn_blocking(move || {
+        let rows = store
+            .lock()
+            .map_err(|_| "internal lock poisoned".to_string())?
+            .quarantines()
+            .map_err(|e| e.to_string())?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let (files, file_bytes) = quarantine_sizes(&r.manifest_json);
+                QuarantineRow {
+                    quarantine_id: r.quarantine_id,
+                    session_id: r.session_id,
+                    status: r.status.as_str().into(),
+                    files,
+                    file_bytes,
+                }
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Put quarantined files back. Never overwrites a file that has reappeared.
@@ -301,46 +414,86 @@ struct UninstallRun {
     summary: String,
 }
 
-fn start_uninstaller(exe: &str, args: &[String]) -> Result<std::process::ExitStatus, String> {
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+struct UninstallPreview {
+    executable: String,
+    args: Vec<String>,
+}
+
+fn uninstall_path(exe: &str) -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
-        let exe = exor_win::uninstall_executable(exe)?;
-        let dir = exe
-            .parent()
-            .ok_or("the uninstall command has no executable directory")?;
-        std::process::Command::new(&exe)
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .map_err(|e| {
-                if e.raw_os_error() == Some(740) {
-                    "This uninstaller needs administrator rights. Use Windows Settings → Apps instead.".into()
-                } else {
-                    e.to_string()
-                }
-            })
+        exor_win::uninstall_executable(exe)
     }
     #[cfg(not(windows))]
     {
-        let _ = (exe, args);
+        let _ = exe;
         Err("Windows uninstall commands are not supported on this platform".into())
     }
 }
 
-/// Start a live machine-wide registered uninstaller without elevation, then report its exit.
+fn start_uninstaller(exe: &Path, args: &[String]) -> Result<std::process::ExitStatus, String> {
+    let dir = exe
+        .parent()
+        .ok_or("the uninstall command has no executable directory")?;
+    std::process::Command::new(exe)
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .map_err(|e| {
+            if e.raw_os_error() == Some(740) {
+                "This uninstaller needs administrator rights. Use Windows Settings → Apps instead."
+                    .into()
+            } else {
+                e.to_string()
+            }
+        })
+}
+
+async fn live_uninstall(
+    program_id: String,
+    quiet: bool,
+) -> Result<(InstalledProgram, PathBuf, UninstallPreview), String> {
+    let program = inventory::registry_program(program_id)
+        .await?
+        .ok_or_else(|| "that program is no longer in Windows' uninstall list".to_string())?;
+    let cmd = program
+        .registered_uninstall(quiet)
+        .map_err(str::to_string)?;
+    let (exe, args) = leftovers::split_command(cmd)
+        .ok_or_else(|| "the registered uninstall command could not be read".to_string())?;
+    let path = tauri::async_runtime::spawn_blocking(move || uninstall_path(&exe))
+        .await
+        .map_err(|e| e.to_string())??;
+    let preview = UninstallPreview {
+        executable: path.to_string_lossy().into_owned(),
+        args,
+    };
+    Ok((program, path, preview))
+}
+
+/// Read and validate the vendor invocation. Never runs a process.
+#[tauri::command]
+async fn preview_uninstaller(program_id: String) -> Result<UninstallPreview, String> {
+    live_uninstall(program_id, false)
+        .await
+        .map(|(_, _, preview)| preview)
+}
+
+/// Re-read the live machine registration. Refuse if it no longer matches the reviewed plan.
 #[tauri::command]
 async fn run_uninstaller(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     program_id: String,
     quiet: bool,
+    expected: UninstallPreview,
 ) -> Result<UninstallRun, String> {
-    let mut p = inventory::registry_program(program_id)
-        .await?
-        .ok_or_else(|| "that program is no longer in Windows' uninstall list".to_string())?;
-    let cmd = p.registered_uninstall(quiet).map_err(str::to_string)?;
-    let (exe, args) = leftovers::split_command(cmd)
-        .ok_or_else(|| "the registered uninstall command could not be read".to_string())?;
+    let (mut p, exe, actual) = live_uninstall(program_id, quiet).await?;
+    if actual != expected {
+        return Err("The registered uninstaller changed. Close this wizard and review its new preview before continuing.".into());
+    }
+    let args = actual.args;
     dock::log(
         &app,
         "info",
@@ -687,6 +840,9 @@ struct HistoryRow {
     what: String,
     source: String,
     session_id: Option<i64>,
+    domain: ChangeDomain,
+    old_hash: Option<String>,
+    new_hash: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -703,6 +859,7 @@ async fn history(
     limit: usize,
     session_id: Option<i64>,
     before_id: Option<i64>,
+    domain: Option<ChangeDomain>,
 ) -> Result<HistoryPage, String> {
     let store = Arc::clone(&state.store);
     let page = tauri::async_runtime::spawn_blocking(move || {
@@ -710,7 +867,7 @@ async fn history(
         store
             .lock()
             .map_err(|_| "internal lock poisoned".to_string())?
-            .ledger_page(limit, filter, session_id, before_id)
+            .ledger_page_in_domain(limit, filter, session_id, before_id, domain)
             .map_err(|e| e.to_string())
     })
     .await
@@ -726,6 +883,9 @@ async fn history(
                 what: e.entry.change_kind.as_str().to_string(),
                 source: e.entry.source.as_str().to_string(),
                 session_id: e.entry.session_id,
+                domain: e.domain,
+                old_hash: e.entry.old_hash,
+                new_hash: e.entry.new_hash,
             })
             .collect(),
         next_before_id: page.next_before_id,
@@ -1118,6 +1278,7 @@ fn run() -> Result<(), String> {
             app_info,
             update_risk,
             make_portable,
+            preview_uninstaller,
             run_uninstaller,
             find_leftovers,
             quarantine_leftovers,

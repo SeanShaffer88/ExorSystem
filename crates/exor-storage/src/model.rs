@@ -49,6 +49,10 @@ str_enum! {
     ChangeKind { Created => "created", Modified => "modified", Deleted => "deleted", Renamed => "renamed", Quarantined => "quarantined", Restored => "restored" }
 }
 str_enum! {
+    /// Domain of a recorded observation. Does not describe whether it is safe to remove.
+    ChangeDomain { File => "file", Registry => "registry", System => "system" }
+}
+str_enum! {
     /// Ledger evidence origin.
     ChangeSource { UsnJournal => "usn_journal", RegistryCallback => "registry_callback", SnapshotDiff => "snapshot_diff", Manifest => "manifest", Policy => "policy" }
 }
@@ -205,6 +209,8 @@ pub struct LedgerEntry {
     pub entry: NewLedgerEntry,
     /// Observation time (UTC text).
     pub observed_at: Option<String>,
+    /// Recorded node kind, or path/source classification for observations without a node.
+    pub domain: ChangeDomain,
 }
 
 /// A bounded page of changes in descending entry order.

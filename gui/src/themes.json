@@ -5,13 +5,13 @@
   "mode": "dark",
   "description": "High-contrast dark. The built-in look.",
   "tokens": {
-   "bg": "#0a0c10",
-   "panel": "#151b23",
-   "fg": "#f0f3f6",
-   "muted": "#d9dee3",
-   "border": "#7a828e",
-   "accent": "#71b7ff",
-   "danger": "#ff9492"
+   "bg": "#0b111c",
+   "panel": "#111b2a",
+   "fg": "#edf3fc",
+   "muted": "#a4b3c8",
+   "border": "#657992",
+   "accent": "#5de3bd",
+   "danger": "#ff959f"
   }
  },
  {

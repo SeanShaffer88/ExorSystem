@@ -1,200 +1,120 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { Icon } from "../components/Icon";
+import { AppMark, Badge, CardHeading, Empty, Intro, TileIcon, nodeText, programSize, scopeText, sourceText } from "../components/Workspace";
 import type { InstalledProgram, ProgramInventory, Session, SessionItems } from "../types";
 import { ProgramActions } from "./ProgramActions";
 
-/** One row in the left pane: an installed program, or a recorded install Windows does not list. */
 interface Entry {
-  key: string;
-  name: string;
-  sub: string;
-  program: InstalledProgram | null;
-  sessionIds: number[];
-  removed: boolean;
+  key: string; name: string; program: InstalledProgram | null; sessionIds: number[]; removed: boolean;
 }
+const PAGE_SIZE = 16;
 
-const sourceText = { registry: "Classic Windows program", msix: "MSIX / Store app", portable: "Portable app" } as const;
-const scopeText = { machine: "All users", machine32: "All users (32-bit)", user: "Current user" } as const;
-
-function sizeText(kb: number | null) {
-  if (kb === null) return "Unknown";
-  return kb >= 1048576 ? `${(kb / 1048576).toFixed(1)} GB` : kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
-}
-
-function sure(c: number) {
-  return c >= 1 ? "Certain" : c >= 0.7 ? "Likely" : "Possible";
-}
-
-export function SessionsView() {
+export function SessionsView({ initialProgramId, onTrace, onHistory, onSimulate, onCleanup, onTerminal }: {
+  initialProgramId: string | null; onTrace: (path: string) => void; onHistory: (id: number) => void;
+  onSimulate: (id: number) => void; onCleanup: () => void; onTerminal: (id: string) => void;
+}) {
   const [inventory, setInventory] = useState<ProgramInventory | null>(null);
-  const [revision, setRevision] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
+  const [pending, setPending] = useState(true);
   const [query, setQuery] = useState("");
+  const [source, setSource] = useState("");
   const [showSystem, setShowSystem] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [items, setItems] = useState<SessionItems | null>(null);
-  const [detailError, setDetailError] = useState("");
-  const listRef = useRef<HTMLUListElement>(null);
+  const [selected, setSelected] = useState(initialProgramId ? `p:${initialProgramId}` : null);
+  const [page, setPage] = useState<number | null>(null);
 
   useEffect(() => {
     let live = true;
-    setError("");
-    Promise.all([api.listPrograms(showSystem), api.listSessions()])
-      .then(([result, sessions]) => {
-        if (!live) return;
-        setInventory(result);
-        setSessions(sessions);
-      })
-      .catch((e: unknown) => live && setError(String(e)));
+    setPending(true); setError("");
+    Promise.all([api.listPrograms(showSystem), api.listSessions()]).then(([result, list]) => {
+      if (live) { setInventory(result); setSessions(list); }
+    }).catch((e: unknown) => { if (live) setError(String(e)); }).finally(() => { if (live) setPending(false); });
     return () => { live = false; };
-  }, [showSystem, revision]);
+  }, [revision, showSystem]);
 
   const entries = useMemo<Entry[]>(() => {
     if (!inventory) return [];
     const rows = inventory.programs;
     const matched = new Set(rows.flatMap((r) => r.session_ids));
-    const fromPrograms = rows.map((r) => ({
-      key: `p:${r.program.id}`,
-      name: r.program.name,
-      sub: [r.removed ? "Recently removed" : sourceText[r.program.source], r.program.version, r.program.publisher].filter(Boolean).join(" · "),
-      program: r.program,
-      sessionIds: r.session_ids,
-      removed: r.removed,
-    }));
-    const recordedOnly = sessions
-      .filter((s) => !matched.has(s.session_id))
-      .map((s) => ({ key: `s:${s.session_id}`, name: s.app_name, sub: "Recorded install", program: null, sessionIds: [s.session_id], removed: false }));
-    return [...fromPrograms, ...recordedOnly].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    const fromPrograms = rows.map((r) => ({ key: `p:${r.program.id}`, program: r.program, name: r.program.name, sessionIds: r.session_ids, removed: r.removed }));
+    const recordedOnly = sessions.filter((s) => !matched.has(s.session_id)).map((s) => ({ key: `s:${s.session_id}`, program: null, name: s.app_name, sessionIds: [s.session_id], removed: false }));
+    return [...fromPrograms, ...recordedOnly].sort((a, b) => a.name.localeCompare(b.name));
   }, [inventory, sessions]);
-
-  const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return q ? entries.filter((e) => `${e.name} ${e.sub}`.toLowerCase().includes(q)) : entries;
-  }, [entries, query]);
-
+  const shown = entries.filter((e) => {
+    const p = e.program;
+    const text = `${e.name} ${p?.publisher ?? ""} ${p?.version ?? ""}`.toLowerCase();
+    return (!source || (p?.source ?? "recorded") === source) && text.includes(query.trim().toLowerCase());
+  });
+  // Keep details stable when the user moves between result pages; changes to search clear hidden selections.
   const current = shown.find((e) => e.key === selected) ?? null;
-  const sessionId = current?.sessionIds[0] ?? null;
+  const base = Math.max(0, Math.floor(shown.findIndex((r) => r.key === selected) / PAGE_SIZE));
+  const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  const number = Math.min(page ?? base, pages - 1);
 
+  return <section className="workspace-page" aria-labelledby="apps-title">
+    <Intro id="apps-title" kicker="INVENTORY" title="Installed applications" description="Browse classic programs, current-user packages, portable entries, and recorded installs." actions={<button type="button" className="quiet-button" disabled={pending} onClick={() => setRevision((n) => n + 1)}><Icon name="refresh"/> Refresh inventory</button>}/>
+    {error && <p role="alert" className="notice review-notice">Could not load programs: {error}</p>}
+    {inventory?.warnings.map((w) => <div className="notice review-notice" key={w}><Icon name="alert"/><span>{w}</span></div>)}
+    <div className="inventory-layout">
+      <section className="card card-overflow" aria-label="Application inventory">
+        <CardHeading title="Application inventory" action={<Badge>{shown.length} result{shown.length === 1 ? "" : "s"}</Badge>}/>
+        <div className="inventory-filters">
+          <label className="search-box"><Icon name="search"/><span className="sr-only">Search programs</span><input type="search" placeholder="Search name, publisher or version" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }}/></label>
+          <label><span className="sr-only">Application source</span><select value={source} onChange={(e) => { setSource(e.target.value); setPage(0); }}><option value="">All sources</option><option value="registry">Classic</option><option value="msix">MSIX</option><option value="portable">Portable</option><option value="recorded">Recorded only</option></select></label>
+          <label className="check system-filter"><input type="checkbox" checked={showSystem} onChange={(e) => { setShowSystem(e.target.checked); setPage(0); }}/> Show system components</label>
+        </div>
+        {shown.length > 0 ? <div className="dashboard-scroll"><table className="dashboard-table inventory-table">
+          <thead><tr><th scope="col">Application</th><th scope="col">Source</th><th scope="col" className="numeric">Size</th></tr></thead>
+          <tbody>{shown.slice(number * PAGE_SIZE, (number + 1) * PAGE_SIZE).map((e) => <tr key={e.key} className={`interactive-row ${e.key === current?.key ? "selected-row" : ""}`} onClick={() => { setSelected(e.key); setPage(number); }}>
+            <td><button type="button" className="app-cell row-button" aria-pressed={e.key === current?.key}>
+              {e.program ? <AppMark program={e.program}/> : <TileIcon icon="clock" tone="violet"/>}
+              <span><strong>{e.name}</strong><small>{e.removed ? "Recently removed" : e.program ? [e.program.publisher, e.program.version].filter(Boolean).join(" · ") || "Version not reported" : "Recorded installation"}</small></span>
+            </button></td>
+            <td><Badge tone={e.removed ? "review" : "neutral"}>{e.removed ? "Removed" : e.program ? sourceText[e.program.source] : "Recorded"}</Badge></td>
+            <td className="numeric">{programSize(e.program?.size_kb ?? null)}</td>
+          </tr>)}</tbody>
+        </table></div> : <Empty icon="apps" title={pending ? "Loading inventory…" : "No matching applications"} detail="Try another search or include a different source."/>}
+        {pages > 1 && <div className="pager"><button type="button" disabled={number === 0} onClick={() => setPage(number - 1)}>Previous</button><span>Page {number + 1} of {pages}</span><button type="button" disabled={number + 1 >= pages} onClick={() => setPage(number + 1)}>Next</button></div>}
+      </section>
+      {current ? <ApplicationDetail key={current.key} entry={current} sessions={sessions} onTrace={onTrace} onHistory={onHistory} onSimulate={onSimulate} onCleanup={onCleanup} onTerminal={onTerminal} onUninstallComplete={() => setRevision((n) => n + 1)}/>
+        : <aside className="card"><Empty icon="apps" title="Select an application" detail="See its Windows registration, recorded evidence, and supported actions."/></aside>}
+    </div>
+  </section>;
+}
+
+function ApplicationDetail({ entry, sessions, onTrace, onHistory, onSimulate, onCleanup, onTerminal, onUninstallComplete }: {
+  entry: Entry; sessions: Session[]; onTrace: (path: string) => void; onHistory: (id: number) => void;
+  onSimulate: (id: number) => void; onCleanup: () => void; onTerminal: (id: string) => void; onUninstallComplete: () => void;
+}) {
+  const [selected, setSelected] = useState<number | null>(null);
+  const sessionId = selected !== null && entry.sessionIds.includes(selected) ? selected : entry.sessionIds[0] ?? null;
+  const [result, setResult] = useState<{ id: number; items?: SessionItems; error?: string } | null>(null);
   useEffect(() => {
-    setItems(null);
-    setDetailError("");
     if (sessionId === null) return;
     let live = true;
-    api.sessionItems(sessionId).then((i) => live && setItems(i)).catch((e: unknown) => live && setDetailError(String(e)));
+    api.sessionItems(sessionId).then((items) => { if (live) setResult({ id: sessionId, items }); })
+      .catch((e: unknown) => { if (live) setResult({ id: sessionId, error: String(e) }); });
     return () => { live = false; };
-  }, [sessionId, selected]);
-
-  const move = (delta: number | "first" | "last") => {
-    if (shown.length === 0) return;
-    const i = shown.findIndex((e) => e.key === selected);
-    const next = delta === "first" ? 0 : delta === "last" ? shown.length - 1 : Math.min(shown.length - 1, Math.max(0, (i < 0 ? 0 : i + delta)));
-    const e = shown[next];
-    if (e) {
-      setSelected(e.key);
-      document.getElementById(`opt-${e.key}`)?.scrollIntoView({ block: "nearest" });
-    }
-  };
-
-  const onKey = (e: React.KeyboardEvent) => {
-    const map: Record<string, number | "first" | "last"> = { ArrowDown: 1, ArrowUp: -1, Home: "first", End: "last", PageDown: 10, PageUp: -10 };
-    const d = map[e.key];
-    if (d !== undefined) {
-      e.preventDefault();
-      move(d);
-    }
-  };
-
-  const p = current?.program ?? null;
-  return (
-    <section className="panes" aria-labelledby="h-inst">
-      <div className="pane pane-list">
-        <h2 id="h-inst">Installed programs</h2>
-        <label htmlFor="prog-search" className="sr-only">Search programs</label>
-        <input id="prog-search" type="search" placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} title="Filter by name, source, version or publisher" />
-        <label className="check">
-          <input type="checkbox" checked={showSystem} onChange={(e) => setShowSystem(e.target.checked)} /> Show system components
-        </label>
-        {error && <p role="alert" className="error">Could not load programs: {error}</p>}
-        {inventory?.warnings.map((w) => <p key={w} role="status">{w}</p>)}
-        {inventory === null ? (
-          !error && <p>Loading…</p>
-        ) : shown.length === 0 ? (
-          <p>{entries.length === 0 ? "Nothing to list. The program list comes from Windows; installs you record also appear here." : "No program matches your search."}</p>
-        ) : (
-          <>
-            <p className="count" aria-live="polite">{shown.length} item{shown.length === 1 ? "" : "s"}</p>
-            <ul ref={listRef} role="listbox" tabIndex={0} aria-label="Installed programs" aria-activedescendant={current ? `opt-${current.key}` : undefined} onKeyDown={onKey} onFocus={() => setSelected((previous) => shown.some((entry) => entry.key === previous) ? previous : shown[0]?.key ?? null)} className="listbox">
-              {shown.map((e) => (
-                <li key={e.key} id={`opt-${e.key}`} role="option" aria-selected={e.key === selected} onClick={() => { setSelected(e.key); listRef.current?.focus(); }}>
-                  <span className="name">{e.name}</span>
-                  <small>{e.sub || " "}</small>
-                  {e.sessionIds.length > 0 && <span className="badge">Recorded</span>}
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </div>
-
-      <div className="pane pane-detail" aria-live="polite">
-        {!current ? (
-          <p>Select a program to see its details and what its installation left behind.</p>
-        ) : (
-          <>
-            <h2>{current.name}</h2>
-            {p ? (
-              <dl className="facts">
-                <dt>Source</dt><dd>{sourceText[p.source]}</dd>
-                <dt>Version</dt><dd>{p.version ?? "Unknown"}</dd>
-                <dt>Publisher</dt><dd>{p.publisher ?? "Unknown"}</dd>
-                <dt>Installed</dt><dd>{p.install_date ?? "Unknown"}</dd>
-                <dt>Size</dt><dd>{sizeText(p.size_kb)}</dd>
-                <dt>Location</dt><dd>{p.install_location ?? "Unknown"}</dd>
-                <dt>For</dt><dd>{scopeText[p.scope]}</dd>
-                {p.source === "registry" && <><dt>Uninstall command</dt><dd><code>{current.removed ? "Entry no longer listed by Windows" : p.uninstall_command ?? "None registered"}</code></dd></>}
-              </dl>
-            ) : (
-              <p>This install was recorded by ExorSystem but is not in Windows' list of programs. It may be portable, or already uninstalled.</p>
-            )}
-
-            <h3>What this installation left behind</h3>
-            {sessionId === null ? (
-              <p>No recorded installation is linked to this entry.</p>
-            ) : detailError ? (
-              <p role="alert" className="error">{detailError}</p>
-            ) : items === null ? (
-              <p>Loading…</p>
-            ) : (
-              <>
-                <p>
-                  {items.total} item(s) traced
-                  {Object.entries(items.by_type).length > 0 && ": " + Object.entries(items.by_type).map(([t, n]) => `${n} ${t}`).join(", ")}
-                  {items.shared > 0 && `. ${items.shared} may be shared with other programs.`}
-                </p>
-                <div className="table-wrap">
-                  <table>
-                    <caption className="sr-only">Items traced to this installation</caption>
-                    <thead><tr><th scope="col">Item</th><th scope="col">Type</th><th scope="col">Sure</th></tr></thead>
-                    <tbody>
-                      {items.items.map((i) => (
-                        <tr key={i.path}><td>{i.path}{i.shared ? " (shared)" : ""}</td><td>{i.node_type}</td><td>{sure(i.confidence)}</td></tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {items.total > items.items.length && <p>Showing the first {items.items.length} of {items.total}.</p>}
-              </>
-            )}
-          </>
-        )}
-      </div>
-      {current ? (
-        <ProgramActions key={`${current.key}:${sessionId}`} program={p} removed={current.removed} sessionId={sessionId} shared={items?.shared ?? 0}
-          onUninstallComplete={() => setRevision((r) => r + 1)} />
-      ) : (
-        <div className="pane pane-actions"><h2>Actions</h2><p>Select a program.</p></div>
-      )}
-    </section>
-  );
+  }, [sessionId]);
+  const info = result?.id === sessionId ? result : null;
+  const p = entry.program;
+  return <aside className="card app-detail" aria-label="Application details">
+    <div className="selected-app">{p ? <AppMark program={p}/> : <TileIcon icon="clock" tone="violet"/>}<div><div className="eyebrow">Selected application</div><h2>{entry.name}</h2></div></div>
+    {p && <dl className="facts"><dt>Publisher</dt><dd>{p.publisher ?? "Unknown"}</dd><dt>Version</dt><dd>{p.version ?? "Unknown"}</dd><dt>Scope</dt><dd>{scopeText[p.scope]}</dd><dt>Location</dt><dd>{p.install_location ?? "Not reported"}</dd><dt>Reported size</dt><dd>{programSize(p.size_kb)}</dd></dl>}
+    <ProgramActions key={sessionId ?? "no-session"} program={p} removed={entry.removed} sessionId={sessionId} onUninstallComplete={onUninstallComplete} onSimulate={onSimulate} onCleanup={onCleanup} onTerminal={onTerminal}/>
+    <div className="session-evidence">
+      <h3>Recorded evidence</h3>
+      {sessionId === null ? <p className="muted">No recorded installation is linked to this entry.</p> : <>
+        {entry.sessionIds.length > 1 && <label className="field">Recorded session<select value={sessionId} onChange={(e) => setSelected(Number(e.target.value))}>{entry.sessionIds.map((id) => <option key={id} value={id}>{sessions.find((s) => s.session_id === id)?.app_name ?? "Session"} #{id}</option>)}</select></label>}
+        <button className="text-button" type="button" onClick={() => onHistory(sessionId)}>Inspect session #{sessionId} <Icon name="arrow" size={15}/></button>
+        {info?.error ? <p role="alert" className="error">{info.error}</p> : !info?.items ? <p role="status">Loading evidence…</p> : <>
+          <p className="muted">{info.items.total} recorded item(s) · {info.items.shared} possibly shared</p>
+          <ul className="artifact-list">{info.items.items.slice(0, 12).map((i) => <li key={i.path}><button type="button" className="row-button" onClick={() => onTrace(i.path)} title={i.path}><span><code>{i.path}</code><small>{nodeText[i.node_type] ?? i.node_type} · {Math.round(i.confidence * 100)}% confidence</small></span><Badge tone={i.shared ? "critical" : i.node_type === "file" ? "neutral" : "review"}>{i.shared ? "Shared · keep" : i.node_type === "file" ? "Unassessed" : "Read-only"}</Badge></button></li>)}</ul>
+          {info.items.total > 12 && <small className="muted">Showing the first 12 items. Open the session inspector for recorded changes.</small>}
+        </>}
+      </>}
+    </div>
+  </aside>;
 }
