@@ -24,10 +24,8 @@ jobs:
       - name: Dependency licenses must be free/open source
         run: python3 scripts/check-licenses.py
       - run: cargo fmt --all -- --check
-      - shell: bash
-        run: bash scripts/ci-cargo-diagnostic.sh cargo clippy --color=never --workspace --all-targets --locked -- -D warnings
-      - shell: bash
-        run: bash scripts/ci-cargo-diagnostic.sh cargo test --color=never --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
 
   rust-windows:
     name: Rust (Windows) build and tests
@@ -36,10 +34,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - shell: bash
-        run: bash scripts/ci-cargo-diagnostic.sh cargo clippy --color=never --workspace --all-targets --locked -- -D warnings
-      - shell: bash
-        run: bash scripts/ci-cargo-diagnostic.sh cargo test --color=never --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
 
   gui:
     name: GUI build and Tauri shell check
