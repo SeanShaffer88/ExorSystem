@@ -15,6 +15,8 @@ ExorSystem records system changes and helps people review the evidence before cl
 
 ## Unreleased development
 
+- **Audited desktop boundaries:** exact cleanup plans, verified profile backup and archive rotation, bounded capture and exports, separate main/log permissions. See the [remediation verification matrix](docs/AUDIT-REMEDIATION.md) for unverified Windows scenarios.
+
 - **Retain comparison context:** History and installation reports show what a Watch compared, including skipped scopes and comparisons with zero changes. Scope coverage is saved with the observations; old sessions without coverage remain unknown. This is a local profile upgrade, not a change to v0.2.0 packages or a native Windows test result.
 
 - **Workspace refinements:** scrollable Applications details and a separate Activity log attached below the Windows desktop. Closing the log returns its space to the maximized workspace.

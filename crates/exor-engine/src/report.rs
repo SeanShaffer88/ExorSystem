@@ -1,15 +1,13 @@
 //! Accessibility-first plain-language summaries: no colour, symbols or layout carry meaning.
 
-use crate::error::{EngineError, Result, io_err};
+use crate::error::{EngineError, Result};
 use crate::policy::{self, SimulationReport};
 use crate::templates;
 use exor_storage::{
-    ChangeKind, ChangeSource, LedgerEntry, LedgerQuery, NodeType, PolicyAction, Provenance, Store,
-    WatchSummary,
+    ChangeDomain, ChangeKind, ChangeSource, LedgerEntry, LedgerQuery, NodeType, PolicyAction,
+    Provenance, Store, WatchSummary,
 };
 use serde::Serialize;
-use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write};
 use std::path::Path;
 
 /// Words for a confidence score.
@@ -49,7 +47,7 @@ pub fn session_report(store: &Store, session_id: i64, template: &str) -> Result<
         .ok_or_else(|| EngineError::Quarantine(format!("no installation #{session_id}")))?;
     let rules = templates::rules_for(template)
         .ok_or_else(|| EngineError::Quarantine(format!("unknown policy '{template}'")))?;
-    let cands = policy::candidates_for_session(store, session_id)?;
+    let cands = policy::bounded_candidates(store, session_id, crate::cleanup::MAX_FINDINGS)?.ok_or_else(|| EngineError::Quarantine("This session is too large for a single Markdown report. Use Recorded items or a paged History export instead.".into()))?;
     let sim = policy::simulate(&rules, &cands)?;
     let conf = |c: &policy::Candidate| {
         c.attrs
@@ -215,6 +213,8 @@ pub struct ChangeExport {
     pub records: usize,
     /// Older matches exist beyond the export limit.
     pub truncated: bool,
+    /// Cursor for exporting the next older page using the same filters.
+    pub next_before_id: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -222,6 +222,10 @@ struct ExportFilters<'a> {
     session_id: Option<i64>,
     path_contains: Option<&'a str>,
     change_kind: Option<ChangeKind>,
+    domain: Option<ChangeDomain>,
+    before_id: Option<i64>,
+    from_utc: Option<&'a str>,
+    until_utc: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -230,6 +234,7 @@ struct ChangeArchive<'a> {
     version: u32,
     filters: ExportFilters<'a>,
     truncated: bool,
+    next_before_id: Option<i64>,
     observations: Vec<LedgerEntry>,
 }
 
@@ -242,57 +247,53 @@ pub fn export_changes(
     path_contains: Option<&str>,
     change_kind: Option<ChangeKind>,
 ) -> Result<ChangeExport> {
-    let page = store.ledger_query(
-        CHANGE_EXPORT_LIMIT,
+    export_change_page(
+        store,
+        directory,
         LedgerQuery {
-            path_contains,
             session_id,
+            path_contains,
             change_kind,
             ..Default::default()
         },
-    )?;
-    let truncated = page.next_before_id.is_some();
+    )
+}
+
+/// Write a bounded, independently readable part. The cursor is exclusive and based on the
+/// append-only entry id, so new observations never move the continuation boundary.
+pub fn export_change_page(
+    store: &Store,
+    directory: &Path,
+    query: LedgerQuery<'_>,
+) -> Result<ChangeExport> {
+    let page = store.ledger_query(CHANGE_EXPORT_LIMIT, query)?;
+    let next_before_id = page.next_before_id;
+    let truncated = next_before_id.is_some();
     let records = page.entries.len();
     let archive = ChangeArchive {
         format: "exorsystem.observations",
         version: 1,
         filters: ExportFilters {
-            session_id,
-            path_contains,
-            change_kind,
+            session_id: query.session_id,
+            path_contains: query.path_contains,
+            change_kind: query.change_kind,
+            domain: query.domain,
+            before_id: query.before_id,
+            from_utc: query.from_utc,
+            until_utc: query.until_utc,
         },
         truncated,
+        next_before_id,
         observations: page.entries,
     };
     let bytes = serde_json::to_vec_pretty(&archive)?;
-    for n in 1..=1000 {
-        let name = if n == 1 {
-            "ExorSystem changes.json".into()
-        } else {
-            format!("ExorSystem changes ({n}).json")
-        };
-        let path = directory.join(name);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
-                    drop(file);
-                    let _ = std::fs::remove_file(&path);
-                    return Err(io_err(path)(error));
-                }
-                return Ok(ChangeExport {
-                    path: path.to_string_lossy().into_owned(),
-                    records,
-                    truncated,
-                });
-            }
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(io_err(path)(e)),
-        }
-    }
-    Err(io_err(directory)(std::io::Error::new(
-        ErrorKind::AlreadyExists,
-        "no unused changes export name",
-    )))
+    let path = crate::publication::write_unique(directory, "ExorSystem changes", "json", &bytes)?;
+    Ok(ChangeExport {
+        path: path.to_string_lossy().into_owned(),
+        records,
+        truncated,
+        next_before_id,
+    })
 }
 
 /// Plain-language provenance sentence for one artifact.
@@ -395,7 +396,7 @@ mod report_tests {
         assert_eq!(json["version"], 1);
         assert_eq!(
             json["filters"],
-            serde_json::json!({ "session_id": session, "path_contains": "app_%", "change_kind": "deleted" })
+            serde_json::json!({ "session_id": session, "path_contains": "app_%", "change_kind": "deleted", "before_id": null, "domain": null, "from_utc": null, "until_utc": null })
         );
         assert_eq!(json["truncated"], true);
         let rows: Vec<LedgerEntry> = serde_json::from_value(json["observations"].clone()).unwrap();

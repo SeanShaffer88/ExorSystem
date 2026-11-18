@@ -4,26 +4,26 @@ import { isDemo } from "../bridge";
 import { ChangeBadge, EvidenceDiff, changeStyle, domainIcon, domainText } from "../components/ChangeEvidence";
 import { Icon } from "../components/Icon";
 import { comparisonLabel, hasSkipped, WatchCoverageCards, WatchWarnings } from "../components/WatchCoverage";
-import { Badge, CardHeading, Empty, Intro, evidenceText, leafName, timeText } from "../components/Workspace";
-import type { ChangeDomain, ChangeKind, HistoryPage, HistoryRow, Session, WatchSummary } from "../types";
+import { Badge, CardHeading, Empty, Intro, evidenceText, leafName } from "../components/Workspace";
+import type { ChangeDomain, ChangeKind, HistoryDates, HistoryPage, HistoryRow, Session, WatchSummary } from "../types";
 
 type Result = { key: string; page?: HistoryPage; error?: string };
-function useHistoryPage(visible: boolean, path: string | null, sessionId: number | null, domain: ChangeDomain | null, limit: number, changeKind: ChangeKind | null) {
+function useHistoryPage(visible: boolean, path: string | null, sessionId: number | null, domain: ChangeDomain | null, limit: number, changeKind: ChangeKind | null, { fromDate, beforeDate }: HistoryDates) {
   const [cursors, setCursors] = useState<(number | null)[]>([null]);
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<Result | null>(null);
   const beforeId = cursors.at(-1) ?? null;
-  const key = JSON.stringify([sessionId, path, domain, changeKind, beforeId, attempt]);
+  const key = JSON.stringify([sessionId, path, domain, changeKind, beforeId, attempt, fromDate, beforeDate]);
   const current = result?.key === key ? result : null;
   useEffect(() => {
     if (!visible) return;
     let live = true;
     const wait = window.setTimeout(() => {
-      api.history(path, limit, sessionId, beforeId, domain, changeKind).then((page) => { if (live) setResult({ key, page }); })
+      api.history(path, limit, sessionId, beforeId, domain, changeKind, { fromDate, beforeDate }).then((page) => { if (live) setResult({ key, page }); })
         .catch((e: unknown) => { if (live) setResult({ key, error: String(e) }); });
     }, path ? 180 : 0);
     return () => { live = false; window.clearTimeout(wait); };
-  }, [key, limit, path, sessionId, beforeId, domain, changeKind, visible]);
+  }, [key, limit, path, sessionId, beforeId, domain, changeKind, fromDate, beforeDate, visible]);
   const older = current?.page?.next_before_id ?? null;
   return {
     page: current?.page, number: cursors.length, error: current?.error, loading: !current,
@@ -35,25 +35,28 @@ function useHistoryPage(visible: boolean, path: string | null, sessionId: number
 type Page = ReturnType<typeof useHistoryPage>;
 const changeKinds: readonly ChangeKind[] = ["created", "modified", "deleted", "renamed", "quarantined", "restored"];
 
-function SaveChanges({ path, sessionId, changeKind }: { path: string | null; sessionId: number | null; changeKind: ChangeKind | null }) {
+function SaveChanges({ path, sessionId, changeKind, dates }: { path: string | null; sessionId: number | null; changeKind: ChangeKind | null; dates: HistoryDates }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const saving = useRef(false);
-  const save = async () => {
+  const [cursor, setCursor] = useState<number | null>(null);
+  const save = async (before: number | null) => {
     if (saving.current) return;
     saving.current = true; setPending(true); setError(""); setMessage("");
     try {
-      const result = await api.saveChanges(path, sessionId, changeKind);
+      const result = await api.saveChanges(path, sessionId, changeKind, dates, before);
+      setCursor(result.next_before_id);
       setMessage(isDemo() ? `Demo: ${result.records} observation(s) would be exported. No file was saved.`
-        : `Saved ${result.records} observation(s) to ${result.path}.${result.truncated ? " Older matching observations were not included." : ""}`);
+        : `Saved ${result.records} observation(s) to ${result.path}.${result.truncated ? " Older matches can be saved in the next part." : ""}`);
     } catch (e) { setError(`Could not save matching changes: ${String(e)}`); }
     finally { saving.current = false; setPending(false); }
   };
   return <details className="card tool-card change-export">
     <summary>Export matching changes</summary>
-    <p className="muted">Save up to the 1,000 newest matching observations as JSON in Documents. It includes all evidence domains, not just the visible page. The file contains recorded paths and fingerprints; review it before sharing.</p>
-    <button type="button" className="quiet-button" disabled={pending} onClick={() => void save()}>{pending ? "Saving…" : "Save changes JSON"}</button>
+    <p className="muted">Save matching observations as JSON in Documents, up to 1,000 per part. Each part includes all evidence domains under these filters, not just the visible page. The file contains recorded paths and fingerprints; review it before sharing.</p>
+    <button type="button" className="quiet-button" disabled={pending} onClick={() => void save(null)}>{pending ? "Saving…" : "Save changes JSON"}</button>
+    {cursor !== null && <button type="button" className="quiet-button" disabled={pending} onClick={() => void save(cursor)}>Save next older JSON part</button>}
     {message && <p role="status">{message}</p>}
     {error && <p role="alert" className="error">{error}</p>}
   </details>;
@@ -68,11 +71,14 @@ export function HistoryView({ visible, initialSessionId, initialRow, onTrace, on
   const [sessionError, setSessionError] = useState("");
   const [sessionId, setSessionId] = useState(initialSessionId);
   const [changeKind, setChangeKind] = useState<ChangeKind | null>(null);
+  const [fromDate, setFromDate] = useState("");
+  const [beforeDate, setBeforeDate] = useState("");
+  const dates = { fromDate: fromDate || null, beforeDate: beforeDate || null };
   const [openingRow, setOpeningRow] = useState(initialRow);
   const [timeline, setTimeline] = useState(initialRow?.domain === "system");
   const [refresh, setRefresh] = useState(0);
   const path = filter.trim() || null;
-  const key = JSON.stringify([path, sessionId, changeKind, refresh]);
+  const key = JSON.stringify([path, sessionId, changeKind, refresh, fromDate, beforeDate]);
   const session = sessions.find((s) => s.session_id === sessionId);
   useEffect(() => {
     if (!visible) return;
@@ -95,6 +101,8 @@ export function HistoryView({ visible, initialSessionId, initialRow, onTrace, on
       <div className="field"><label htmlFor="inspect-kind">Change type</label><select id="inspect-kind" value={changeKind ?? ""} onChange={(e) => {
         setChangeKind(changeKinds.find((kind) => kind === e.target.value) ?? null); setOpeningRow(undefined);
       }}><option value="">All changes</option>{changeKinds.map((kind) => <option key={kind} value={kind}>{changeStyle(kind).label}</option>)}</select></div>
+      <label className="field">From date (UTC)<input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setOpeningRow(undefined); }}/></label>
+      <label className="field">Before date (UTC, exclusive)<input type="date" value={beforeDate} onChange={(e) => { setBeforeDate(e.target.value); setOpeningRow(undefined); }}/></label>
       <div className="segments" role="group" aria-label="Inspector layout">
         <button type="button" aria-pressed={!timeline} onClick={() => setTimeline(false)}><Icon name="changes" size={16}/> Split view</button>
         <button type="button" aria-pressed={timeline} onClick={() => setTimeline(true)}><Icon name="list" size={16}/> Timeline</button>
@@ -102,9 +110,9 @@ export function HistoryView({ visible, initialSessionId, initialRow, onTrace, on
     </div>
     {sessionError && <p role="alert" className="error">Could not load installation names: {sessionError}</p>}
     {session?.status === "failed" && !session.ended_at && <p className="notice review-notice">This session did not finish. No ending time was recorded.</p>}
-    <SaveChanges path={path} sessionId={sessionId} changeKind={changeKind}/>
+    <SaveChanges key={`export:${key}`} dates={dates} path={path} sessionId={sessionId} changeKind={changeKind}/>
     {sessionId !== null && <SavedWatchCoverage key={`${sessionId}:${refresh}`} visible={visible} sessionId={sessionId}/>}
-    {timeline ? <Timeline visible={visible} key={key} sessionId={sessionId} path={path} changeKind={changeKind} initialRow={openingRow} onTrace={onTrace}/> : <SplitInspector visible={visible} key={key} sessionId={sessionId} path={path} changeKind={changeKind} initialRow={openingRow} onTrace={onTrace}/>}
+    {timeline ? <Timeline visible={visible} key={key} dates={dates} sessionId={sessionId} path={path} changeKind={changeKind} initialRow={openingRow} onTrace={onTrace}/> : <SplitInspector visible={visible} key={key} dates={dates} sessionId={sessionId} path={path} changeKind={changeKind} initialRow={openingRow} onTrace={onTrace}/>}
   </section>;
 }
 
@@ -135,11 +143,11 @@ function SavedWatchCoverage({ visible, sessionId }: { visible: boolean; sessionI
   </section>;
 }
 
-type EvidenceProps = { visible: boolean; sessionId: number | null; path: string | null; changeKind: ChangeKind | null; initialRow?: HistoryRow; onTrace: (path: string) => void };
+type EvidenceProps = { visible: boolean; sessionId: number | null; path: string | null; changeKind: ChangeKind | null; dates: HistoryDates; initialRow?: HistoryRow; onTrace: (path: string) => void };
 
-function SplitInspector({ visible, sessionId, path, changeKind, initialRow, onTrace }: EvidenceProps) {
-  const registry = useHistoryPage(visible, path, sessionId, "registry", 6, changeKind);
-  const files = useHistoryPage(visible, path, sessionId, "file", 6, changeKind);
+function SplitInspector({ visible, sessionId, path, changeKind, dates, initialRow, onTrace }: EvidenceProps) {
+  const registry = useHistoryPage(visible, path, sessionId, "registry", 6, changeKind, dates);
+  const files = useHistoryPage(visible, path, sessionId, "file", 6, changeKind, dates);
   const [selected, setSelected] = useState<HistoryRow | null>(initialRow ?? null);
   const row = selected ?? files.page?.rows[0] ?? registry.page?.rows[0] ?? null;
   return <>
@@ -177,8 +185,8 @@ function Pager({ data, onPage }: { data: Page; onPage: () => void }) {
   </div>;
 }
 
-function Timeline({ visible, sessionId, path, changeKind, initialRow, onTrace }: EvidenceProps) {
-  const data = useHistoryPage(visible, path, sessionId, null, 100, changeKind);
+function Timeline({ visible, sessionId, path, changeKind, dates, initialRow, onTrace }: EvidenceProps) {
+  const data = useHistoryPage(visible, path, sessionId, null, 100, changeKind, dates);
   const [selected, setSelected] = useState<HistoryRow | null>(initialRow ?? null);
   return <>
     <section className="card card-overflow" aria-label="History timeline">
@@ -187,7 +195,7 @@ function Timeline({ visible, sessionId, path, changeKind, initialRow, onTrace }:
         : <div className="dashboard-scroll timeline-scroll"><table className="dashboard-table timeline-table">
           <thead><tr><th scope="col">When (UTC)</th><th scope="col">Change</th><th scope="col">Path</th><th scope="col">Source</th><th scope="col">Session</th></tr></thead>
           <tbody>{data.page.rows.map((r) => <tr key={r.id} className={r.id === selected?.id ? "selected-row" : ""}>
-            <td title={r.when ?? undefined}>{timeText(r.when)}</td><td><ChangeBadge what={r.what}/></td>
+            <td><time>{r.when ? `${r.when.replace("T", " ").replace(/Z$/, "")} UTC` : "Unknown"}</time></td><td><ChangeBadge what={r.what}/></td>
             <td><button type="button" className="row-button timeline-path" onClick={() => setSelected(r)} aria-pressed={r.id === selected?.id}>{r.path}</button></td><td>{evidenceText[r.source] ?? r.source}</td><td>{r.session_id === null ? "Unassigned" : `#${r.session_id}`}</td>
           </tr>)}</tbody>
         </table></div>}

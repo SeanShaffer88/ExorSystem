@@ -5,14 +5,13 @@
 
 use crate::cancel::Cancel;
 use crate::collectors::{ServiceInfo, TaskInfo, diff_services, diff_tasks};
-use crate::error::{EngineError, Result, io_err};
+use crate::error::{EngineError, Result};
 use crate::monitor::{SessionMonitor, WatchChanges};
 use crate::registry::{RegistryKeyState, RegistryScope, RegistryScopes, diff_registry_keys};
-use crate::snapshot::{CaptureOptions, capture};
+use crate::snapshot::{CaptureOptions, Progress, capture_with_progress};
 use crate::trie::{PathTrie, diff};
 pub use exor_storage::{ScopeCoverage, WatchCoverage, WatchSummary};
 use exor_storage::{SessionStatus, Store};
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +27,22 @@ pub trait SystemProbe: Send + Sync {
     /// snapshot is an error, never a partial set.
     fn registry_keys(&self, _scope: &RegistryScope) -> ProbeResult<RegistryKeyState> {
         Err("registry snapshots are not available on this platform".into())
+    }
+    /// Capture service metadata with cancellation between records where supported.
+    fn services_cancellable(&self, _stop: &Cancel) -> ProbeResult<ServiceInfo> {
+        self.services()
+    }
+    /// Capture task definitions with cancellation between records where supported.
+    fn tasks_cancellable(&self, _stop: &Cancel) -> ProbeResult<TaskInfo> {
+        self.tasks()
+    }
+    /// Capture one registry scope with cancellation between records where supported.
+    fn registry_cancellable(
+        &self,
+        scope: &RegistryScope,
+        _stop: &Cancel,
+    ) -> ProbeResult<RegistryKeyState> {
+        self.registry_keys(scope)
     }
 }
 
@@ -53,6 +68,8 @@ pub struct WatchPlan<'a> {
     pub services: bool,
     /// Include scheduled-task metadata.
     pub tasks: bool,
+    /// Hash every file again and preserve case-only sibling paths.
+    pub strict: bool,
 }
 
 /// An installation being watched.
@@ -65,18 +82,42 @@ pub struct InstallWatch {
     probe: Arc<dyn SystemProbe>,
     coverage: WatchCoverage,
     warnings: Vec<String>,
+    options: CaptureOptions,
 }
 
-async fn probe_services(p: &Arc<dyn SystemProbe>) -> ProbeResult<ServiceInfo> {
-    let p = Arc::clone(p);
-    tokio::task::spawn_blocking(move || p.services())
+/// A capture phase and (for file scopes) throttled real I/O counts.
+#[derive(Clone, serde::Serialize)]
+pub struct WatchProgress {
+    /// Human-readable work stage.
+    pub phase: &'static str,
+    /// Current folder or registry scope, when applicable.
+    pub scope: Option<String>,
+    /// File progress scoped to the current folder.
+    pub files: Option<Progress>,
+}
+
+type Notify = Arc<dyn Fn(WatchProgress) + Send + Sync>;
+
+fn notify(callback: &Notify, phase: &'static str, scope: Option<String>) {
+    callback(WatchProgress {
+        phase,
+        scope,
+        files: None,
+    });
+}
+
+const MAX_ROOTS: usize = 8;
+
+async fn probe_services(p: &Arc<dyn SystemProbe>, stop: &Cancel) -> ProbeResult<ServiceInfo> {
+    let (p, stop) = (Arc::clone(p), stop.clone());
+    tokio::task::spawn_blocking(move || p.services_cancellable(&stop))
         .await
         .map_err(|e| e.to_string())?
 }
 
-async fn probe_tasks(p: &Arc<dyn SystemProbe>) -> ProbeResult<TaskInfo> {
-    let p = Arc::clone(p);
-    tokio::task::spawn_blocking(move || p.tasks())
+async fn probe_tasks(p: &Arc<dyn SystemProbe>, stop: &Cancel) -> ProbeResult<TaskInfo> {
+    let (p, stop) = (Arc::clone(p), stop.clone());
+    tokio::task::spawn_blocking(move || p.tasks_cancellable(&stop))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -84,49 +125,48 @@ async fn probe_tasks(p: &Arc<dyn SystemProbe>) -> ProbeResult<TaskInfo> {
 async fn probe_registry(
     p: &Arc<dyn SystemProbe>,
     scope: &RegistryScope,
+    stop: &Cancel,
 ) -> ProbeResult<RegistryKeyState> {
-    let p = Arc::clone(p);
+    let (p, stop) = (Arc::clone(p), stop.clone());
     let scope = scope.clone();
-    tokio::task::spawn_blocking(move || p.registry_keys(&scope))
+    tokio::task::spawn_blocking(move || p.registry_cancellable(&scope, &stop))
         .await
         .map_err(|e| e.to_string())?
-}
-
-fn plain_folder(meta: &std::fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        // FILE_ATTRIBUTE_REPARSE_POINT: do not interpret a redirected root as the watched folder.
-        if meta.file_attributes() & 0x400 != 0 {
-            return false;
-        }
-    }
-    meta.is_dir() && !meta.is_symlink()
 }
 
 async fn folder_snapshot(
     root: &Path,
     previous: Option<&PathTrie>,
+    opts: &CaptureOptions,
     cancel: &Cancel,
+    progress: Notify,
 ) -> Result<PathTrie> {
     cancel.check()?;
-    match tokio::fs::symlink_metadata(root).await {
-        Ok(meta) if plain_folder(&meta) => {}
-        Ok(_) => {
-            return Err(EngineError::Watch(
-                "expected a folder, not a file or link".into(),
-            ));
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            // A genuinely absent folder can be created/removed between snapshots. An I/O error
-            // during enumeration below is not equivalent to absence, even if it says NotFound.
-            let mut empty = PathTrie::new();
-            empty.finalize();
-            return Ok(empty);
-        }
-        Err(e) => return Err(io_err(root)(e)),
+    let root_to_check = root.to_path_buf();
+    if !tokio::task::spawn_blocking(move || crate::quarantine::plain_dirs(&root_to_check)).await?? {
+        let mut empty = if opts.strict {
+            PathTrie::new_strict()
+        } else {
+            PathTrie::new()
+        };
+        empty.finalize();
+        return Ok(empty);
     }
-    let snapshot = capture(root, &CaptureOptions::default(), previous, cancel).await?;
+    let scope = root.display().to_string();
+    let snapshot = capture_with_progress(
+        root,
+        opts,
+        previous,
+        cancel,
+        Arc::new(move |files| {
+            progress(WatchProgress {
+                phase: "Capturing files",
+                scope: Some(scope.clone()),
+                files: Some(files),
+            });
+        }),
+    )
+    .await?;
     if let Some((path, reason)) = snapshot.skipped.first() {
         return Err(EngineError::Watch(format!(
             "{} path(s) could not be read; for example {path}: {reason}",
@@ -146,6 +186,28 @@ impl InstallWatch {
         probe: Arc<dyn SystemProbe>,
         cancel: &Cancel,
     ) -> Result<Self> {
+        Self::begin_with_progress(
+            store,
+            app_name,
+            installer_path,
+            plan,
+            probe,
+            cancel,
+            Arc::new(|_| {}),
+        )
+        .await
+    }
+
+    /// Start a baseline and report which scopes are being captured.
+    pub async fn begin_with_progress(
+        store: Arc<Mutex<Store>>,
+        app_name: &str,
+        installer_path: Option<&str>,
+        plan: WatchPlan<'_>,
+        probe: Arc<dyn SystemProbe>,
+        cancel: &Cancel,
+        progress: Notify,
+    ) -> Result<Self> {
         if plan.folders.is_empty()
             && plan.registry.as_slice().is_empty()
             && !plan.services
@@ -155,7 +217,16 @@ impl InstallWatch {
                 "Choose at least one folder, registry subtree, or system check.".into(),
             ));
         }
-        if plan.folders.iter().any(|root| !root.is_absolute()) {
+        if plan.folders.len() > MAX_ROOTS {
+            return Err(EngineError::Watch(format!(
+                "Choose at most {MAX_ROOTS} folders."
+            )));
+        }
+        if plan
+            .folders
+            .iter()
+            .any(|root| crate::quarantine::local_path(root).is_err())
+        {
             return Err(EngineError::Watch(
                 "Enter a full path for every watched folder.".into(),
             ));
@@ -178,7 +249,23 @@ impl InstallWatch {
                 usable: 0,
             },
         };
-        let monitor = SessionMonitor::start(store, app_name, installer_path, None)?;
+        let app = app_name.to_owned();
+        let installer = installer_path.map(str::to_owned);
+        let monitor = tokio::task::spawn_blocking(move || {
+            SessionMonitor::start(store, &app, installer.as_deref(), None)
+        })
+        .await??;
+        let n = plan.folders.len().max(1);
+        let options = CaptureOptions {
+            strict: plan.strict,
+            total_hash_bytes: (4 * 1024 * 1024 * 1024) / n as u64,
+            walk: crate::walker::WalkOptions {
+                max_entries: 24_000.min(48_000 / n),
+                max_path_bytes: (8 * 1024 * 1024).min(16 * 1024 * 1024 / n),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let mut watch = Self {
             monitor,
             roots: Vec::new(),
@@ -188,18 +275,24 @@ impl InstallWatch {
             probe,
             coverage,
             warnings: Vec::new(),
+            options,
         };
-        if let Err(e) = watch.baseline(plan, cancel).await {
-            let _ = watch.abandon();
+        if let Err(e) = watch.baseline(plan, cancel, progress).await {
+            let _ = tokio::task::spawn_blocking(move || watch.abandon()).await;
             return Err(e);
         }
         Ok(watch)
     }
 
-    async fn baseline(&mut self, plan: WatchPlan<'_>, cancel: &Cancel) -> Result<()> {
+    async fn baseline(
+        &mut self,
+        plan: WatchPlan<'_>,
+        cancel: &Cancel,
+        progress: Notify,
+    ) -> Result<()> {
         cancel.check()?;
         for root in plan.folders {
-            match folder_snapshot(root, None, cancel).await {
+            match folder_snapshot(root, None, &self.options, cancel, progress.clone()).await {
                 Ok(snapshot) => self.roots.push((root.clone(), snapshot)),
                 Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
                 Err(e) => self.warnings.push(format!(
@@ -210,7 +303,8 @@ impl InstallWatch {
         }
         if plan.services {
             cancel.check()?;
-            match probe_services(&self.probe).await {
+            notify(&progress, "Reading service configuration", None);
+            match probe_services(&self.probe, cancel).await {
                 Ok(v) => self.services = Some(v),
                 Err(e) => self
                     .warnings
@@ -219,7 +313,8 @@ impl InstallWatch {
         }
         if plan.tasks {
             cancel.check()?;
-            match probe_tasks(&self.probe).await {
+            notify(&progress, "Reading task definitions", None);
+            match probe_tasks(&self.probe, cancel).await {
                 Ok(v) => self.tasks = Some(v),
                 Err(e) => self.warnings.push(format!(
                     "Scheduled tasks were not checked before changes: {e}"
@@ -228,7 +323,12 @@ impl InstallWatch {
         }
         for scope in plan.registry.as_slice() {
             cancel.check()?;
-            match probe_registry(&self.probe, scope).await {
+            notify(
+                &progress,
+                "Reading registry metadata",
+                Some(scope.to_string()),
+            );
+            match probe_registry(&self.probe, scope, cancel).await {
                 Ok(keys) => self.registry.push((scope.clone(), keys)),
                 Err(e) => self.warnings.push(format!(
                     "Registry subtree {scope} was not checked before changes: {e}"
@@ -270,14 +370,26 @@ impl InstallWatch {
     }
 
     /// Re-capture the usable baselines, then commit the changes and coverage together.
-    pub async fn finish(mut self, cancel: &Cancel) -> Result<WatchSummary> {
-        let (summary, changes) = match self.compare(cancel).await {
+    pub async fn finish(self, cancel: &Cancel) -> Result<WatchSummary> {
+        self.finish_with_progress(cancel, Arc::new(|_| {})).await
+    }
+
+    /// Compare usable scopes and report capture and commit phases.
+    pub async fn finish_with_progress(
+        mut self,
+        cancel: &Cancel,
+        progress: Notify,
+    ) -> Result<WatchSummary> {
+        let (summary, changes) = match self.compare(cancel, &progress).await {
             Ok(comparison) => comparison,
             Err(e) => {
-                let _ = self.monitor.finish(SessionStatus::Failed);
+                let _ =
+                    tokio::task::spawn_blocking(move || self.monitor.finish(SessionStatus::Failed))
+                        .await;
                 return Err(e);
             }
         };
+        notify(&progress, "Recording the comparison", None);
         let monitor = self.monitor;
         let cancel = cancel.clone();
         tokio::task::spawn_blocking(move || {
@@ -290,7 +402,11 @@ impl InstallWatch {
         .await?
     }
 
-    async fn compare(&mut self, cancel: &Cancel) -> Result<(WatchSummary, WatchChanges)> {
+    async fn compare(
+        &mut self,
+        cancel: &Cancel,
+        progress: &Notify,
+    ) -> Result<(WatchSummary, WatchChanges)> {
         let mut summary = WatchSummary {
             session_id: self.session_id(),
             coverage: self.coverage,
@@ -306,9 +422,24 @@ impl InstallWatch {
         summary.coverage.registry.usable = 0;
         let mut changes = WatchChanges::default();
         for (root, before) in std::mem::take(&mut self.roots) {
-            match folder_snapshot(&root, Some(&before), cancel).await {
+            match folder_snapshot(
+                &root,
+                Some(&before),
+                &self.options,
+                cancel,
+                progress.clone(),
+            )
+            .await
+            {
                 Ok(after) => {
-                    changes.files.extend(diff(&before, &after));
+                    notify(
+                        progress,
+                        "Comparing file snapshots",
+                        Some(root.display().to_string()),
+                    );
+                    changes
+                        .files
+                        .extend(tokio::task::spawn_blocking(move || diff(&before, &after)).await?);
                     summary.coverage.folders.usable += 1;
                 }
                 Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
@@ -320,7 +451,8 @@ impl InstallWatch {
         }
         if let Some(old) = self.services.take() {
             cancel.check()?;
-            match probe_services(&self.probe).await {
+            notify(progress, "Reading service configuration", None);
+            match probe_services(&self.probe, cancel).await {
                 Ok(new) => {
                     changes.services = diff_services(&old, &new);
                     summary.coverage.services.usable = 1;
@@ -332,7 +464,8 @@ impl InstallWatch {
         }
         if let Some(old) = self.tasks.take() {
             cancel.check()?;
-            match probe_tasks(&self.probe).await {
+            notify(progress, "Reading task definitions", None);
+            match probe_tasks(&self.probe, cancel).await {
                 Ok(new) => {
                     changes.tasks = diff_tasks(&old, &new);
                     summary.coverage.tasks.usable = 1;
@@ -344,7 +477,12 @@ impl InstallWatch {
         }
         for (scope, before) in std::mem::take(&mut self.registry) {
             cancel.check()?;
-            let after = probe_registry(&self.probe, &scope).await;
+            notify(
+                progress,
+                "Reading registry metadata",
+                Some(scope.to_string()),
+            );
+            let after = probe_registry(&self.probe, &scope, cancel).await;
             cancel.check()?;
             match after {
                 Ok(after) => {

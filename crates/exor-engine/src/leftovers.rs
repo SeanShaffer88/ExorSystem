@@ -168,7 +168,9 @@ pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> 
                 path: s.into(),
                 reason: reason.into(),
                 confidence,
-                can_quarantine: in_application_root(&path, roots),
+                can_quarantine: confidence >= 0.4
+                    && p.is_listed()
+                    && in_application_root(&path, roots),
             });
         }
     };
@@ -190,13 +192,22 @@ pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> 
             let Ok(rd) = std::fs::read_dir(root) else {
                 continue;
             };
-            for e in rd.flatten() {
+            for e in rd.take(4_096).flatten() {
                 let n = norm(&e.file_name().to_string_lossy());
                 if n.len() >= 4
                     && publisher.as_deref() != Some(n.as_str())
                     && (n == name || name.contains(&n) && n.len() * 2 >= name.len())
                 {
-                    add(e.path(), "The folder name matches the program.", 0.3);
+                    let exact = n == name;
+                    add(
+                        e.path(),
+                        if exact {
+                            "The folder name matches the program."
+                        } else {
+                            "Similar name only; not an approved cleanup folder."
+                        },
+                        if exact { 0.4 } else { 0.3 },
+                    );
                 }
             }
         }
@@ -206,6 +217,7 @@ pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> 
             .total_cmp(&a.confidence)
             .then(a.path.cmp(&b.path))
     });
+    out.truncate(64);
     out
 }
 
@@ -456,6 +468,7 @@ mod tests {
             path: name.into(),
             command: Some(command.into()),
             author: Some("Acme".into()),
+            definition_hash: None,
         };
         let tasks = [
             task(r"\Foo\Updater", r"C:/Program Files/Foo Bar/update.exe"),

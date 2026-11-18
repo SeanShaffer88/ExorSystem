@@ -448,3 +448,9 @@
 .batch-files code { overflow-wrap: anywhere; }
 .batch-files li > span { white-space: nowrap; color: var(--muted); }
 .batch-review > .quiet-button { margin-block-start: 9px; }
+.plan-review { display: grid; gap: .75rem; min-width: 0; }
+.plan-review h3 { margin: 0; }
+.plan-review p { margin: 0; }
+.plan-files { max-height: 16rem; overflow: auto; }
+.plan-files code, .plan-review code { overflow-wrap: anywhere; }
+.shutdown-notice { margin: .55rem .8rem; flex: none; }

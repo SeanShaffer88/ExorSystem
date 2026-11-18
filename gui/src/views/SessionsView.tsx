@@ -6,7 +6,7 @@ import type { InstalledProgram, ProgramInventory, Session, SessionItems } from "
 import { ProgramActions } from "./ProgramActions";
 
 interface Entry {
-  key: string; name: string; program: InstalledProgram | null; sessionIds: number[]; removed: boolean;
+  key: string; name: string; program: InstalledProgram | null; sessionIds: number[]; inferred?: boolean; removed: boolean;
 }
 const PAGE_SIZE = 16;
 // The session_items command returns this many rows per page.
@@ -48,7 +48,7 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
     if (!inventory) return [];
     const rows = inventory.programs;
     const matched = new Set(rows.flatMap((r) => r.session_ids));
-    const fromPrograms = rows.map((r) => ({ key: `p:${r.program.id}`, program: r.program, name: r.program.name, sessionIds: r.session_ids, removed: r.removed }));
+    const fromPrograms = rows.map((r) => ({ key: `p:${r.program.id}`, program: r.program, name: r.program.name, sessionIds: [...r.session_ids, ...r.inferred_session_ids], inferred: r.inferred_session_ids.length > 0, removed: r.removed }));
     const recordedOnly = sessions.filter((s) => !matched.has(s.session_id)).map((s) => ({ key: `s:${s.session_id}`, program: null, name: s.app_name, sessionIds: [s.session_id], removed: false }));
     return [...fromPrograms, ...recordedOnly].sort((a, b) => a.name.localeCompare(b.name));
   }, [inventory, sessions]);
@@ -142,6 +142,7 @@ function ApplicationDetail({ entry, sessions, onTrace, onHistory, onSimulate, on
     <ProgramActions key={sessionId ?? "no-session"} program={p} removed={entry.removed} sessionId={sessionId} onUninstallComplete={onUninstallComplete} onSimulate={onSimulate} onCleanup={onCleanup} onTerminal={onTerminal}/>
     <div className="session-evidence">
       <h3>Recorded evidence</h3>
+      {entry.inferred && <p className="muted">Some sessions are suggested by name only. A suggestion does not authorize cleanup; link the session explicitly in Cleanup summary.</p>}
       {sessionId === null ? <p className="muted">No recorded installation is linked to this entry.</p> : <>
         {entry.sessionIds.length > 1 && <label className="field">Recorded session<select value={sessionId} onChange={(e) => setSelected(Number(e.target.value))}>{entry.sessionIds.map((id) => <option key={id} value={id}>{sessions.find((s) => s.session_id === id)?.app_name ?? "Session"} #{id}</option>)}</select></label>}
         <button className="text-button" type="button" onClick={() => onHistory(sessionId)}>Inspect session #{sessionId} <Icon name="arrow" size={15}/></button>

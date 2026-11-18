@@ -21,7 +21,8 @@ fn main() -> ExitCode {
 
 #[cfg(windows)]
 mod lab {
-    use exor_engine::events::{EventSource, RawEvent};
+    use exor_engine::Cancel;
+    use exor_engine::events::{LiveEnd, LiveEventSource, RawEvent};
     use exor_win::{DriverRegistrySource, UsnJournalSource};
     use std::collections::BTreeMap;
     use std::time::Duration;
@@ -45,7 +46,7 @@ mod lab {
         if fixture.len() != 32 || !fixture.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("use the ID from scripts/windows-fixture.ps1 -Action New".into());
         }
-        let source: Box<dyn EventSource> = if let Some(volume) = mode {
+        let source: Box<dyn LiveEventSource> = if let Some(volume) = mode {
             UsnJournalSource::probe(volume).map_err(|e| e.to_string())?;
             Box::new(UsnJournalSource::new(volume))
         } else {
@@ -58,7 +59,8 @@ mod lab {
             .build()
             .map_err(|e| e.to_string())?;
         let result = runtime.block_on(async {
-            let mut rx = source.start();
+            let stop = Cancel::new();
+            let (mut rx, task) = source.start_live(stop.clone());
             let mut counts = BTreeMap::<String, u64>::new();
             println!("Sampling for 30 seconds. Wait 2 seconds, then apply the fixture changes in another terminal.");
             let completed = tokio::time::timeout(Duration::from_secs(30), async {
@@ -83,16 +85,18 @@ mod lab {
             for (kind, count) in &counts {
                 println!("{kind}: {count}");
             }
-            if completed.is_ok() {
-                Err("the source disconnected before the deadline; the sample is incomplete".into())
+            stop.cancel();
+            drop(rx);
+            let end = tokio::time::timeout(Duration::from_secs(5), task).await.map_err(|_| "Source did not stop within 5 seconds; collect lab diagnostics.")?.map_err(|e| e.to_string())?;
+            if completed.is_ok() || end != LiveEnd::Stopped {
+                Err(format!("Incomplete live sample: {end:?}"))
             } else if counts.is_empty() {
                 Err("no fixture events matched; check the volume, driver connection, and fixture timing".into())
             } else {
                 Ok(())
             }
         });
-        // A port wait may remain blocked until another message or unloading. This short-lived
-        // process exits instead of letting that wait hang an interactive desktop or its caller.
+        // The lab timeout reports an incomplete sample. Never use this path in the desktop.
         runtime.shutdown_timeout(Duration::from_secs(1));
         result
     }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useState } from "react";
-import { useActivityLog } from "./components/ActivityLog";
+import { useActivityLog, useLatestLog } from "./components/ActivityLog";
 import { Icon, Logo } from "./components/Icon";
 import { Badge } from "./components/Workspace";
 import { Disclosure } from "./docking/Disclosure";
@@ -7,6 +7,7 @@ import { DockWorkspace, tabId } from "./docking/DockWorkspace";
 import { dockName, dockReducer, locationOf, readLayout, saveLayout, workspaceState, type DockArea, type LayoutPreset } from "./docking/layout";
 import { PanelModule, type Inputs, type Requests } from "./docking/PanelModule";
 import { panel, quickTools, toolGroups, tools, type PanelId } from "./docking/panels";
+import { listen } from "./bridge";
 import { logApi } from "./logApi";
 import { StatusBar } from "./StatusBar";
 import { ThemeUndoBar } from "./ThemeUndoBar";
@@ -25,9 +26,18 @@ export function App({ demo = false }: { demo?: boolean }) {
   const [requests, setRequests] = useState<Requests>({});
   const [watching, setWatching] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ id?: PanelId } | null>(null);
-  const log = useActivityLog();
+  const log = useActivityLog(demo);
+  const latest = useLatestLog(!demo);
   const [attachedLog, setAttachedLog] = useState(false);
   const [logError, setLogError] = useState("");
+  const [shutdownNotice, setShutdownNotice] = useState("");
+  useEffect(() => {
+    if (demo) return;
+    let live = true;
+    const subscription = listen<string>("shutdown-wait", (event) => { if (live) setShutdownNotice(event.payload); });
+    void subscription.catch(() => {});
+    return () => { live = false; void subscription.then((stop) => stop()).catch(() => {}); };
+  }, [demo]);
   useEffect(() => {
     if (demo) return;
     let live = true;
@@ -157,10 +167,11 @@ export function App({ demo = false }: { demo?: boolean }) {
     </header>
     <main id="main" className="workspace-main" aria-label="Dockable workspace" tabIndex={-1}>
       <ThemeUndoBar />
+      {shutdownNotice && <p className="notice review-notice shutdown-notice" role="status">{shutdownNotice}</p>}
       <DockWorkspace state={state} compact={compact} onCompact={setCompact} onOpen={open} onMove={move} onClose={close}
         onFocus={(area) => dispatch({ kind: "focus", area })} onResize={(area, value) => dispatch({ kind: "resize", area, value })}
         renderPanel={(id, visible) => <PanelModule id={id} visible={visible} requests={requests} navigation={{ open, request }} log={log} onWatching={setWatching}/>}/>
     </main>
-    <StatusBar last={log.lines.at(-1)?.msg ?? "Ready"} logError={logError} logOpen={logVisible} onLog={toggleLog} onTerminal={() => open("terminal")}/>
+    <StatusBar last={(demo ? log.lines.at(-1)?.msg : latest.last?.msg) ?? "Ready"} logError={logError || latest.error} logOpen={logVisible} onLog={toggleLog} onTerminal={() => open("terminal")}/>
   </div>;
 }

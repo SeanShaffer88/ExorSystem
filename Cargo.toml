@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/exor-storage", "crates/exor-engine", "crates/exor-win"]
+members = ["crates/exor-storage", "crates/exor-engine", "crates/exor-fs", "crates/exor-win"]
 exclude = ["gui/src-tauri"]
 
 [workspace.package]

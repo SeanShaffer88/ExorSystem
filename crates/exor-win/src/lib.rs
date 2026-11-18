@@ -27,18 +27,19 @@ mod usn_source;
 pub use activity_window::{place_activity_window, show_activity_window};
 #[cfg(windows)]
 pub use desktop::{
-    prepare_user_data_dir, process_is_elevated, show_startup_error, uninstall_executable,
+    pick_path, prepare_user_data_dir, process_is_elevated, show_startup_error, uninstall_arguments,
+    uninstall_executable,
 };
 #[cfg(windows)]
 pub use packages_source::enumerate_packages;
 #[cfg(windows)]
-pub use programs_source::{enumerate_programs, enumerate_software_keys};
+pub use programs_source::{enumerate_programs, enumerate_software_keys, registry_program};
 #[cfg(windows)]
-pub use registry_snapshot::capture_registry_keys;
+pub use registry_snapshot::{capture_registry_cancellable, capture_registry_keys};
 #[cfg(windows)]
 pub use registry_source::DriverRegistrySource;
 #[cfg(windows)]
-pub use services_source::enumerate_services;
+pub use services_source::{enumerate_services, enumerate_services_cancellable};
 #[cfg(windows)]
 pub use usn_source::UsnJournalSource;
 
@@ -60,6 +61,9 @@ pub enum WinError {
         /// HRESULT.
         code: u32,
     },
+    /// Scope data could not be captured safely.
+    #[error("{0}")]
+    Coverage(&'static str),
     /// Malformed driver message.
     #[error("malformed driver message: {0}")]
     Proto(&'static str),

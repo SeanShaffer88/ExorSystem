@@ -26,7 +26,7 @@ export async function mockDesktop(page) {
     const stressRows = stressInventory ? Array.from({ length: 32 }, (_, i) => ({
       program: { ...standard, source: 'registry', id: `stress-${i + 1}`, name: `Inventory Fixture ${i + 1}`,
         install_location: 'C:\\' + 'UnbrokenDirectoryName'.repeat(i === 23 ? 20 : 1) },
-      removed: false, session_ids: i === 23 ? [9] : [],
+      removed: false, inferred_session_ids: [], session_ids: i === 23 ? [9] : [],
     })) : [];
     let portable = [];
     let removed = false;
@@ -70,17 +70,28 @@ export async function mockDesktop(page) {
     const events = new Map();
     const ready = (args) => {
       const send = callbacks.get(args.onReady.id);
-      send({ index: 0, message: null });
-      send({ index: 1, end: true });
+      send({ index: 0, message: { event: 'ready' } });
+      send({ index: 1, message: { event: 'progress', data: { phase: 'Capturing files', scope: moveable,
+        files: { phase: 'hashing', files_seen: 6, files_processed: 5, files_hashed: 2, files_reused: 2, files_unhashed: 1, bytes_hashed: 8192 } } } });
+      send({ index: 2, end: true });
     };
     const filterHistory = (args) => historyRows.filter(row =>
       (args.domain == null || row.domain === args.domain) &&
       (args.sessionId == null || row.session_id === args.sessionId) &&
       (args.changeKind == null || row.what === args.changeKind) &&
       (args.beforeId == null || row.id < args.beforeId) &&
-      (!args.filter || row.path.toLowerCase().includes(args.filter.toLowerCase()))
+      (!args.filter || row.path.toLowerCase().includes(args.filter.toLowerCase())) &&
+      (!args.fromDate || row.when >= args.fromDate) && (!args.beforeDate || row.when < args.beforeDate)
     );
     let token = 0;
+    let nextPlan = 0;
+    let preflight = null;
+    const plans = new Map();
+    const links = [];
+    const folderChoices = [
+      { path: moveable, confidence: .7, reason: 'This was the install folder.', can_quarantine: true },
+      { path: 'D:\\Tools\\Zed', confidence: .7, reason: 'Other-volume report.', can_quarantine: false },
+    ];
     const emit = (event, payload) => {
       for (const [id, listener] of events) if (listener.event === event) callbacks.get(listener.handler)?.({ event, id, payload });
     };
@@ -110,6 +121,7 @@ export async function mockDesktop(page) {
             events.delete(args.eventId);
             return null;
           }
+          case 'log_status': return { cleared_through: clearedThrough, last: entries.at(-1) ?? null };
           case 'get_log': {
             const snapshot = { cleared_through: clearedThrough, lines: [...entries] };
             if (delayedLog) await new Promise(resolve => { window.releaseExorLog = resolve; });
@@ -125,13 +137,13 @@ export async function mockDesktop(page) {
           case 'set_log_open': window.setExorLogOpen(args.open ?? !logOpen); return null;
           case 'scan': {
             const send = callbacks.get(args.onEvent.id);
-            send({ index: 0, message: { event: 'progress', data: { phase: 'hashing', files_seen: 6, files_hashed: 2, bytes_hashed: 5 } } });
+            send({ index: 0, message: { event: 'progress', data: { phase: 'hashing', files_seen: 6, files_processed: 2, files_hashed: 2, files_unhashed: 0, files_reused: 0, bytes_hashed: 5 } } });
             await new Promise(resolve => { window.finishExorScan = resolve; });
             send({ index: 1, message: { event: 'done', data: { files: 6, skipped: 0, root_digest: 'b'.repeat(64) } } });
             send({ index: 2, end: true });
             return null;
           }
-          case 'update_risk': return { low: [], medium: [], high: [] };
+          case 'update_risk': return { low: [], medium: [], high: [], not_assessed: [] };
           case 'list_sessions': return [
             ...[...comparisons.values()].reverse().map(({ session_id, coverage }) => ({
               session_id, app_name: comparisonNames.get(session_id) ?? 'Watch Fixture', ended_at: ended,
@@ -157,17 +169,22 @@ export async function mockDesktop(page) {
           }
           case 'history': {
             if (![5, 6, 100].includes(args.limit)) throw new Error('unexpected history page size');
-            if (args.filter === 'Retry fixture' && !historyFailed) {
+            if (args.filters.filter === 'Retry fixture' && !historyFailed) {
               historyFailed = true;
               throw new Error('history temporarily unavailable');
             }
-            const matches = filterHistory(args);
+            const matches = filterHistory(args.filters);
             // Two rows per fixture page are enough to exercise both paging controls.
             const limit = args.limit === 100 ? 2 : args.limit;
             const rows = matches.slice(0, limit);
             return { rows, next_before_id: matches.length > limit ? rows.at(-1).id : null };
           }
-          case 'save_changes': return { path: String.raw`C:\Users\Fixture\Documents\ExorSystem changes.json`, records: filterHistory(args).length, truncated: false };
+          case 'save_changes': {
+            const matches = filterHistory(args.filters);
+            const limit = window.smallExport ? 1 : 1000;
+            return { path: String.raw`C:\Users\Fixture\Documents\ExorSystem changes.json`, records: Math.min(matches.length, limit), truncated: matches.length > limit,
+              next_before_id: matches.length > limit ? matches[limit - 1].id : null };
+          }
           case 'begin_watch': {
             if (watch || capture) throw new Error('already watching');
             const { folders, registrySubtrees, system, appName } = args.request;
@@ -237,11 +254,11 @@ export async function mockDesktop(page) {
             watch = null;
             return null;
           case 'list_programs': return { programs: [
-            { program: removed ? { ...app, uninstall_command: null } : app, session_ids: [], removed },
-            { program: msix, session_ids: [], removed: false },
-            { program: userApp, session_ids: [], removed: false },
+            { program: removed ? { ...app, uninstall_command: null } : app, session_ids: links.slice(), inferred_session_ids: links.includes(9) ? [] : [9], removed },
+            { program: msix, session_ids: [], inferred_session_ids: [], removed: false },
+            { program: userApp, session_ids: [], inferred_session_ids: [], removed: false },
             ...stressRows,
-            ...portable.map((p) => ({program: {...standard, ...p, source: 'portable', id: 'portable:'+p.executable}, session_ids: [], removed: false})),
+            ...portable.map((p) => ({program: {...standard, ...p, source: 'portable', id: 'portable:'+p.executable}, session_ids: [], inferred_session_ids: [], removed: false})),
           ], warnings: ['One inventory source could not be checked.'] };
           case 'session_items': {
             if (args.sessionId !== 9) return { total: 0, matching: 0, items: [] };
@@ -274,12 +291,68 @@ export async function mockDesktop(page) {
               { kind: 'task', path: '\\Zed\\Updater', reason: 'The task command points inside the install folder.' },
             ], warnings: ['A registry view could not be checked.'],
           };
-          case 'quarantine_leftovers':
-            if (args.programId !== app.id || args.folders.length !== 1 || args.folders[0] !== moveable) throw new Error('unexpected quarantine target');
-            batches.unshift({ quarantine_id: 'fixture', session_id: null, status: 'quarantined', files: 2, file_bytes: 2 * 1024 ** 2 });
-            return { quarantine_id: 'fixture', moved: 2, skipped: 0, summary: 'Moved 2 files to quarantine.' };
-          case 'list_templates': return [{name:'standard', description:'Default'}];
-          case 'list_quarantines': return batches;
+          case 'cleanup_folders': return folderChoices;
+          case 'link_cleanup_session': {
+            if (args.programId !== app.id || args.sessionId !== 9 || removed) throw new Error('unsafe registration link');
+            links.push(args.sessionId);
+            return null;
+          }
+          case 'prepare_cleanup': {
+            if (preflight) throw new Error('Another preflight is already running.');
+            const { request } = args;
+            if (request.programId !== app.id || request.folders.length !== 1 || request.folders[0] !== moveable) throw new Error('unexpected cleanup scope');
+            if (request.template && !links.includes(request.sessionId)) throw new Error('explicit link required');
+            if (window.deferPlan) {
+              window.deferPlan = false;
+              preflight = { stopped: false };
+              await new Promise(resolve => { window.releasePlan = resolve; });
+              const stopped = preflight.stopped;
+              preflight = null;
+              if (stopped) throw new Error('Cleanup preparation cancelled.');
+            }
+            const id = ++nextPlan;
+            const files = request.template ? 42 : 2;
+            const plan = { id, roots: [moveable], files, bytes: files * 1024 ** 2, excluded: 1, expires_in_seconds: 600 };
+            plans.set(id, { plan, session: request.sessionId, viewed: new Set() });
+            return plan;
+          }
+          case 'stop_cleanup_preflight':
+            if (!preflight) return false;
+            preflight.stopped = true;
+            return true;
+          case 'cleanup_plan_page': {
+            const entry = plans.get(args.id);
+            if (!entry) throw new Error('Stale plan');
+            const { offset, excluded } = args;
+            if (excluded) return { offset: 0, total: 1, next_offset: null, files: [], exclusions: [{ path: 'service:ZedUpdater', reason: 'System evidence is advisory.' }] };
+            const total = entry.plan.files;
+            const length = Math.min(total - offset, 40);
+            const files = Array.from({ length }, (_, i) => ({ path: `${moveable}\\Exact-${offset + i + 1}.bin`, size: 1024 ** 2 }));
+            entry.viewed.add(offset);
+            return { offset, total, next_offset: offset + length < total ? offset + length : null, files, exclusions: [] };
+          }
+          case 'discard_cleanup_plan': plans.delete(args.id); return null;
+          case 'apply_cleanup': {
+            const entry = plans.get(args.id);
+            if (!entry || args.approvedFiles !== entry.plan.files || entry.viewed.size !== Math.ceil(entry.plan.files / 40)) throw new Error('Review all included pages');
+            plans.delete(args.id);
+            if (window.failPlan) { window.failPlan = false; throw new Error('A reviewed file changed. Nothing moved.'); }
+            const { files, bytes } = entry.plan;
+            batches.unshift({ quarantine_id: `fixture-plan-${args.id}`, session_id: entry.session, status: 'quarantined', files, file_bytes: bytes });
+            return { quarantine_id: `fixture-plan-${args.id}`, moved: files, skipped: 1, summary: `Moved ${files} files to quarantine.` };
+          }
+          case 'list_templates': return [{name:'conservative', description:'Strict'}, {name:'standard', description:'Default'}, {name:'thorough', description:'Broader review'}];
+          case 'list_quarantines': return { rows: batches.slice(args.offset, args.offset + 40), next_offset: batches.length > args.offset + 40 ? args.offset + 40 : null };
+          case 'pick_path': return args.directory ? String.raw`C:\Fixture` : String.raw`C:\Fixture\Setup.exe`;
+          case 'storage_usage': return { database_bytes: 8192, wal_bytes: 4096, manifests_bytes: 8, held_bytes: 4 * 1024 ** 2, migration_backup_bytes: 0, other_bytes: 0, incomplete: false };
+          case 'backup_profile': return { path: `${args.destination}\\ExorSystem backup`, files: 4, bytes: 4 * 1024 ** 2 };
+          case 'restore_profile_copy': return { path: `${args.destination}\\ExorSystem restored copy`, files: 4, bytes: 4 * 1024 ** 2 };
+          case 'rotate_archived_batch': {
+            const batch = batches.find(b => b.quarantine_id === args.quarantineId && b.status === 'quarantined');
+            if (!batch || !args.backupPath?.endsWith('ExorSystem backup')) throw new Error('This archive did not verify the held batch.');
+            batch.status = 'purged';
+            return batch.files;
+          }
           case 'quarantine_batch': {
             const batch = batches.find(b => b.quarantine_id === args.quarantineId);
             if (!batch) throw new Error('unknown batch');
@@ -303,7 +376,7 @@ export async function mockDesktop(page) {
             row.status = 'purged';
             return row.files;
           }
-          case 'simulate': return { summary: 'Three items assessed.', keep: 1, quarantine: 1, flag_for_review: 1, decisions: [
+          case 'simulate': return { total: 3, next_offset: null, summary: 'Three items assessed.', keep: 1, quarantine: 1, flag_for_review: 1, decisions: [
             { path: String.raw`C:\Fixture\protected.dll`, node_type: 'file', action: 'keep', reason: 'Shared component' },
             { path: String.raw`C:\Fixture\cache.bin`, node_type: 'file', action: 'quarantine', reason: 'Recorded file' },
             { path: String.raw`HKCU\Software\Fixture`, node_type: 'registry_key', action: 'flag_for_review', reason: 'Read only' },

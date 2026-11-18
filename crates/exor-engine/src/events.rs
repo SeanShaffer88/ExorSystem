@@ -276,3 +276,29 @@ mod tests {
         assert_eq!(got, evs);
     }
 }
+
+/// Why a live lab sample can no longer be treated as complete. Not written into the change ledger
+/// as if it were a file observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveEnd {
+    /// Consumer requested stop; outstanding I/O was drained.
+    Stopped,
+    /// Record window expired or the source was reset.
+    JournalGap,
+    /// A bounded queue filled. A later snapshot is needed, not silent continuation.
+    Backpressure,
+    /// Unsupported or incomplete data was returned.
+    InvalidRecord,
+    /// An adapter could not read or continue the stream.
+    Unavailable(String),
+}
+
+/// Experimental live sources are intentionally separate from the snapshot desktop pipeline.
+/// Await the terminal result as well as consuming events; channel closure is not proof of coverage.
+pub trait LiveEventSource: Send + 'static {
+    /// Start bounded collection within a Tokio runtime and return the drain/terminal handle.
+    fn start_live(
+        self: Box<Self>,
+        stop: crate::Cancel,
+    ) -> (mpsc::Receiver<RawEvent>, tokio::task::JoinHandle<LiveEnd>);
+}

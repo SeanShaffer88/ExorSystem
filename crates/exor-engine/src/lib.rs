@@ -3,6 +3,8 @@
 mod cancel;
 mod error;
 
+pub mod backup;
+pub mod cleanup;
 pub mod collectors;
 pub mod events;
 pub mod execute;
@@ -15,6 +17,7 @@ pub mod noise;
 pub mod policy;
 pub mod portable;
 pub mod programs;
+pub mod publication;
 pub mod quarantine;
 pub mod registry;
 pub mod report;

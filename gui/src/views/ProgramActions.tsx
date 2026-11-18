@@ -26,7 +26,7 @@ export function ProgramActions({ program, removed, sessionId, onUninstallComplet
     {program?.source === "msix" && <p className="muted">Manage or remove this app in Windows Settings → Apps.</p>}
     {program?.source === "portable" && <p className="muted">Manage this inventory entry in Settings → Portable apps. Forgetting it leaves files untouched.</p>}
     {program?.source === "registry" && <>
-      {removed && <p className="muted">Windows no longer lists this program. You can review leftovers until ExorSystem closes.</p>}
+      {removed && <p className="muted">Windows no longer lists this program. You can review leftovers for up to an hour in this run.</p>}
       {!removed && !canLaunch && <p className="muted">Use Windows Settings → Apps to uninstall this {program.scope === "user" ? "per-user " : ""}program. You can still review possible leftovers here.</p>}
       <div className="button-row">
         {canLaunch && <button type="button" className="primary" onClick={() => setWizard("uninstall")}><Icon name="shield"/> Uninstall wizard</button>}
@@ -39,7 +39,7 @@ export function ProgramActions({ program, removed, sessionId, onUninstallComplet
       <button type="button" className="quiet-button" onClick={() => onSimulate(sessionId)}>Preview cleanup</button>
       <button type="button" className="quiet-button" onClick={onCleanup}>Cleanup summary</button>
       <button type="button" className="quiet-button" disabled={busy} onClick={() => void perform(async () => `Saved report to ${await api.exportReport(sessionId, getPolicy())}.`)}>Save report</button>
-      <button type="button" className="quiet-button" disabled={busy} onClick={() => void perform(async () => (await api.makePortable(sessionId)).summary)}>Make portable copy</button>
+      <button type="button" className="quiet-button" disabled={busy} onClick={() => void perform(async () => (await api.makePortable(sessionId)).summary)}>Export recorded files and plan</button>
     </div>}
     {error && <p role="alert" className="error">{error}</p>}
     {note && <p role="status">{note}</p>}

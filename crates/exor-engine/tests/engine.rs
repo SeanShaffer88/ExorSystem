@@ -344,19 +344,20 @@ async fn capture_streams_progress_and_ends_done() {
     for i in 0..30 {
         write(&d.path().join(format!("f{i}.txt")), b"data");
     }
-    let seen: Mutex<Vec<Progress>> = Mutex::new(Vec::new());
+    let seen = Arc::new(Mutex::<Vec<Progress>>::new(Vec::new()));
+    let events = seen.clone();
     let snap = capture_with_progress(
         d.path(),
         &CaptureOptions::default(),
         None,
         &Cancel::new(),
-        &|p| {
-            seen.lock().unwrap().push(p);
-        },
+        Arc::new(move |p| {
+            events.lock().unwrap().push(p);
+        }),
     )
     .await
     .unwrap();
-    let seen = seen.into_inner().unwrap();
+    let seen = seen.lock().unwrap();
     assert_eq!(seen.first().unwrap().phase, Phase::Walking);
     let last = seen.last().unwrap();
     assert_eq!(last.phase, Phase::Done);
@@ -394,6 +395,7 @@ async fn services_and_tasks_attributed_with_dependency_link() {
         path: "\\Foo\\Update".into(),
         command: Some("C:\\Program Files\\Foo\\svc.exe /update".into()),
         author: None,
+        definition_hash: None,
     };
     assert_eq!(
         mon.attribute_services(&diff_services(&[], &[svc])).unwrap(),
@@ -532,6 +534,7 @@ async fn install_watch_records_files_and_services_with_registry_opted_out() {
             registry: &RegistryScopes::default(),
             services: true,
             tasks: true,
+            strict: false,
         },
         Arc::new(Mock(AtomicUsize::new(0))),
         &cancel,
@@ -594,6 +597,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
         registry: &registry,
         services: false,
         tasks: false,
+        strict: false,
     };
     // A cancelled baseline fails and closes its session.
     let stop = exor_engine::Cancel::new();

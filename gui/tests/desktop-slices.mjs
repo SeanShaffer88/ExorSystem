@@ -134,12 +134,12 @@ try {
   assert.equal(await inspector.getByRole('button', { name: /Removed Gone/ }).count(), 0);
   await button('Timeline').click();
   await inspector.getByRole('cell', { name: String.raw`C:\Watch Fixture\Modified.txt`, exact: true }).waitFor();
-  assert.equal((await calls('history')).at(-1).changeKind, 'modified');
+  assert.equal((await calls('history')).at(-1).filters.changeKind, 'modified');
   await inspector.getByText('Export matching changes', { exact: true }).click();
   assert.equal((await calls('save_changes')).length, 0);
   await button('Save changes JSON').click();
   await inspector.getByRole('status').getByText(/Saved 2 observation\(s\).*Documents/).waitFor();
-  assert.deepEqual(await calls('save_changes'), [{ filter: 'watch fixture', sessionId: 40, changeKind: 'modified' }]);
+  assert.deepEqual(await calls('save_changes'), [{ filters: { filter: 'watch fixture', sessionId: 40, changeKind: 'modified', beforeId: null, fromDate: null, beforeDate: null } }]);
   await type.selectOption('restored');
   await inspector.getByText('No recorded changes match these filters.').waitFor();
   await saved.getByText('Comparison incomplete', { exact: true }).waitFor();

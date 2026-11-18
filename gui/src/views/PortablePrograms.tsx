@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { BrowsePath } from "../components/BrowsePath";
 import type { PortableProgram } from "../types";
 
 export function PortablePrograms() {
@@ -47,6 +48,7 @@ export function PortablePrograms() {
         <input id="portable-name" value={name} maxLength={120} onChange={(e) => setName(e.target.value)} required disabled={busy} />
         <label htmlFor="portable-exe">Full path to the .exe file</label>
         <input id="portable-exe" value={executable} onChange={(e) => setExecutable(e.target.value)} required disabled={busy} />
+        <BrowsePath directory={false} label="Browse executable…" onPick={setExecutable} disabled={busy}/>
         <button type="submit" disabled={busy || !name.trim() || !executable.trim()}>Save portable app</button>
       </form>
       {error && <p role="alert" className="error">{error}</p>}

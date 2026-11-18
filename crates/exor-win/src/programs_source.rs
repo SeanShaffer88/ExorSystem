@@ -60,7 +60,7 @@ fn raw(key: &Key, name: &str) -> Option<(Vec<u8>, REG_VALUE_TYPE)> {
             Some(&mut len),
         )
     };
-    if rc != ERROR_SUCCESS || len == 0 {
+    if rc != ERROR_SUCCESS || len == 0 || len > 65_536 {
         return None;
     }
     let mut buf = vec![0u8; len as usize];
@@ -151,25 +151,56 @@ fn read_root(
         let Some(k) = open(root, &format!("{UNINSTALL}\\{name}"), view) else {
             continue;
         };
-        let Some(display) = string(&k, "DisplayName") else {
-            continue;
-        };
-        out.push(InstalledProgram {
-            id: format!("{label}\\{name}"),
-            source: ProgramSource::Registry,
-            name: display,
-            version: string(&k, "DisplayVersion"),
-            publisher: string(&k, "Publisher"),
-            install_location: string(&k, "InstallLocation"),
-            uninstall_command: string(&k, "UninstallString"),
-            quiet_uninstall_command: string(&k, "QuietUninstallString"),
-            install_date: string(&k, "InstallDate").and_then(|d| format_install_date(&d)),
-            size_kb: dword(&k, "EstimatedSize").map(u64::from),
-            scope,
-            system_component: dword(&k, "SystemComponent") == Some(1),
-            parent_key: string(&k, "ParentKeyName"),
-            windows_installer: dword(&k, "WindowsInstaller") == Some(1),
-        });
+        if let Some(program) = read_program(&k, scope, label, &name) {
+            out.push(program);
+        }
+    }
+}
+
+fn read_program(k: &Key, scope: Scope, label: &str, name: &str) -> Option<InstalledProgram> {
+    Some(InstalledProgram {
+        id: format!("{label}\\{name}"),
+        source: ProgramSource::Registry,
+        name: string(k, "DisplayName")?,
+        version: string(k, "DisplayVersion"),
+        publisher: string(k, "Publisher"),
+        install_location: string(k, "InstallLocation"),
+        uninstall_command: string(k, "UninstallString"),
+        quiet_uninstall_command: string(k, "QuietUninstallString"),
+        install_date: string(k, "InstallDate").and_then(|d| format_install_date(&d)),
+        size_kb: dword(k, "EstimatedSize").map(u64::from),
+        scope,
+        system_component: dword(k, "SystemComponent") == Some(1),
+        parent_key: string(k, "ParentKeyName"),
+        windows_installer: dword(k, "WindowsInstaller") == Some(1),
+    })
+}
+
+fn registration(id: &str) -> Option<(HKEY, REG_SAM_FLAGS, Scope, &str, &str)> {
+    let (label, name) = id.split_once('\\')?;
+    if name.is_empty() || name.encode_utf16().count() > 255 || name.contains(['\\', '/', '\0']) {
+        return None;
+    }
+    let (root, view, scope) = match label {
+        "HKLM" => (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, Scope::Machine),
+        "HKLM32" => (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, Scope::Machine32),
+        "HKCU" => (HKEY_CURRENT_USER, REG_SAM_FLAGS(0), Scope::User),
+        _ => return None,
+    };
+    Some((root, view, scope, label, name))
+}
+
+/// Read exactly one live registry view/key. A failed open is not a missing registration.
+pub fn registry_program(id: &str) -> Result<Option<InstalledProgram>, String> {
+    let (root, view, scope, label, name) =
+        registration(id).ok_or("Invalid classic program identifier.")?;
+    match open_key(root, &format!("{UNINSTALL}\\{name}"), KEY_READ | view) {
+        Ok(key) => Ok(read_program(&key, scope, label, name)),
+        Err(ERROR_FILE_NOT_FOUND | windows::Win32::Foundation::ERROR_PATH_NOT_FOUND) => Ok(None),
+        Err(code) => Err(format!(
+            "Live uninstall registration could not be read (Windows error {}).",
+            code.0
+        )),
     }
 }
 

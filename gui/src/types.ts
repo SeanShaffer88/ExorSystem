@@ -63,12 +63,17 @@ export interface SimulationView {
   quarantine: number;
   flag_for_review: number;
   decisions: Decision[];
+  total: number;
+  next_offset: number | null;
 }
 
 export interface ScanProgress {
   phase: "walking" | "hashing" | "done";
   files_seen: number;
   files_hashed: number;
+  files_processed: number;
+  files_reused: number;
+  files_unhashed: number;
   bytes_hashed: number;
 }
 
@@ -153,6 +158,7 @@ export interface InstalledProgram {
 export interface ProgramRow {
   program: InstalledProgram;
   session_ids: number[];
+  inferred_session_ids: number[];
   removed: boolean;
 }
 
@@ -226,6 +232,7 @@ export interface ChangeExport {
   path: string;
   records: number;
   truncated: boolean;
+  next_before_id: number | null;
 }
 
 export interface PortableView {
@@ -245,6 +252,7 @@ export interface RiskView {
   low: RiskRow[];
   medium: RiskRow[];
   high: RiskRow[];
+  not_assessed: RiskRow[];
 }
 
 export interface TemplateInfo {
@@ -258,3 +266,19 @@ export interface AppInfo {
   legacy_data_folder: string | null;
   recovery_warnings: string[];
 }
+
+export interface QuarantinePage { rows: QuarantineRow[]; next_offset: number | null }
+export interface PlanRequest { programId: string; sessionId: number | null; template: string | null; folders: string[] }
+export interface PlanHeader { id: number; roots: string[]; files: number; bytes: number; excluded: number; expires_in_seconds: number }
+export interface PlanPage {
+  offset: number; total: number; next_offset: number | null;
+  files: { path: string; size: number }[];
+  exclusions: { path: string; reason: string }[];
+}
+export interface WatchProgress { phase: string; scope: string | null; files: ScanProgress | null }
+export type WatchEvent = { event: "ready" } | { event: "progress"; data: WatchProgress };
+export interface HistoryDates { fromDate: string | null; beforeDate: string | null }
+export interface Usage {
+  database_bytes: number; wal_bytes: number; manifests_bytes: number; held_bytes: number; migration_backup_bytes: number; other_bytes: number; incomplete: boolean;
+}
+export interface VerifiedCopy { path: string; files: number; bytes: number }

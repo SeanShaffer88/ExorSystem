@@ -73,6 +73,7 @@ async fn watch_records_only_complete_registry_pairs_as_advisory_evidence() {
             registry: &scopes,
             services: false,
             tasks: false,
+            strict: false,
         },
         probe.clone(),
         &cancel,

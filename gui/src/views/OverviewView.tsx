@@ -53,8 +53,8 @@ export function OverviewView({ visible, onApplications, onWatch, onHistory, onCl
       <Metric icon="pulse" tone="violet" label="Recorded sessions" value={data?.sessions ? countText(data.sessions.length) : "—"}
         detail={snapshots === undefined ? "Before/after observations" : `${snapshots} completed · ${data?.sessions?.filter((s) => s.status === "monitoring").length ?? 0} open`}/>
       <Metric icon="archive" tone="review" label="In quarantine" value={storage ? formatBytes(storage.held) : "—"}
-        detail={storage ? `${storage.heldBatches} batch${storage.heldBatches === 1 ? "" : "es"} held for restore` : "Reversible file batches"}/>
-      <Metric icon="drive" tone="safe" label="Deleted in cleanup" value={storage ? formatBytes(storage.purged) : "—"} detail="Recorded size of purged files"/>
+        detail={storage ? `${storage.heldBatches} batch${storage.heldBatches === 1 ? "" : "es"} held in the latest 40 batches` : "Reversible file batches"}/>
+      <Metric icon="drive" tone="safe" label="Deleted in cleanup" value={storage ? formatBytes(storage.purged) : "—"} detail="Recorded sizes in the latest 40 batches"/>
     </div>
     <div className="overview-columns">
       <section className="card card-overflow" aria-label="Installed applications">

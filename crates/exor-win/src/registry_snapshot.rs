@@ -136,6 +136,7 @@ fn child_name(key: &Key, index: u32) -> Result<String, String> {
 struct Snapshot {
     keys: Vec<RegistryKeyState>,
     path_bytes: usize,
+    stop: exor_engine::Cancel,
 }
 
 impl Snapshot {
@@ -146,6 +147,7 @@ impl Snapshot {
         path: &mut String,
         depth: usize,
     ) -> Result<(), String> {
+        self.stop.check().map_err(|e| e.to_string())?;
         if self.keys.len() >= MAX_KEYS || self.path_bytes + path.len() > MAX_PATH_BYTES {
             return Err("the subtree is too large; choose a smaller subtree".into());
         }
@@ -181,6 +183,14 @@ impl Snapshot {
 /// Read key paths and last-write times for a validated subtree. Missing roots are empty; if any
 /// part is inaccessible, linked, or over the scan limits, return an error instead of partial data.
 pub fn capture_registry_keys(scope: &RegistryScope) -> Result<Vec<RegistryKeyState>, String> {
+    capture_registry_cancellable(scope, &exor_engine::Cancel::new())
+}
+
+/// Read registry metadata, checking cancellation between key operations.
+pub fn capture_registry_cancellable(
+    scope: &RegistryScope,
+    stop: &exor_engine::Cancel,
+) -> Result<Vec<RegistryKeyState>, String> {
     let (root, view) = match scope.hive() {
         RegistryHive::CurrentUser => (HKEY_CURRENT_USER, REG_SAM_FLAGS(0)),
         RegistryHive::Machine => (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
@@ -188,6 +198,7 @@ pub fn capture_registry_keys(scope: &RegistryScope) -> Result<Vec<RegistryKeySta
     };
     let mut key: Option<Key> = None;
     for name in scope.subkey().split('\\') {
+        stop.check().map_err(|e| e.to_string())?;
         let parent = key.as_ref().map_or(root, |key| key.0);
         let opened = match open(parent, name, view) {
             Ok(key) => key,
@@ -198,7 +209,10 @@ pub fn capture_registry_keys(scope: &RegistryScope) -> Result<Vec<RegistryKeySta
         key = Some(opened);
     }
     let key = key.ok_or_else(|| "the registry scope was empty".to_string())?;
-    let mut snapshot = Snapshot::default();
+    let mut snapshot = Snapshot {
+        stop: stop.clone(),
+        ..Default::default()
+    };
     snapshot.visit(&key, view, &mut scope.to_string(), 0)?;
     Ok(snapshot.keys)
 }

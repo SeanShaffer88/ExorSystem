@@ -5,15 +5,20 @@ use exor_engine::leftovers::{self, Leftover, ReviewLeftover};
 use exor_engine::programs::InstalledProgram;
 use exor_engine::registry::RegistryScopes;
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
-use exor_engine::watch::{InstallWatch, SystemProbe, WatchCoverage, WatchPlan, WatchSummary};
+use exor_engine::watch::{
+    InstallWatch, SystemProbe, WatchCoverage, WatchPlan, WatchProgress, WatchSummary,
+};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
 use exor_storage::{
-    Edge, LedgerEntry, Node, NodeType, PolicyAction, RelationshipType, Session, Store,
+    BatchSummary, Edge, LedgerEntry, Node, NodeType, RelationshipType, Session, Store,
 };
 use serde::{Deserialize, Serialize};
 mod archive;
+mod cleanup;
 mod dock;
 mod inventory;
+mod jobs;
+mod profile;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,7 +32,9 @@ struct AppState {
     watch: AsyncMutex<Option<InstallWatch>>,
     watch_capture: Mutex<Option<(u64, Cancel)>>,
     scan_cancel: Mutex<Option<Cancel>>,
-    recent_uninstalls: Mutex<BTreeMap<String, InstalledProgram>>,
+    recent_uninstalls: Mutex<BTreeMap<String, (std::time::Instant, InstalledProgram)>>,
+    cleanup_plans: cleanup::Plans,
+    jobs: jobs::Gate,
     data_dir: PathBuf,
     quarantine_root: PathBuf,
     legacy_data: Option<PathBuf>,
@@ -49,12 +56,6 @@ enum ScanEvent {
     Failed {
         message: String,
     },
-}
-
-fn lock<'a>(s: &'a State<'_, AppState>) -> Result<std::sync::MutexGuard<'a, Store>, String> {
-    s.store
-        .lock()
-        .map_err(|_| "internal lock poisoned".to_string())
 }
 
 #[derive(Serialize)]
@@ -157,17 +158,31 @@ struct SimulationView {
     quarantine: usize,
     flag_for_review: usize,
     decisions: Vec<policy::Decision>,
+    total: i64,
+    next_offset: Option<usize>,
 }
 
 #[tauri::command]
-fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, String> {
-    lock(&state)?.sessions().map_err(|e| e.to_string())
+async fn list_sessions(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<Session>, String> {
+    jobs::read(&app, &state, |s| {
+        s.recent_sessions(150).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn provenance(state: State<'_, AppState>, path: String) -> Result<ProvenanceView, String> {
-    let store = lock(&state)?;
-    match store
+async fn provenance(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ProvenanceView, String> {
+    if path.len() > 4096 {
+        return Err("Path exceeds the query limit.".into());
+    }
+    jobs::read(&app, &state, move |store| match store
         .provenance_for_path(&path)
         .map_err(|e| e.to_string())?
     {
@@ -177,7 +192,7 @@ fn provenance(state: State<'_, AppState>, path: String) -> Result<ProvenanceView
             confidence: p.confidence,
             graph: Some(
                 relationship_graph(
-                    &store,
+                    store,
                     p.node,
                     p.origins.into_iter().chain(p.dependents).collect(),
                 )
@@ -194,38 +209,36 @@ fn provenance(state: State<'_, AppState>, path: String) -> Result<ProvenanceView
             graph: None,
             ledger: Vec::new(),
         }),
-    }
+    }).await
 }
 
 #[tauri::command]
-fn simulate(
+async fn simulate(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: i64,
     template: String,
+    offset: Option<usize>,
 ) -> Result<SimulationView, String> {
-    let store = lock(&state)?;
-    let rules =
-        templates::rules_for(&template).ok_or_else(|| format!("unknown policy '{template}'"))?;
-    let candidates =
-        policy::candidates_for_session(&store, session_id).map_err(|e| e.to_string())?;
-    let r = policy::simulate(&rules, &candidates).map_err(|e| e.to_string())?;
-    Ok(SimulationView {
-        summary: report::summarize_simulation(&r),
-        keep: r.keep,
-        quarantine: r.quarantine,
-        flag_for_review: r.flag_for_review,
-        decisions: r.decisions,
+    jobs::read(&app, &state, move |store| {
+        let rules = templates::rules_for(&template).ok_or("Unknown cleanup policy.")?;
+        let offset = offset.unwrap_or(0);
+        let page = store
+            .session_nodes_page(session_id, None, offset, 40)
+            .map_err(|e| e.to_string())?;
+        let r = policy::simulate_nodes(store, &rules, &page.nodes).map_err(|e| e.to_string())?;
+        let next = offset.saturating_add(r.decisions.len());
+        Ok(SimulationView {
+            summary: format!("This page: {}", report::summarize_simulation(&r)),
+            keep: r.keep,
+            quarantine: r.quarantine,
+            flag_for_review: r.flag_for_review,
+            next_offset: (i64::try_from(next).unwrap_or(i64::MAX) < page.total).then_some(next),
+            total: page.total,
+            decisions: r.decisions,
+        })
     })
-}
-
-#[derive(Serialize)]
-struct QuarantineRow {
-    quarantine_id: String,
-    session_id: Option<i64>,
-    status: String,
-    files: usize,
-    /// Logical lengths recorded when the files were moved, not allocated disk space.
-    file_bytes: Option<u64>,
+    .await
 }
 
 #[derive(Serialize)]
@@ -236,116 +249,47 @@ struct QuarantineResult {
     summary: String,
 }
 
-fn inside_folder(path: &Path, folder: &Path) -> bool {
-    let (Ok(path), Ok(folder)) = (path.canonicalize(), folder.canonicalize()) else {
-        return false;
-    };
-    path.ancestors().any(|ancestor| {
-        #[cfg(windows)]
-        {
-            ancestor
-                .as_os_str()
-                .eq_ignore_ascii_case(folder.as_os_str())
-        }
-        #[cfg(not(windows))]
-        {
-            ancestor == folder
-        }
-    })
+#[derive(Serialize)]
+struct QuarantinePage {
+    rows: Vec<BatchSummary>,
+    next_offset: Option<usize>,
 }
 
-/// Move the files a policy marks `quarantine` into a manifest-backed quarantine. Reversible.
 #[tauri::command]
-fn quarantine_session(
+async fn list_quarantines(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-    session_id: i64,
-    template: String,
-) -> Result<QuarantineResult, String> {
-    let store = lock(&state)?;
-    let rules =
-        templates::rules_for(&template).ok_or_else(|| format!("unknown policy '{template}'"))?;
-    let candidates =
-        policy::candidates_for_session(&store, session_id).map_err(|e| e.to_string())?;
-    let report = policy::simulate(&rules, &candidates).map_err(|e| e.to_string())?;
-    if report.decisions.iter().any(|d| {
-        d.action == PolicyAction::Quarantine && inside_folder(Path::new(&d.path), &state.data_dir)
-    }) {
-        return Err("An ExorSystem profile file was selected. Nothing was moved.".into());
-    }
-    let out = execute::quarantine_decided(&store, &state.quarantine_root, session_id, &report)
-        .map_err(|e| e.to_string())?;
-    let moved = out.manifest.items.len();
-    dock::log(
-        &app,
-        "info",
-        format!("Quarantined {moved} item(s) from installation #{session_id}."),
-    );
-    Ok(QuarantineResult {
-        quarantine_id: out.manifest.quarantine_id,
-        moved,
-        skipped: out.skipped.len(),
-        summary: format!(
-            "Moved {moved} item(s) to quarantine. {} item(s) were not files and were left alone. You can restore them at any time.",
-            out.skipped.len()
-        ),
-    })
-}
-
-fn quarantine_sizes(json: &str) -> (usize, Option<u64>) {
-    use exor_engine::quarantine::{QuarantineItem, QuarantineManifest};
-    let Ok(manifest) = serde_json::from_str::<QuarantineManifest>(json) else {
-        return (0, None);
-    };
-    manifest
-        .items
-        .into_iter()
-        .fold((0, Some(0_u64)), |(files, bytes), item| match item {
-            QuarantineItem::File { size, .. } => {
-                (files + 1, bytes.and_then(|b| b.checked_add(size)))
-            }
-            QuarantineItem::Registry { .. } => (files, bytes),
-        })
-}
-
-#[tauri::command]
-async fn list_quarantines(state: State<'_, AppState>) -> Result<Vec<QuarantineRow>, String> {
-    let store = Arc::clone(&state.store);
-    tauri::async_runtime::spawn_blocking(move || {
-        let rows = store
-            .lock()
-            .map_err(|_| "internal lock poisoned".to_string())?
-            .quarantines()
+    offset: Option<usize>,
+) -> Result<QuarantinePage, String> {
+    let offset = offset.unwrap_or(0);
+    jobs::read(&app, &state, move |store| {
+        let mut rows = store
+            .batch_summaries(41, offset)
             .map_err(|e| e.to_string())?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                let (files, file_bytes) = quarantine_sizes(&r.manifest_json);
-                QuarantineRow {
-                    quarantine_id: r.quarantine_id,
-                    session_id: r.session_id,
-                    status: r.status.as_str().into(),
-                    files,
-                    file_bytes,
-                }
-            })
-            .collect())
+        let next_offset = (rows.len() > 40).then_some(offset.saturating_add(40));
+        rows.truncate(40);
+        Ok(QuarantinePage { rows, next_offset })
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// Put quarantined files back. Never overwrites a file that has reappeared.
 #[tauri::command]
-fn restore_quarantine(
+async fn restore_quarantine(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     quarantine_id: String,
 ) -> Result<usize, String> {
-    let store = lock(&state)?;
-    let r = execute::restore_by_id(&store, &state.quarantine_root, &quarantine_id)
-        .map(|m| m.items.len())
-        .map_err(|e| e.to_string());
+    let job = state.jobs.work(&app, "Restore quarantine batch", None)?;
+    let db = state.data_dir.join("exor.db");
+    let root = state.quarantine_root.clone();
+    let r = jobs::run(job, move || {
+        let store = Store::open_writer(&db).map_err(|e| e.to_string())?;
+        execute::restore_by_id(&store, &root, &quarantine_id)
+            .map(|m| m.items.len())
+            .map_err(|e| e.to_string())
+    })
+    .await;
     match &r {
         Ok(n) => dock::log(
             &app,
@@ -359,15 +303,21 @@ fn restore_quarantine(
 
 /// Permanently delete quarantined files. The UI asks for a second confirmation first.
 #[tauri::command]
-fn purge_quarantine(
+async fn purge_quarantine(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     quarantine_id: String,
 ) -> Result<usize, String> {
-    let store = lock(&state)?;
-    let r = execute::purge_by_id(&store, &state.quarantine_root, &quarantine_id)
-        .map(|m| m.items.len())
-        .map_err(|e| e.to_string());
+    let job = state.jobs.work(&app, "Purge quarantine batch", None)?;
+    let db = state.data_dir.join("exor.db");
+    let root = state.quarantine_root.clone();
+    let r = jobs::run(job, move || {
+        let store = Store::open_writer(&db).map_err(|e| e.to_string())?;
+        execute::purge_by_id(&store, &root, &quarantine_id)
+            .map(|m| m.items.len())
+            .map_err(|e| e.to_string())
+    })
+    .await;
     match &r {
         Ok(n) => dock::log(
             &app,
@@ -385,13 +335,19 @@ async fn review_program(state: &AppState, program_id: String) -> Result<Installe
     if let Some(p) = inventory::registry_program(program_id.clone()).await? {
         return Ok(p);
     }
-    state
+    let mut recent = state
         .recent_uninstalls
         .lock()
-        .map_err(|_| "internal lock poisoned".to_string())?
+        .map_err(|_| "recent uninstall cache unavailable")?;
+    prune_uninstalls(&mut recent);
+    recent
         .get(&program_id)
-        .cloned()
-        .ok_or_else(|| "no install information is available for this program".to_string())
+        .map(|(_, p)| p.clone())
+        .ok_or_else(|| "No current install information is available for this program.".into())
+}
+
+fn prune_uninstalls(cache: &mut BTreeMap<String, (std::time::Instant, InstalledProgram)>) {
+    cache.retain(|_, (time, _)| time.elapsed() < std::time::Duration::from_secs(3600));
 }
 
 /// Folders where programs usually leave files.
@@ -422,14 +378,14 @@ struct UninstallPreview {
     args: Vec<String>,
 }
 
-fn uninstall_path(exe: &str) -> Result<PathBuf, String> {
+fn uninstall_arguments(command: &str) -> Result<(PathBuf, Vec<String>), String> {
     #[cfg(windows)]
     {
-        exor_win::uninstall_executable(exe)
+        exor_win::uninstall_arguments(command)
     }
     #[cfg(not(windows))]
     {
-        let _ = exe;
+        let _ = command;
         Err("Windows uninstall commands are not supported on this platform".into())
     }
 }
@@ -462,9 +418,8 @@ async fn live_uninstall(
     let cmd = program
         .registered_uninstall(quiet)
         .map_err(str::to_string)?;
-    let (exe, args) = leftovers::split_command(cmd)
-        .ok_or_else(|| "the registered uninstall command could not be read".to_string())?;
-    let path = tauri::async_runtime::spawn_blocking(move || uninstall_path(&exe))
+    let cmd = cmd.to_string();
+    let (path, args) = tauri::async_runtime::spawn_blocking(move || uninstall_arguments(&cmd))
         .await
         .map_err(|e| e.to_string())??;
     let preview = UninstallPreview {
@@ -476,7 +431,14 @@ async fn live_uninstall(
 
 /// Read and validate the vendor invocation. Never runs a process.
 #[tauri::command]
-async fn preview_uninstaller(program_id: String) -> Result<UninstallPreview, String> {
+async fn preview_uninstaller(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    program_id: String,
+) -> Result<UninstallPreview, String> {
+    let _job = state
+        .jobs
+        .work(&app, "Reading the uninstaller registration", None)?;
     live_uninstall(program_id, false)
         .await
         .map(|(_, _, preview)| preview)
@@ -491,6 +453,7 @@ async fn run_uninstaller(
     quiet: bool,
     expected: UninstallPreview,
 ) -> Result<UninstallRun, String> {
+    let _job = state.jobs.work(&app, "The vendor uninstaller", None)?;
     let (mut p, exe, actual) = live_uninstall(program_id, quiet).await?;
     if actual != expected {
         return Err("The registered uninstaller changed. Close this wizard and review its new preview before continuing.".into());
@@ -532,11 +495,20 @@ async fn run_uninstaller(
         if status.success() { "info" } else { "warn" },
         summary.clone(),
     );
-    state
+    let mut recent = state
         .recent_uninstalls
         .lock()
-        .map_err(|_| "internal lock poisoned".to_string())?
-        .insert(p.id.clone(), p);
+        .map_err(|_| "recent uninstall cache unavailable")?;
+    prune_uninstalls(&mut recent);
+    if recent.len() >= 32
+        && let Some(id) = recent
+            .iter()
+            .min_by_key(|(_, (t, _))| *t)
+            .map(|(id, _)| id.clone())
+    {
+        recent.remove(&id);
+    }
+    recent.insert(p.id.clone(), (std::time::Instant::now(), p));
     Ok(UninstallRun {
         exit_code: code,
         summary,
@@ -557,8 +529,9 @@ async fn find_leftovers(
     state: State<'_, AppState>,
     program_id: String,
 ) -> Result<LeftoverReview, String> {
+    let job = state.jobs.work(&app, "Checking possible leftovers", None)?;
     let p = review_program(&state, program_id).await?;
-    let review = tauri::async_runtime::spawn_blocking(move || {
+    let review = jobs::run(job, move || {
         let folders = leftovers::find_leftovers(&p, &leftover_roots());
         #[cfg(windows)]
         let (registry, mut warnings) = exor_win::enumerate_software_keys(p.publisher.as_deref());
@@ -577,14 +550,11 @@ async fn find_leftovers(
             Vec::new()
         });
         let system_entries = leftovers::review_system_leftovers(&p, &registry, &services, &tasks);
-        LeftoverReview {
-            folders,
-            system_entries,
-            warnings,
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+        let mut system_entries = system_entries;
+        if system_entries.len() > 100 { warnings.push("Showing the first 100 advisory system matches; check Windows for the complete list.".into()); }
+        system_entries.truncate(100);
+        Ok(LeftoverReview { folders, system_entries, warnings })
+    }).await?;
     dock::log(
         &app,
         "info",
@@ -595,62 +565,6 @@ async fn find_leftovers(
         ),
     );
     Ok(review)
-}
-
-/// Quarantine the chosen leftover folders. Only folders `find_leftovers` suggests are accepted.
-#[tauri::command]
-async fn quarantine_leftovers(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    program_id: String,
-    folders: Vec<String>,
-    session_id: Option<i64>,
-) -> Result<QuarantineResult, String> {
-    let p = review_program(&state, program_id).await?;
-    let allowed = tauri::async_runtime::spawn_blocking(move || {
-        leftovers::find_leftovers(&p, &leftover_roots())
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    if folders.is_empty()
-        || folders
-            .iter()
-            .any(|f| !allowed.iter().any(|l| l.can_quarantine && &l.path == f))
-    {
-        return Err("only the suggested folders inside application roots can be quarantined; run Find leftovers again".into());
-    }
-    let chosen: Vec<PathBuf> = folders.into_iter().map(PathBuf::from).collect();
-    if chosen
-        .iter()
-        .any(|p| inside_folder(p, &state.data_dir) || inside_folder(&state.data_dir, p))
-    {
-        return Err("ExorSystem profile folders are not eligible for quarantine.".into());
-    }
-    let store = lock(&state)?;
-    let (id, moved) =
-        leftovers::quarantine_leftovers(&store, &state.quarantine_root, session_id, &chosen)
-            .map_err(|e| e.to_string())?;
-    dock::log(
-        &app,
-        "info",
-        format!("Quarantined {moved} leftover file(s)."),
-    );
-    Ok(QuarantineResult {
-        quarantine_id: id,
-        moved,
-        skipped: 0,
-        summary: format!("Moved {moved} file(s) to quarantine. You can restore them at any time."),
-    })
-}
-
-/// Where saved reports go: the user's Documents folder, else their home folder.
-fn reports_dir() -> PathBuf {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let docs = home.join("Documents");
-    if docs.is_dir() { docs } else { home }
 }
 
 /// A file name that is safe on Windows.
@@ -675,29 +589,32 @@ fn safe_name(s: &str) -> String {
 
 /// Save a plain-language report for one recorded installation. Never overwrites a file.
 #[tauri::command]
-fn export_report(
+async fn export_report(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: i64,
     template: String,
 ) -> Result<String, String> {
-    let store = lock(&state)?;
-    let name = store
-        .session(session_id)
-        .map_err(|e| e.to_string())?
-        .map(|s| s.app_name)
-        .unwrap_or_default();
-    let text = report::session_report(&store, session_id, &template).map_err(|e| e.to_string())?;
-    let dir = reports_dir();
-    let base = format!("ExorSystem report - {}", safe_name(&name));
-    let mut path = dir.join(format!("{base}.md"));
-    let mut n = 2;
-    while path.exists() {
-        path = dir.join(format!("{base} ({n}).md"));
-        n += 1;
-    }
-    std::fs::write(&path, text).map_err(|e| format!("could not save the report: {e}"))?;
-    let shown = path.to_string_lossy().into_owned();
+    let job = state
+        .jobs
+        .work(&app, "Saving the installation report", None)?;
+    let db = state.data_dir.join("exor.db");
+    let dir = app.path().document_dir().map_err(|e| e.to_string())?;
+    let shown = jobs::run(job, move || {
+        let store = Store::open_reader(&db).map_err(|e| e.to_string())?;
+        let name = store
+            .session(session_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown session.")?
+            .app_name;
+        let text =
+            report::session_report(&store, session_id, &template).map_err(|e| e.to_string())?;
+        let base = format!("ExorSystem report - {}", safe_name(&name));
+        exor_engine::publication::write_unique(&dir, &base, "md", text.as_bytes())
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| e.to_string())
+    })
+    .await?;
     dock::log(&app, "info", format!("Saved report to {shown}."));
     Ok(shown)
 }
@@ -712,49 +629,28 @@ struct PortableView {
     summary: String,
 }
 
-/// Copy a recorded installation's files into a new portable folder in Documents.
+/// Export recorded files and a plan. Does not create a runnable application.
 #[tauri::command]
-fn make_portable(
+async fn make_portable(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: i64,
 ) -> Result<PortableView, String> {
-    let store = lock(&state)?;
-    let name = store
-        .session(session_id)
-        .map_err(|e| e.to_string())?
-        .map(|s| s.app_name)
-        .unwrap_or_default();
-    let nodes = store
-        .nodes_for_session(session_id)
-        .map_err(|e| e.to_string())?;
-    let plan = exor_engine::portable::plan_portable(&nodes);
-    let base = format!("ExorSystem portable - {}", safe_name(&name));
-    let dir = reports_dir();
-    let mut dest = dir.join(&base);
-    let mut n = 2;
-    while dest.exists() {
-        dest = dir.join(format!("{base} ({n})"));
-        n += 1;
-    }
-    let r = exor_engine::portable::build_portable(&plan, &dest).map_err(|e| e.to_string())?;
-    let folder = dest.to_string_lossy().into_owned();
-    let summary = format!(
-        "Copied {} file(s) to {folder}. {} listed file(s) were missing. {} registry key(s) and {} item(s) that cannot be portable are listed in portable-plan.json. Your installed program was not changed.",
-        r.copied,
-        r.missing.len(),
-        plan.export_registry.len(),
-        plan.unsupported.len()
-    );
-    dock::log(&app, "info", summary.clone());
-    Ok(PortableView {
-        folder,
-        copied: r.copied,
-        missing: r.missing.len(),
-        registry_keys: plan.export_registry.len(),
-        unsupported: plan.unsupported.len(),
-        summary,
-    })
+    let job = state.jobs.work(&app, "Exporting recorded files", None)?;
+    let db = state.data_dir.join("exor.db");
+    let dir = app.path().document_dir().map_err(|e| e.to_string())?;
+    let result = jobs::run(job, move || {
+        let store = Store::open_reader(&db).map_err(|e| e.to_string())?;
+        let name = store.session(session_id).map_err(|e| e.to_string())?.ok_or("Unknown session.")?.app_name;
+        let plan = exor_engine::portable::plan_recorded(&store, session_id).map_err(|e| e.to_string())?;
+        let base = format!("ExorSystem recorded files - {}", safe_name(&name));
+        let (dest, r) = exor_engine::portable::export_recorded(&plan, &dir, &base).map_err(|e| e.to_string())?;
+        let folder = dest.to_string_lossy().into_owned();
+        let summary = format!("Copied {} file(s) to {folder}; {} missing, changed or unsupported file(s) were not copied. See portable-plan.json for the record; this is not a runnable app.", r.copied, r.missing.len());
+        Ok(PortableView { folder, copied: r.copied, missing: r.missing.len(), registry_keys: plan.export_registry.len(), unsupported: plan.unsupported.len(), summary })
+    }).await?;
+    dock::log(&app, "info", result.summary.clone());
+    Ok(result)
 }
 
 #[derive(Serialize)]
@@ -768,28 +664,35 @@ struct RiskView {
     low: Vec<RiskRow>,
     medium: Vec<RiskRow>,
     high: Vec<RiskRow>,
+    not_assessed: Vec<RiskRow>,
 }
 
 /// How risky changing each recorded program would be, in batches (low first).
 #[tauri::command]
-fn update_risk(state: State<'_, AppState>) -> Result<RiskView, String> {
-    let store = lock(&state)?;
-    let b = exor_engine::risk::batch_by_risk(
-        exor_engine::risk::candidates_from_store(&store).map_err(|e| e.to_string())?,
-    );
-    let rows = |v: Vec<exor_engine::risk::UpdateCandidate>| {
-        v.into_iter()
-            .map(|c| RiskRow {
-                why: exor_engine::risk::explain(&c),
-                name: c.name,
-            })
-            .collect()
-    };
-    Ok(RiskView {
-        low: rows(b.low),
-        medium: rows(b.medium),
-        high: rows(b.high),
+async fn update_risk(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<RiskView, String> {
+    jobs::read(&app, &state, |store| {
+        let b = exor_engine::risk::batch_by_risk(
+            exor_engine::risk::candidates_from_store(store).map_err(|e| e.to_string())?,
+        );
+        let rows = |v: Vec<exor_engine::risk::UpdateCandidate>| {
+            v.into_iter()
+                .map(|c| RiskRow {
+                    why: exor_engine::risk::explain(&c),
+                    name: c.name,
+                })
+                .collect()
+        };
+        Ok(RiskView {
+            low: rows(b.low),
+            medium: rows(b.medium),
+            high: rows(b.high),
+            not_assessed: rows(b.not_assessed),
+        })
     })
+    .await
 }
 
 #[derive(Serialize)]
@@ -853,6 +756,29 @@ impl SystemProbe for SystemState {
         scope: &exor_engine::registry::RegistryScope,
     ) -> Result<Vec<exor_engine::registry::RegistryKeyState>, String> {
         exor_win::capture_registry_keys(scope)
+    }
+    fn services_cancellable(
+        &self,
+        stop: &Cancel,
+    ) -> Result<Vec<exor_engine::collectors::ServiceInfo>, String> {
+        exor_win::enumerate_services_cancellable(stop).map_err(|e| e.to_string())
+    }
+    fn tasks_cancellable(
+        &self,
+        stop: &Cancel,
+    ) -> Result<Vec<exor_engine::collectors::TaskInfo>, String> {
+        let root = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .ok_or("Windows system folder unavailable")?;
+        exor_engine::collectors::read_tasks_cancellable(&root.join("System32").join("Tasks"), stop)
+            .map_err(|e| e.to_string())
+    }
+    fn registry_cancellable(
+        &self,
+        scope: &exor_engine::registry::RegistryScope,
+        stop: &Cancel,
+    ) -> Result<Vec<exor_engine::registry::RegistryKeyState>, String> {
+        exor_win::capture_registry_cancellable(scope, stop)
     }
 }
 
@@ -929,6 +855,15 @@ struct WatchRequest {
     folders: Vec<String>,
     registry_subtrees: String,
     system: WatchSystem,
+    #[serde(default)]
+    strict: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "snake_case")]
+enum WatchEvent {
+    Ready,
+    Progress(WatchProgress),
 }
 
 /// Take the baseline. Run the installer after the snapshots have finished.
@@ -938,7 +873,7 @@ async fn begin_watch(
     state: State<'_, AppState>,
     request: WatchRequest,
     capture_id: u64,
-    on_ready: Channel<()>,
+    on_ready: Channel<WatchEvent>,
 ) -> Result<Option<WatchStart>, String> {
     let WatchRequest {
         app_name,
@@ -946,10 +881,18 @@ async fn begin_watch(
         folders,
         registry_subtrees,
         system,
+        strict,
     } = request;
     let name = app_name.trim();
-    if name.is_empty() {
-        return Err("enter the application name".into());
+    if name.is_empty() || name.len() > 240 || name.chars().any(char::is_control) {
+        return Err("Enter an application name of 1–240 bytes.".into());
+    }
+    if folders.len() > 8
+        || folders.iter().any(|p| p.len() > 4096)
+        || registry_subtrees.len() > 16_384
+        || installer_path.as_ref().is_some_and(|p| p.len() > 4096)
+    {
+        return Err("Watch scope exceeds its input limits.".into());
     }
     let scopes = RegistryScopes::parse(&registry_subtrees)?;
     let roots: Vec<PathBuf> = folders
@@ -971,13 +914,19 @@ async fn begin_watch(
         return Err("an installation is already being watched".into());
     }
     let capture = CaptureLease::acquire(&state.watch_capture, capture_id)?;
-    let _ = on_ready.send(());
+    let _job = state
+        .jobs
+        .work(&app, "Watch capture", Some(capture.token.clone()))?;
+    let _ = on_ready.send(WatchEvent::Ready);
+    let notify = Arc::new(move |p| {
+        let _ = on_ready.send(WatchEvent::Progress(p));
+    });
     dock::log(
         &app,
         "info",
         format!("Taking the 'before' picture for {name}…"),
     );
-    let result = InstallWatch::begin(
+    let result = InstallWatch::begin_with_progress(
         Arc::clone(&state.store),
         name,
         installer,
@@ -986,14 +935,19 @@ async fn begin_watch(
             registry: &scopes,
             services: system.services,
             tasks: system.tasks,
+            strict,
         },
         probe(),
         &capture.token,
+        notify,
     )
     .await;
     let w = match result {
         Ok(w) if capture.token.is_cancelled() => {
-            w.abandon().map_err(|e| e.to_string())?;
+            tauri::async_runtime::spawn_blocking(move || w.abandon())
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
             dock::log(
                 &app,
                 "info",
@@ -1036,19 +990,25 @@ async fn finish_watch(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     capture_id: u64,
-    on_ready: Channel<()>,
+    on_ready: Channel<WatchEvent>,
 ) -> Result<Option<WatchSummary>, String> {
     let mut slot = state
         .watch
         .try_lock()
         .map_err(|_| "the install watch is already taking a snapshot".to_string())?;
     let capture = CaptureLease::acquire(&state.watch_capture, capture_id)?;
+    let _job = state
+        .jobs
+        .work(&app, "Watch capture", Some(capture.token.clone()))?;
     let w = slot
         .take()
         .ok_or_else(|| "no installation is being watched".to_string())?;
-    let _ = on_ready.send(());
+    let _ = on_ready.send(WatchEvent::Ready);
+    let notify = Arc::new(move |p| {
+        let _ = on_ready.send(WatchEvent::Progress(p));
+    });
     dock::log(&app, "info", "Taking the 'after' picture and comparing…");
-    let r = w.finish(&capture.token).await;
+    let r = w.finish_with_progress(&capture.token, notify).await;
     match &r {
         Ok(s) if !s.coverage.has_usable() => {
             dock::log(&app, "warn", "No watch scopes could be compared.")
@@ -1074,14 +1034,17 @@ async fn finish_watch(
 
 /// Stop watching without recording anything.
 #[tauri::command]
-fn cancel_watch(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+async fn cancel_watch(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let job = state
+        .jobs
+        .work(&app, "Discarding the watch baseline", None)?;
     if let Some(w) = state
         .watch
         .try_lock()
         .map_err(|_| "the install watch is already taking a snapshot".to_string())?
         .take()
     {
-        w.abandon().map_err(|e| e.to_string())?;
+        jobs::run(job, move || w.abandon().map_err(|e| e.to_string())).await?;
         dock::log(&app, "info", "Stopped watching. Nothing was recorded.");
     }
     Ok(())
@@ -1093,9 +1056,14 @@ async fn scan(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     root: String,
+    strict: Option<bool>,
     on_event: Channel<ScanEvent>,
 ) -> Result<(), String> {
+    if root.len() > 4096 || !Path::new(&root).is_absolute() || root.contains('\0') {
+        return Err("Enter an absolute local folder path.".into());
+    }
     let cancel = Cancel::new();
+    let _job = state.jobs.work(&app, "Folder scan", Some(cancel.clone()))?;
     {
         let mut slot = state
             .scan_cancel
@@ -1110,12 +1078,15 @@ async fn scan(
     let progress = on_event.clone();
     let result = capture_with_progress(
         std::path::Path::new(&root),
-        &CaptureOptions::default(),
+        &CaptureOptions {
+            strict: strict.unwrap_or(false),
+            ..Default::default()
+        },
         None,
         &cancel,
-        &move |p| {
+        Arc::new(move |p| {
             let _ = progress.send(ScanEvent::Progress(p));
-        },
+        }),
     )
     .await;
     if let Ok(mut slot) = state.scan_cancel.lock() {
@@ -1125,14 +1096,14 @@ async fn scan(
         Ok(snap) => dock::log(
             &app,
             "info",
-            format!("Scan finished: {} file(s).", snap.trie.len()),
+            format!("Scan finished: {} file(s).", snap.files),
         ),
         Err(EngineError::Cancelled) => dock::log(&app, "warn", "Scan cancelled."),
         Err(e) => dock::log(&app, "error", format!("Scan failed: {e}")),
     }
     let event = match result {
         Ok(snap) => ScanEvent::Done {
-            files: snap.trie.len(),
+            files: snap.files,
             skipped: snap.skipped.len(),
             root_digest: snap.trie.root_digest(),
         },
@@ -1216,6 +1187,8 @@ fn run() -> Result<(), String> {
             watch_capture: Mutex::new(None),
             scan_cancel: Mutex::new(None),
             recent_uninstalls: Mutex::new(BTreeMap::new()),
+            cleanup_plans: cleanup::Plans::default(),
+            jobs: jobs::Gate::default(),
             data_dir: dir,
             quarantine_root,
             legacy_data,
@@ -1231,7 +1204,10 @@ fn run() -> Result<(), String> {
                     | WindowEvent::ScaleFactorChanged { .. }
                     | WindowEvent::Focused(true) => dock::follow(&handle),
                     // the hidden log window must not keep the app alive
-                    WindowEvent::CloseRequested { .. } => handle.exit(0),
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        handle.state::<AppState>().jobs.close(&handle);
+                    }
                     _ => {}
                 });
             }
@@ -1267,15 +1243,27 @@ fn run() -> Result<(), String> {
         })
         .invoke_handler(tauri::generate_handler![
             dock::get_log,
+            dock::log_status,
             dock::clear_log,
             dock::set_log_open,
             dock::log_is_open,
             list_sessions,
+            pick_path,
+            profile::storage_usage,
+            profile::backup_profile,
+            profile::restore_profile_copy,
+            profile::rotate_archived_batch,
             provenance,
             simulate,
             scan,
             cancel_scan,
-            quarantine_session,
+            cleanup::cleanup_folders,
+            cleanup::link_cleanup_session,
+            cleanup::prepare_cleanup,
+            cleanup::stop_cleanup_preflight,
+            cleanup::cleanup_plan_page,
+            cleanup::discard_cleanup_plan,
+            cleanup::apply_cleanup,
             list_quarantines,
             archive::quarantine_batch,
             restore_quarantine,
@@ -1296,7 +1284,6 @@ fn run() -> Result<(), String> {
             preview_uninstaller,
             run_uninstaller,
             find_leftovers,
-            quarantine_leftovers,
             archive::session_items,
             begin_watch,
             finish_watch,
@@ -1313,5 +1300,26 @@ fn main() {
         #[cfg(windows)]
         exor_win::show_startup_error(&e);
         std::process::exit(1);
+    }
+}
+
+#[tauri::command]
+async fn pick_path(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    directory: bool,
+) -> Result<Option<String>, String> {
+    let job = state
+        .jobs
+        .work(window.app_handle(), "The Windows picker", None)?;
+    #[cfg(windows)]
+    {
+        let owner = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        jobs::run(job, move || exor_win::pick_path(owner, directory)).await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (job, directory);
+        Err("Use manual path entry on this platform.".into())
     }
 }

@@ -6,8 +6,8 @@
 
 | Source | What is ready | Why it is not ready to ship in Watch |
 |---|---|---|
-| NTFS USN | A portable V2 parser and an opt-in Windows journal reader; malformed input tests | Requires access to an active NTFS journal. A journal reset/rollover or read failure closes the stream without a typed gap for the consumer. Cached parent paths may be stale after rename, and unresolved paths are not authoritative. No process attribution. |
-| Registry callback | A portable packet parser and a Windows minifilter port client | No WDK build or load evidence. Delete-key is an attempt, not confirmed removal. Receive can stay blocked until a message or driver unload. The lab still needs to verify the port ACL, one-client behavior, shutdown, bounded callback latency and loss reporting. |
+| NTFS USN | A portable V2 parser and an opt-in Windows journal reader; malformed input tests | Requires access to an active NTFS journal. The lab reader reports journal gaps, unsupported records, and queue overflow as incomplete sample results; native discontinuity handling still needs lab verification. Cached parent paths may be stale after rename, and unresolved paths are not authoritative. No process attribution. |
+| Registry callback | A portable packet parser and a Windows minifilter port client | No WDK build or load evidence. Delete-key is an attempt, not confirmed removal. The lab client requests cancellation and drains its overlapped receive; actual Windows stop/disconnect needs verification. The lab still needs to verify the port ACL, one-client behavior, shutdown, bounded callback latency and loss reporting. |
 
 Before desktop integration, require explicit opt-in, visible permission/unsupported errors, bounded waits and cancellation, loss/disconnect reporting, scoped capture and a tested fallback to snapshots. Keep observations advisory: a live event must never authorize cleanup. An elevated receiver, if ever required, needs its own separately reviewed trust boundary; do not elevate the desktop to use it.
 

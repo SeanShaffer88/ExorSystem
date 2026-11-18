@@ -219,3 +219,107 @@ mod tests {
         }
     }
 }
+
+/// Decode a registered command using Windows' own quoting rules, never a shell. An unquoted
+/// path containing spaces is unsupported: the first token must itself be an allowed executable.
+pub fn uninstall_arguments(command: &str) -> Result<(PathBuf, Vec<String>), String> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::UI::Shell::CommandLineToArgvW;
+    let command = command.trim();
+    let invalid =
+        "The uninstaller command is ambiguous or unsupported. Use Windows Settings → Apps instead.";
+    if command.is_empty()
+        || command.encode_utf16().count() > 32_766
+        || command.contains(['\0', '\r', '\n'])
+    {
+        return Err(invalid.into());
+    }
+    // Validate argv[0] independently; Windows' argument parser is intentionally permissive.
+    if let Some(quoted) = command.strip_prefix('"') {
+        let (_, tail) = quoted.split_once('"').ok_or(invalid)?;
+        if !tail.is_empty() && !tail.starts_with([' ', '\t']) {
+            return Err(invalid.into());
+        }
+    } else if command
+        .split([' ', '\t'])
+        .next()
+        .is_some_and(|first| first.contains('"'))
+    {
+        return Err(invalid.into());
+    }
+    let mut argc = 0;
+    // SAFETY: a terminated UTF-16 string and a writable count are valid for the shell call.
+    let argv = unsafe { CommandLineToArgvW(&HSTRING::from(command), &mut argc) };
+    if argv.is_null() {
+        return Err(invalid.into());
+    }
+    // SAFETY: the successful call returned `argc` live pointers to terminated UTF-16 strings.
+    let values = if argc > 0 && argc <= 512 {
+        unsafe {
+            std::slice::from_raw_parts(argv, argc as usize)
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Result<Vec<_>, _>>()
+        }
+        .ok()
+    } else {
+        None
+    };
+    // SAFETY: CommandLineToArgvW transfers ownership of the single LocalAlloc buffer.
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(argv.cast())));
+    }
+    let mut values = values.ok_or(invalid)?.into_iter();
+    let exe = uninstall_executable(&values.next().ok_or(invalid)?)?;
+    Ok((exe, values.collect()))
+}
+
+/// Choose an existing local folder or file, using an owned Windows dialog on a worker STA.
+pub fn pick_path(owner: isize, directory: bool) -> Result<Option<String>, String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize,
+    };
+    use windows::Win32::UI::Shell::{
+        FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR, FOS_PATHMUSTEXIST,
+        FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+    };
+    struct Apartment;
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            // SAFETY: balances the successful initialization on this same thread.
+            unsafe { CoUninitialize() };
+        }
+    }
+    // SAFETY: requested on this blocking worker and paired with CoUninitialize on success.
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
+        .ok()
+        .map_err(|e| e.to_string())?;
+    let _apartment = Apartment;
+    // SAFETY: only the system file dialog is instantiated; every returned COM value is local.
+    unsafe {
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| e.to_string())?;
+        let options = FOS_FORCEFILESYSTEM
+            | FOS_NOCHANGEDIR
+            | FOS_PATHMUSTEXIST
+            | if directory {
+                FOS_PICKFOLDERS
+            } else {
+                FOS_FILEMUSTEXIST
+            };
+        dialog.SetOptions(options).map_err(|e| e.to_string())?;
+        match dialog.Show(Some(HWND(owner as *mut _))) {
+            Err(err) if err.code().0 as u32 == 0x8007_04c7 => return Ok(None),
+            result => result.map_err(|e| e.to_string())?,
+        }
+        let item = dialog.GetResult().map_err(|e| e.to_string())?;
+        let ptr = item
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .map_err(|e| e.to_string())?;
+        let path = ptr.to_string();
+        CoTaskMemFree(Some(ptr.0.cast()));
+        path.map(Some).map_err(|e| e.to_string())
+    }
+}

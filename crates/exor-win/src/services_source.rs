@@ -1,6 +1,7 @@
 //! Enumerates Windows services and kernel-driver services through the Service Control Manager.
 
 use crate::WinError;
+use exor_engine::Cancel;
 use exor_engine::collectors::ServiceInfo;
 use windows::Win32::System::Services::{
     CloseServiceHandle, ENUM_SERVICE_STATUS_PROCESSW, EnumServicesStatusExW, OpenSCManagerW,
@@ -55,7 +56,7 @@ fn config(scm: &Handle, name: &[u16]) -> Option<(String, &'static str)> {
     let mut need = 0u32;
     // SAFETY: a null buffer with size 0 is the documented way to ask for the required size.
     let _ = unsafe { QueryServiceConfigW(svc.0, None, 0, &mut need) };
-    if need == 0 {
+    if need == 0 || need > 65_536 {
         return None;
     }
     // u64 backing keeps the buffer 8-byte aligned for QUERY_SERVICE_CONFIGW.
@@ -70,6 +71,11 @@ fn config(scm: &Handle, name: &[u16]) -> Option<(String, &'static str)> {
 
 /// All Win32 services and kernel drivers, sorted by name. Blocking: call from `spawn_blocking`.
 pub fn enumerate_services() -> Result<Vec<ServiceInfo>, WinError> {
+    enumerate_services_cancellable(&Cancel::new())
+}
+
+/// Cancellable enumeration. If any configuration is unreadable, the scope is incomplete.
+pub fn enumerate_services_cancellable(cancel: &Cancel) -> Result<Vec<ServiceInfo>, WinError> {
     // SAFETY: null machine/database selects the local active database.
     let scm = Handle(
         unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_ENUMERATE_SERVICE) }
@@ -92,7 +98,12 @@ pub fn enumerate_services() -> Result<Vec<ServiceInfo>, WinError> {
             PCWSTR::null(),
         )
     };
-    let mut buf = vec![0u64; (need as usize + 4096).div_ceil(8)];
+    if need > 256 * 1024 {
+        return Err(WinError::Coverage(
+            "Service enumeration exceeds its capture limit",
+        ));
+    }
+    let mut buf = vec![0u64; (need as usize + 4096).min(256 * 1024).div_ceil(8)];
     let bytes = buf.len() * 8;
     // SAFETY: reinterpreting the aligned u64 buffer as bytes of the same length.
     let slice = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), bytes) };
@@ -113,15 +124,26 @@ pub fn enumerate_services() -> Result<Vec<ServiceInfo>, WinError> {
     }
     .map_err(|e| werr("EnumServicesStatusExW", &e))?;
 
+    if count > 4096 || count as usize * std::mem::size_of::<ENUM_SERVICE_STATUS_PROCESSW>() > bytes
+    {
+        return Err(WinError::Coverage(
+            "Service count exceeds its capture limit",
+        ));
+    }
     let first = buf.as_ptr().cast::<ENUM_SERVICE_STATUS_PROCESSW>();
     let mut out = Vec::with_capacity(count as usize);
     for i in 0..count as usize {
+        if cancel.is_cancelled() {
+            return Err(WinError::Coverage("Service capture cancelled"));
+        }
         // SAFETY: the call reported `count` consecutive entries starting at the buffer head.
         let e = unsafe { &*first.add(i) };
         let name = wide(e.lpServiceName);
         let mut w: Vec<u16> = name.encode_utf16().collect();
         w.push(0);
-        let (binary_path, start) = config(&scm, &w).unwrap_or_default_cfg();
+        let (binary_path, start) = config(&scm, &w).ok_or(WinError::Coverage(
+            "At least one service configuration is unreadable. The service scope was not compared.",
+        ))?;
         out.push(ServiceInfo {
             name,
             display_name: wide(e.lpDisplayName),
@@ -131,13 +153,4 @@ pub fn enumerate_services() -> Result<Vec<ServiceInfo>, WinError> {
     }
     out.sort_by_key(|s| s.name.to_lowercase());
     Ok(out)
-}
-
-trait OrDefaultCfg {
-    fn unwrap_or_default_cfg(self) -> (String, &'static str);
-}
-impl OrDefaultCfg for Option<(String, &'static str)> {
-    fn unwrap_or_default_cfg(self) -> (String, &'static str) {
-        self.unwrap_or((String::new(), "unknown"))
-    }
 }
