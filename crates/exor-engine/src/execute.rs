@@ -4,8 +4,8 @@ use crate::error::{EngineError, Result};
 use crate::policy::SimulationReport;
 use crate::quarantine::{self, QuarantineItem, QuarantineManifest};
 use exor_storage::{
-    ChangeKind, ChangeSource, NewLedgerEntry, PolicyAction, QuarantineRecord, QuarantineStatus,
-    Store,
+    ChangeKind, ChangeSource, NewLedgerEntry, NodeType, PolicyAction, QuarantineRecord,
+    QuarantineStatus, Store,
 };
 use std::path::{Path, PathBuf};
 

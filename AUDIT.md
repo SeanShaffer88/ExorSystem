@@ -6,7 +6,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 |---|---|---|
 | Storage (schema, migrations, DAG, ledger, provenance) | Verified | 18 integration tests, Linux |
 | Engine (walker, trie diff, BLAKE3, noise, policy, quarantine, monitor, collectors, execute) | Verified | 43 tests, Linux, `clippy -D warnings` |
-| Install watch (files, services, tasks, failed probes) | Verified (mock probe) | 2 integration tests; real probes never run on Windows |
+| Install watch (files, services, tasks, optional registry subtrees) | Partially verified | Engine tests cover missing keys and failed sample pairs with mocks. Browser smoke covers warnings, tab navigation, Finish failure, and Cancel. A Windows-only test checks read-only traversal of an existing subtree and a missing scope; interactive Windows watch and installer correlation remain unverified. |
 | Failure drills on Linux (ENOSPC, cross-filesystem, corrupt DB, concurrent writers, partial restore) | Verified | tests in `quarantine.rs` and `storage.rs` |
 | Quarantine crash recovery | Verified (simulated) | crash state reproduced in a test; real power loss never exercised |
 | Mock event harness | Verified | deterministic replay tests |
@@ -39,7 +39,7 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 - Registry review checks key names under Software and one exact publisher key, not values or the whole registry. Service/task matching needs a command with an absolute local path under the reported install folder. Inaccessible entries and unsupported command formats can be missed. System entries are never changed.
 - MSIX inventory is current-user-only and read-only. Portable entries are opt-in rather than auto-detected.
 - Trace lookup uses SQLite ASCII `NOCASE` as a fallback; node identity and write-side matching remain exact to preserve case-only records.
-- The optional live USN and driver sources are implemented as library components. The desktop Watch workflow still uses snapshots for files, services and tasks, not those live sources.
+- The optional live USN and driver sources are separate library components. Desktop Watch uses file, service, task, and opt-in registry snapshots. Registry snapshots are bounded and non-atomic; only key metadata is compared, not value data or live events. An inaccessible or incomplete scope is not compared.
 
 ## Failure drills not yet run
 See [Windows release checks](docs/ROADMAP.md). Need Windows or a person: locked files (sharing violations), cross-volume moves on NTFS, antivirus interference, power loss during a real migration or quarantine, Windows long paths and reparse points. Run as root here, so permission-denied cases were not exercised.

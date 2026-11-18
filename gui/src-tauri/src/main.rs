@@ -3,6 +3,7 @@
 
 use exor_engine::leftovers::{self, Leftover, ReviewLeftover};
 use exor_engine::programs::InstalledProgram;
+use exor_engine::registry::RegistryScopes;
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
 use exor_engine::watch::{InstallWatch, SystemProbe, WatchSummary};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
@@ -14,12 +15,13 @@ mod inventory;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::ipc::Channel;
 use tauri::{Manager, State, WindowEvent};
 
 struct AppState {
     store: Arc<Mutex<Store>>,
-    watch: Mutex<Option<InstallWatch>>,
+    watch: AsyncMutex<Option<InstallWatch>>,
     scan_cancel: Mutex<Option<Cancel>>,
     recent_uninstalls: Mutex<BTreeMap<String, InstalledProgram>>,
     quarantine_root: PathBuf,
@@ -722,7 +724,7 @@ fn session_items(state: State<'_, AppState>, session_id: i64) -> Result<SessionI
     })
 }
 
-/// Real service and task listings on Windows; elsewhere the engine's "not available" probe.
+/// Real system snapshots on Windows; elsewhere the engine's "not available" probe.
 #[cfg(windows)]
 struct SystemState;
 
@@ -735,6 +737,12 @@ impl SystemProbe for SystemState {
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
         exor_engine::collectors::read_tasks_dir(&PathBuf::from(root).join("System32").join("Tasks"))
             .map_err(|e| e.to_string())
+    }
+    fn registry_keys(
+        &self,
+        scope: &exor_engine::registry::RegistryScope,
+    ) -> Result<Vec<exor_engine::registry::RegistryKeyState>, String> {
+        exor_win::capture_registry_keys(scope)
     }
 }
 
@@ -749,15 +757,13 @@ fn probe() -> Arc<dyn SystemProbe> {
     }
 }
 
-fn watch_slot<'a>(
-    s: &'a State<'_, AppState>,
-) -> Result<std::sync::MutexGuard<'a, Option<InstallWatch>>, String> {
-    s.watch
-        .lock()
-        .map_err(|_| "internal lock poisoned".to_string())
+#[derive(Serialize)]
+struct WatchStart {
+    session_id: i64,
+    warnings: Vec<String>,
 }
 
-/// Take the "before" picture of the watched folders, services and tasks. Run the installer next.
+/// Take the baseline. Run the installer after the snapshots have finished.
 #[tauri::command]
 async fn begin_watch(
     app: tauri::AppHandle,
@@ -765,14 +771,13 @@ async fn begin_watch(
     app_name: String,
     installer_path: Option<String>,
     folders: Vec<String>,
-) -> Result<i64, String> {
-    if watch_slot(&state)?.is_some() {
-        return Err("an installation is already being watched".into());
-    }
+    registry_subtrees: Option<String>,
+) -> Result<WatchStart, String> {
     let name = app_name.trim();
     if name.is_empty() {
         return Err("enter the application name".into());
     }
+    let scopes = RegistryScopes::parse(registry_subtrees.as_deref().unwrap_or_default())?;
     let roots: Vec<PathBuf> = folders
         .iter()
         .map(|f| f.trim())
@@ -783,6 +788,14 @@ async fn begin_watch(
         .as_deref()
         .map(str::trim)
         .filter(|p| !p.is_empty());
+    // Keep the async slot reserved until the baseline finishes, even for overlapping IPC calls.
+    let mut slot = state
+        .watch
+        .try_lock()
+        .map_err(|_| "the install watch is already taking a snapshot".to_string())?;
+    if slot.is_some() {
+        return Err("an installation is already being watched".into());
+    }
     dock::log(
         &app,
         "info",
@@ -793,33 +806,36 @@ async fn begin_watch(
         name,
         installer,
         &roots,
+        &scopes,
         probe(),
         &Cancel::new(),
     )
     .await
     .map_err(|e| e.to_string())?;
-    let id = w.session_id();
+    let start = WatchStart {
+        session_id: w.session_id(),
+        warnings: w.warnings().to_vec(),
+    };
+    *slot = Some(w);
     dock::log(
         &app,
         "info",
         format!("Watching {name}. Run the installer, then finish."),
     );
-    let mut slot = watch_slot(&state)?;
-    if slot.is_some() {
-        let _ = w.abandon();
-        return Err("an installation is already being watched".into());
-    }
-    *slot = Some(w);
-    Ok(id)
+    Ok(start)
 }
 
-/// Take the "after" picture and record every difference in one session.
+/// Take the after snapshots and record the observed changes in one session.
 #[tauri::command]
 async fn finish_watch(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<WatchSummary, String> {
-    let w = watch_slot(&state)?
+    let mut slot = state
+        .watch
+        .try_lock()
+        .map_err(|_| "the install watch is already taking a snapshot".to_string())?;
+    let w = slot
         .take()
         .ok_or_else(|| "no installation is being watched".to_string())?;
     dock::log(&app, "info", "Taking the 'after' picture and comparing…");
@@ -834,7 +850,12 @@ async fn finish_watch(
 /// Stop watching without recording anything.
 #[tauri::command]
 fn cancel_watch(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(w) = watch_slot(&state)?.take() {
+    if let Some(w) = state
+        .watch
+        .try_lock()
+        .map_err(|_| "the install watch is already taking a snapshot".to_string())?
+        .take()
+    {
         w.abandon().map_err(|e| e.to_string())?;
         dock::log(&app, "info", "Stopped watching. Nothing was recorded.");
     }
@@ -943,7 +964,7 @@ fn run() -> Result<(), String> {
         .manage(dock::Dock::default())
         .manage(AppState {
             store: Arc::new(Mutex::new(store)),
-            watch: Mutex::new(None),
+            watch: AsyncMutex::new(None),
             scan_cancel: Mutex::new(None),
             recent_uninstalls: Mutex::new(BTreeMap::new()),
             quarantine_root,

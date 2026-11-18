@@ -9,6 +9,12 @@ The original implementation roadmap shipped in [PR #5](https://github.com/SeanSh
 - **Installations → Find leftovers** works for classic programs even without a recorded install. If ExorSystem runs the uninstaller and Windows removes the entry, it retains non-command metadata for review until the app closes. Folder matches are suggestions; only manually selected folders inside application roots are eligible for file quarantine. Registry keys, services and scheduled tasks are review-only. An exact name or executable-location match is not proof of ownership.
 - **Provenance** prefers an exact path. It also finds an unambiguous ASCII case-insensitive match and asks for the exact spelling if older records differ only in case. Existing nodes and ledger entries are not rewritten.
 
+## Watch an install
+
+- To opt in to registry tracking, enter up to eight specific Software subtrees, one per line. For example, use `HKCU\Software\Example` for the calling user, `HKLM\Software\Example` for the 64-bit machine view, or `HKLM32\Software\Example` for the 32-bit machine view. Blank means no registry scan. Whole hives and whole Software roots are not accepted.
+- Wait for the baseline before running the installer. You can switch tabs during the watch and return to finish or cancel it. Review the warnings: subtrees that could not be fully read at either end are skipped, not treated as empty.
+- Registry evidence uses key paths and last-write metadata, not registry value names or contents. It does not identify the process that made a change, and it cannot see short-lived changes between snapshots. Review changes, including removals, in **History**. Cleanup never quarantines registry items.
+
 ## Before publishing a Windows build
 
 Use disposable Windows 10 and 11 x64 VMs. Do not run uninstall or failure drills against a real user's files. Record the commit, OS build, pass/fail, and any logs in the release notes or audit. None of these desktop checks is replaced by the browser smoke test.
@@ -18,6 +24,7 @@ Use disposable Windows 10 and 11 x64 VMs. Do not run uninstall or failure drills
 - [ ] Compare Installations with Windows Settings for a known classic program and a current-user MSIX app. Verify the MSIX app is read-only. Add a disposable portable `.exe`, restart and check that it persists, then forget it and confirm its files are unchanged.
 - [ ] Use an expendable classic app that removes its Windows uninstall entry. Check that it stays visible for review, but cannot be launched again. Verify a matching registry key, service, and task appear as advice only and that unrelated entries do not appear. Quarantine a selected test folder and restore it. Check a locked file and a junction using only disposable data.
 - [ ] Record a test file with **Watch an install** and trace a differently cased path to it. Upgrade a copy of a v2 database and confirm the v2 backup and ledger are intact.
+- [ ] With no driver installed, watch a disposable `HKCU\Software\ExorSystemWatchFixture` subtree. Between pictures, add and remove test keys and edit a test value in an existing key. Switch tabs and return to Finish. Check key-level evidence (including removal in History), no stored values, and no registry action in the Thorough cleanup preview. Check that a missing starting key can appear as added and that an unreadable or oversized subtree warns instead of reporting spurious changes.
 - [ ] Verify keyboard navigation, Narrator, high contrast, 100%/150% DPI, and activity-log docking on two monitors. See [screenshot capture list](SCREENSHOTS.md) for actual Windows imagery.
 
 ## Driver work is separate

@@ -101,7 +101,8 @@ export function App() {
       </header>
       <main id="main" role="tabpanel" aria-labelledby={`tab-${view}`} tabIndex={-1}>
         {view === "sessions" && <SessionsView />}
-        {view === "watch" && <WatchView />}
+        {/* A native watch keeps running when this tab is not selected. Keep its controls mounted. */}
+        {flags.watchView && <WatchView hidden={view !== "watch"} />}
         {view === "scan" && <ScanView />}
         {view === "provenance" && <ProvenanceView />}
         {view === "simulator" && <SimulatorView />}

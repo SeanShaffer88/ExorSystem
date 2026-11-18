@@ -27,6 +27,8 @@ try {
     const moveable = 'C:\\Program Files\\Zed Widget';
     let portable = [];
     let removed = false;
+    let watch = null;
+    let nextWatchId = 40;
     const calls = [];
     window.exorCalls = calls;
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
@@ -40,6 +42,29 @@ try {
           case 'get_log': return [];
           case 'log_is_open': return false;
           case 'list_sessions': return [];
+          case 'begin_watch':
+            if (watch) throw new Error('already watching');
+            watch = {
+              session_id: nextWatchId++,
+              warnings: args.registrySubtrees ? ['A registry subtree was not checked before the install.'] : [],
+            };
+            return watch;
+          case 'finish_watch': {
+            if (!watch) throw new Error('no watch to finish');
+            const current = watch;
+            watch = null;
+            if (current.session_id !== 40) throw new Error('file snapshot failed');
+            await new Promise(resolve => { window.finishWatchSnapshot = resolve; });
+            return {
+              ...current, files_changed: 1, services_changed: 0, tasks_changed: 0,
+              registry_keys_changed: 2, registry_scopes_compared: 1,
+              summary: 'Recorded 1 file change for Watch Fixture.',
+            };
+          }
+          case 'cancel_watch':
+            if (!watch) throw new Error('no watch to cancel');
+            watch = null;
+            return null;
           case 'list_programs': return { programs: [
             { program: removed ? { ...app, uninstall_command: null } : app, session_ids: [], removed },
             { program: msix, session_ids: [], removed: false },
@@ -123,11 +148,53 @@ try {
   await page.getByLabel('File path or registry key').fill('c:\\program files\\ZED widget\\UPDATER.EXE');
   await page.getByRole('button', {name:'Trace'}).click();
   await page.getByText('The requested path matched its recorded spelling.').waitFor();
+  const watchTab = page.getByRole('tab', {name:'Watch an install'});
+  const provenanceTab = page.getByRole('tab', {name:'Provenance'});
+  await watchTab.click();
+  const begin = page.getByRole('button', {name:'Take the first picture', exact:true});
+  const finish = page.getByRole('button', {name:'Finish: take the second picture'});
+  const registry = page.getByLabel('Registry subtrees to watch (optional)');
+  const subtrees = String.raw`HKCU\Software\Watch Fixture` + '\n' + String.raw`HKLM32\Software\Watch Fixture`;
+  await page.getByLabel('Application name', {exact:true}).fill('Watch Fixture');
+  await registry.fill(subtrees);
+  await begin.click();
+  await page.getByText(/Ready to watch Watch Fixture/).waitFor();
+  await page.getByText('A registry subtree was not checked before the install.').waitFor();
+  await provenanceTab.click();
+  assert(!(await finish.isVisible()));
+  await watchTab.click();
+  assert(await finish.isEnabled());
+  await finish.click();
+  await page.getByText('Taking the after picture…').waitFor();
+  await provenanceTab.click();
+  await page.evaluate(() => window.finishWatchSnapshot());
+  await watchTab.click();
+  await page.getByText(/Registry key changes: 2 across 1/).waitFor();
+  await page.getByText('A registry subtree was not checked before the install.').waitFor();
+  assert.equal(await registry.inputValue(), subtrees);
+
+  // A failed Finish consumes the watch. Offer a fresh baseline, not a dead Finish button.
+  await registry.fill('');
+  await begin.click();
+  await finish.click();
+  await page.getByRole('alert').filter({hasText: 'Start a new watch to try again.'}).waitFor();
+  assert(await begin.isEnabled());
+  assert.equal(await finish.count(), 0);
+
+  await begin.click();
+  await finish.waitFor();
+  await provenanceTab.click();
+  await watchTab.click();
+  await page.getByRole('button', {name:'Cancel', exact:true}).click();
+  await begin.waitFor();
   assert.deepEqual(errors, []);
   const calls = await page.evaluate(() => window.exorCalls);
   assert.equal(calls.filter(([c]) => c === 'run_uninstaller').length, 1);
   assert.equal(calls.filter(([c]) => c === 'quarantine_leftovers').length, 1);
-  console.log('Browser smoke passed: first mouse selection, uninstall then review, explicit file quarantine, read-only system/MSIX paths, add/forget portable entry, provenance');
+  assert.deepEqual(calls.filter(([c]) => c === 'begin_watch').map(([, args]) => args.registrySubtrees), [subtrees, '', '']);
+  assert.equal(calls.filter(([c]) => c === 'finish_watch').length, 2);
+  assert.equal(calls.filter(([c]) => c === 'cancel_watch').length, 1);
+  console.log('Browser smoke passed: inventory, uninstall/review, quarantine, portable inventory, provenance, and registry watch across tabs');
 } finally {
   await browser.close();
 }

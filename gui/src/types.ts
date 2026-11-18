@@ -36,6 +36,7 @@ export interface ProvenanceView {
 
 export interface Decision {
   path: string;
+  node_type: "file" | "registry_key" | "registry_value" | "service" | "task";
   action: PolicyAction;
   rule: [number, string] | null;
   reason: string;
@@ -76,12 +77,17 @@ export interface QuarantineResult {
   summary: string;
 }
 
-export interface WatchSummary {
+export interface WatchStart {
   session_id: number;
+  warnings: string[];
+}
+
+export interface WatchSummary extends WatchStart {
   files_changed: number;
   services_changed: number;
   tasks_changed: number;
-  warnings: string[];
+  registry_keys_changed: number;
+  registry_scopes_compared: number;
   summary: string;
 }
 
