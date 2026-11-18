@@ -1,6 +1,6 @@
-# Windows release evidence template
+# Optional Windows client evidence template
 
-Copy for each candidate. Attach `PACKAGE-CHECKS.json`, `SHA256SUMS.txt`, and relevant logs to the PR. Avoid personal file paths, account identifiers, and registry value data in screenshots or logs.
+Use this template when running optional interactive Windows 10/11 checks. Attach `PACKAGE-CHECKS.json`, `SHA256SUMS.txt`, and relevant logs to a PR or issue. Avoid personal file paths, account identifiers, and registry value data in screenshots or logs.
 
 - Source commit / app version:
 - Passing CI run / successful Windows candidate Actions run ID and link:
@@ -39,6 +39,6 @@ Record the format used for each functional run. Repeat it for another format if 
 | Keyboard, Narrator, high contrast and 100%/150% DPI (including second monitor) | Not run | Not run |
 
 - Failed/skipped cases, issue links, decisions and re-test evidence:
-- Sign-off decision / operator / date (do not infer Pass):
+- Overall client test result / tester / date (do not infer Pass):
 
-A passing package build, Windows Server test, or browser demo does not fill a client row. A partial smoke on a live PC is helpful but not a substitute for the disposable Windows 10 and 11 runs. Leave the release on hold if either client matrix has required cases that are failing, blocked, or not run.
+A passing package build, Windows Server test, or browser demo does not fill a client row. A partial smoke on a live PC is helpful but not a substitute for the disposable Windows 10 and 11 runs. This record is optional and is not an input to the stable Release workflow. Keep failures and cases that were not run visible; automated package checks do not replace them.

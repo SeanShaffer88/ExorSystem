@@ -47,7 +47,7 @@ cd gui && npm ci && npm run build       # frontend
 cd gui && npm run tauri build           # desktop app (Windows, WebView2)
 ```
 
-See [development](docs/DEVELOPMENT.md) for the pinned Rust/Node toolchain and browser smoke checks. See the [Windows release runbook](docs/WINDOWS-RELEASE.md) for build-only packages and native sign-off. The [optional live sources](docs/LIVE-COLLECTION.md) are not used by the desktop.
+See [development](docs/DEVELOPMENT.md) for the pinned Rust/Node toolchain and browser smoke checks. See the [Windows release runbook](docs/WINDOWS-RELEASE.md) for build-only packages, stable promotion, and optional native testing. The [optional live sources](docs/LIVE-COLLECTION.md) are not used by the desktop.
 
 ## Data
 

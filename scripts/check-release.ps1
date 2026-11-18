@@ -3,7 +3,7 @@
   Verify the three Windows artifacts without running an installer. Requires Windows SDK mt.exe.
 .DESCRIPTION
   Writes PACKAGE-CHECKS.json with the commit, hashes, package metadata, and what was NOT tested.
-  Run from the checkout that built the candidate; this is not the interactive release sign-off.
+  Run from the checkout that built the candidate. These checks do not install or launch the desktop.
 #>
 [CmdletBinding()]
 param([string]$ArtifactDir = (Join-Path $PSScriptRoot '..\dist'))
@@ -141,4 +141,4 @@ try {
   artifacts = @($names | ForEach-Object { $checks[$_] })
   not_tested = @('Installation, upgrade and uninstall', 'Desktop, UAC and WebView2', 'Interactive Watch, History and cleanup', 'Accessibility and multi-monitor behavior')
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $dir 'PACKAGE-CHECKS.json') -Encoding utf8
-Write-Host 'Static package checks passed. Native Windows 10/11 sign-off is still required.'
+Write-Host 'Static package checks passed. No Windows client install or launch was tested.'

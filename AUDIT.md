@@ -1,6 +1,6 @@
 # Audit and verification matrix
 
-**Automated** means a test, build, or static package inspection ran; it does not imply an interactive Windows 10/11 pass. **Partial** means a native or manual gate remains. **Not run** means no evidence is available for that gate.
+**Automated** means a test, build, or static package inspection ran; it does not imply an interactive Windows 10/11 pass. **Partial** means some scenarios have not been exercised. **Not run** means no test result is available for that area.
 
 | Area | Status | Evidence and limits |
 |---|---|---|
@@ -11,12 +11,12 @@
 | Install Watch and session-scoped History | Partial | Mock snapshots and storage tests cover failures, deletions, cursor stability, and interleaved sessions. Built-bundle Chromium smoke covers Watch→History, filters, paging and retry using mocked IPC. A Windows runner reads existing/missing registry scopes without changing the OS. The real Windows 10/11 desktop flow has not run. |
 | Classic/MSIX/portable inventory and guided uninstall | Partial | Engine and mocked browser checks cover source restrictions, per-user refusal, disappearing registrations, review-only system matches and portable entry lifecycle. Windows token/resolver tests read the current token and locate the system MSI executable without launching it. Actual GUI and uninstaller behavior remain open. |
 | Desktop privilege and storage | Partial | `asInvoker`/PerMonitorV2 manifest and an early elevated-token refusal. Native known-folder profile has a single-instance lock; no old portable database is automatically trusted or imported. Check UAC, profile permissions, lock, migration behavior and launch on both client versions. |
-| Frontend, themes and Tauri IPC | Partial | TypeScript/Vite build, all 36 theme contrast checks, and Chromium smoke with IPC stubs. Native commands, channel streaming, screen-reader behavior and presentation remain end-to-end gates. |
+| Frontend, themes and Tauri IPC | Partial | TypeScript/Vite build, all 36 theme contrast checks, and Chromium smoke with IPC stubs. Native commands, channel streaming, screen-reader behavior and presentation remain to be checked end to end. |
 | Package scripts and publishing | Partial | [v0.1.0 packaging run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44039918347) published historical NSIS, MSI, portable ZIP and hashes. Build-only [candidate workflow](.github/workflows/windows-candidate.yml) verifies current hashes, package metadata and manifest on Windows Server. Interactive package install/upgrade/uninstall/UAC/WebView2 remain open. |
 | Dependency licenses | Automated | Free/open-source license check in CI for the Rust workspaces and npm lockfile. |
 | USN and registry driver parsers | Automated | Parser fixtures, malformed frames, and Windows FILETIME-to-Unix conversion. See [live-source evaluation](docs/LIVE-COLLECTION.md). |
 | Live USN/registry port, kernel driver, WDK, signing | Not run | Windows user-mode sources and standalone lab probe are built/type-checked; real capture, driver build/load, assigned altitude and production signing have no evidence. Nothing is enabled or packaged by default. |
-| Windows 10/11 accessibility, DPI and log-window docking | Not run | Empty [client evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md); no Narrator, high-contrast, or multi-monitor sign-off. |
+| Windows 10/11 accessibility, DPI and log-window docking | Not run | Empty [client evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md); no Narrator, high-contrast, or multi-monitor test results. |
 
 [Linux/Windows and GUI/Tauri CI on `main`](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44248895966) passed at `459ed96`. The [Windows Server package run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44247905086) passed on PR head `e44c467`: the fixture, NSIS, MSI and portable ZIP builds, SHA-256 checks, and package metadata inspection. These checks did not install or launch the packages on Windows 10/11 clients.
 
@@ -28,6 +28,6 @@
 - Registry review is limited to Software key names. Services and tasks need an executable under the reported install folder to match by path. None of those findings authorizes changing the system item. MSIX inventory is current-user-only; portable inventory is explicit. Provenance's ASCII `NOCASE` fallback does not merge case-only paths.
 - Registry snapshots are read-only, bounded, non-atomic and cannot attribute to a process. An inaccessible or incomplete scope is skipped. Optional USN and driver sources are separate, experimental and have stream-loss and shutdown gaps.
 
-## Native sign-off
+## Optional native Windows testing
 
-Use the [Windows runbook](docs/WINDOWS-RELEASE.md) and attach one [evidence record](docs/WINDOWS-RELEASE-EVIDENCE.md) for the exact candidate, naming each OS build and package hash. Verify actual Windows 10/11 startup, installation/upgrade/removal, Watch and History, cleanup drills, and accessibility. Keep [driver WDK/load, altitude and signing](docs/LIVE-COLLECTION.md#distribution-gates-open) separate.
+Stable publishing requires CI and exact-artifact verification, not a native client sign-off. When running the optional tests, use the [Windows runbook](docs/WINDOWS-RELEASE.md) and attach an [evidence record](docs/WINDOWS-RELEASE-EVIDENCE.md) for the exact candidate, naming each OS build and package hash. Verify actual Windows 10/11 startup, installation/upgrade/removal, Watch and History, cleanup drills, and accessibility. Keep [driver WDK/load, altitude and signing](docs/LIVE-COLLECTION.md#distribution-gates-open) separate.
