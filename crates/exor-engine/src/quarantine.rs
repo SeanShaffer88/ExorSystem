@@ -1,12 +1,14 @@
 //! Recoverable, file-only quarantine. A database record is an index, not path authority.
 //! Manifests and blobs are local files below the configured root; no action follows a link.
 
+use crate::Cancel;
 use crate::error::{EngineError, Result, io_err};
-use crate::hashing::hash_file_blocking;
+use crate::hashing::{hash_file_blocking, hash_reader};
+use crate::publication::sync_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::fs::{self, Metadata, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::fs::{self, File, Metadata, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -19,6 +21,10 @@ pub enum ManifestStatus {
     InProgress,
     /// Files are in quarantine and can be restored or purged.
     Quarantined,
+    /// The user authorized restore; completed originals can be recognized on retry.
+    Restoring,
+    /// The user authorized purge. Never resume an incomplete purge automatically.
+    Purging,
     /// Files were restored.
     Restored,
     /// Blobs were permanently deleted.
@@ -75,6 +81,9 @@ pub struct QuarantineManifest {
     pub items: Vec<QuarantineItem>,
 }
 
+const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_MANIFEST_ITEMS: usize = 16_384;
+
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
@@ -90,7 +99,7 @@ fn next_name(created: u64) -> String {
     )
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     let lower_hex = |s: &str| {
         !s.is_empty() && s.len() <= 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     };
@@ -115,11 +124,10 @@ fn is_link(meta: &Metadata) -> bool {
     }
 }
 
-fn local_path(path: &Path) -> Result<()> {
+pub(crate) fn local_path(path: &Path) -> Result<()> {
     let mut parts = path.components();
     #[cfg(windows)]
-    if !matches!(parts.next(), Some(Component::Prefix(p)) if matches!(p.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
-    {
+    if !exor_fs::is_local_drive(path) || !matches!(parts.next(), Some(Component::Prefix(_))) {
         return Err(blocked(path, "expected a local drive path"));
     }
     if !matches!(parts.next(), Some(Component::RootDir))
@@ -140,7 +148,7 @@ fn local_path(path: &Path) -> Result<()> {
 }
 
 /// Missing is handled separately; a reparse point, symlink or wrong type is always an error.
-fn plain(path: &Path, dir: bool) -> Result<Option<Metadata>> {
+pub(crate) fn plain(path: &Path, dir: bool) -> Result<Option<Metadata>> {
     match fs::symlink_metadata(path) {
         Ok(meta) if !is_link(&meta) && if dir { meta.is_dir() } else { meta.is_file() } => {
             Ok(Some(meta))
@@ -158,10 +166,13 @@ fn plain(path: &Path, dir: bool) -> Result<Option<Metadata>> {
     }
 }
 
-fn plain_dirs(path: &Path) -> Result<bool> {
+pub(crate) fn plain_dirs(path: &Path) -> Result<bool> {
     local_path(path)?;
     let mut ancestors: Vec<_> = path.ancestors().collect();
     while let Some(dir) = ancestors.pop() {
+        if !dir.has_root() {
+            continue;
+        }
         if plain(dir, true)?.is_none() {
             return Ok(false);
         }
@@ -207,6 +218,189 @@ fn original_path(root: &Path, original: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The exact file read and shown in a quarantine proposal. This is not deserialized from IPC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewedFile {
+    path: PathBuf,
+    canonical: PathBuf,
+    stamp: FileStamp,
+    hash: String,
+    #[cfg(windows)]
+    identity: exor_fs::Identity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    size: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+    #[cfg(unix)]
+    identity: (u64, u64),
+}
+
+impl FileStamp {
+    fn of(meta: &Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            size: meta.len(),
+            modified: meta.modified().ok(),
+            created: meta.created().ok(),
+            #[cfg(unix)]
+            identity: (meta.dev(), meta.ino()),
+        }
+    }
+}
+
+impl ReviewedFile {
+    /// Original path used to restore this file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Hash shown by the recorded evidence and verified at review time.
+    pub fn hash(&self) -> &str {
+        &self.hash
+    }
+
+    /// Logical bytes checked in the proposal.
+    pub fn size(&self) -> u64 {
+        self.stamp.size
+    }
+}
+
+// Keep the read handle live from verification across the move. On Windows, refuse reparse
+// points at open and deny sharing for writers or deletion.
+fn open_plain(path: &Path) -> Result<File> {
+    let expected = plain(path, false)?.ok_or_else(|| blocked(path, "file is missing"))?;
+    #[cfg(windows)]
+    let file = exor_fs::open_locked(path, false).map_err(io_err(path))?;
+    #[cfg(not(windows))]
+    let file = File::open(path).map_err(io_err(path))?;
+    let actual = file.metadata().map_err(io_err(path))?;
+    if !actual.is_file() || is_link(&actual) || FileStamp::of(&expected) != FileStamp::of(&actual) {
+        return Err(blocked(path, "file changed while it was opened"));
+    }
+    Ok(file)
+}
+
+fn inspect_file(path: &Path, max_bytes: u64, cancel: &Cancel) -> Result<ReviewedFile> {
+    cancel.check()?;
+    local_path(path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| blocked(path, "missing parent"))?;
+    if !plain_dirs(parent)? {
+        return Err(blocked(parent, "file parent is missing"));
+    }
+    #[cfg(windows)]
+    let _parents = exor_fs::pin_parents(parent).map_err(io_err(parent))?;
+    let canonical = path.canonicalize().map_err(io_err(path))?;
+    let mut file = open_plain(path)?;
+    let stamp = FileStamp::of(&file.metadata().map_err(io_err(path))?);
+    if stamp.size > max_bytes {
+        return Err(blocked(
+            path,
+            "file exceeds the remaining review byte budget",
+        ));
+    }
+    let hash = hash_reader(
+        &mut (&mut file).take(stamp.size.saturating_add(1)),
+        path,
+        Some(cancel),
+    )?;
+    if stamp != FileStamp::of(&file.metadata().map_err(io_err(path))?)
+        || path.canonicalize().map_err(io_err(path))? != canonical
+        || !plain(path, false)?.is_some_and(|meta| FileStamp::of(&meta) == stamp)
+    {
+        return Err(blocked(path, "file changed during review"));
+    }
+    #[cfg(windows)]
+    let identity = exor_fs::identity(&file).map_err(io_err(path))?;
+    Ok(ReviewedFile {
+        path: path.to_path_buf(),
+        canonical,
+        stamp,
+        hash,
+        #[cfg(windows)]
+        identity,
+    })
+}
+
+/// Validate the active file against a bounded set of application roots and an optional recorded
+/// content fingerprint. This is separate from policy: a policy decision alone is never a plan.
+pub fn review_file(
+    path: &Path,
+    approved_roots: &[PathBuf],
+    protected: &Path,
+    evidence_hash: Option<&str>,
+    cancel: &Cancel,
+) -> Result<ReviewedFile> {
+    review_file_bounded(
+        path,
+        approved_roots,
+        protected,
+        evidence_hash,
+        u64::MAX,
+        cancel,
+    )
+}
+
+pub(crate) fn review_file_bounded(
+    path: &Path,
+    approved_roots: &[PathBuf],
+    protected: &Path,
+    evidence_hash: Option<&str>,
+    max_bytes: u64,
+    cancel: &Cancel,
+) -> Result<ReviewedFile> {
+    cancel.check()?;
+    local_path(path)?;
+    if !plain_dirs(
+        path.parent()
+            .ok_or_else(|| blocked(path, "missing parent"))?,
+    )? || plain(path, false)?.is_none()
+    {
+        return Err(blocked(path, "file or parent is not a plain existing path"));
+    }
+    let resolved = path.canonicalize().map_err(io_err(path))?;
+    let within = |root: &Path| resolved != root && resolved.starts_with(root);
+    let protected = protected.canonicalize().map_err(io_err(protected))?;
+    if within(&protected) {
+        return Err(blocked(path, "the application profile is not eligible"));
+    }
+    if !approved_roots.iter().any(|root| {
+        matches!(plain_dirs(root), Ok(true)) && root.canonicalize().is_ok_and(|r| within(&r))
+    }) {
+        return Err(blocked(path, "not under an approved application root"));
+    }
+    let item = inspect_file(path, max_bytes, cancel)?;
+    if item.canonical != resolved || evidence_hash.is_some_and(|hash| hash != item.hash) {
+        return Err(blocked(
+            path,
+            "file no longer matches its recorded evidence",
+        ));
+    }
+    #[cfg(windows)]
+    if item.identity.0 != exor_fs::directory_volume(&protected).map_err(io_err(&protected))? {
+        return Err(blocked(
+            path,
+            "the file and quarantine profile are on different volumes",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if item.stamp.identity.0 != fs::metadata(&protected).map_err(io_err(&protected))?.dev() {
+            return Err(blocked(
+                path,
+                "the file and quarantine profile are on different volumes",
+            ));
+        }
+    }
+    Ok(item)
+}
+
 /// Derive the manifest location from the configured root, never from the database.
 pub(crate) fn batch_path(root: &Path, id: &str) -> Result<PathBuf> {
     if !valid_id(id) {
@@ -249,9 +443,22 @@ fn root_and_id(path: &Path) -> Result<(&Path, &str)> {
 pub fn load_manifest(path: &Path) -> Result<QuarantineManifest> {
     let (root, id) = root_and_id(path)?;
     let path = batch_path(root, id)?;
-    let bytes = fs::read(&path).map_err(io_err(&path))?;
+    #[cfg(windows)]
+    let _dirs = exor_fs::pin_parents(path.parent().unwrap_or(root)).map_err(io_err(&path))?;
+    let mut bytes = Vec::new();
+    open_plain(&path)?
+        .take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_err(&path))?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(blocked(&path, "manifest exceeds its read limit"));
+    }
     let m: QuarantineManifest = serde_json::from_slice(&bytes)?;
-    if m.version != 1 || m.quarantine_id != id || m.items.is_empty() {
+    if m.version != 1
+        || m.quarantine_id != id
+        || m.items.is_empty()
+        || m.items.len() > MAX_MANIFEST_ITEMS
+    {
         return Err(blocked(
             &path,
             "unexpected manifest version, batch ID or item list",
@@ -287,6 +494,15 @@ fn write_manifest(path: &Path, m: &QuarantineManifest) -> Result<()> {
     let mut temp = path.to_path_buf();
     temp.set_file_name(format!("{}.tmp", next_name(now_ms())));
     let bytes = serde_json::to_vec(m)?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES || m.items.len() > MAX_MANIFEST_ITEMS {
+        return Err(blocked(path, "manifest exceeds its write limit"));
+    }
+    #[cfg(windows)]
+    let _dirs = exor_fs::pin_parents(
+        path.parent()
+            .ok_or_else(|| blocked(path, "missing batch folder"))?,
+    )
+    .map_err(io_err(path))?;
     let mut f = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -294,48 +510,111 @@ fn write_manifest(path: &Path, m: &QuarantineManifest) -> Result<()> {
         .map_err(io_err(&temp))?;
     let result = f.write_all(&bytes).and_then(|()| f.sync_all());
     drop(f);
+    #[cfg(windows)]
+    let result = result.and_then(|()| exor_fs::publish(&temp, path, true));
+    #[cfg(not(windows))]
     let result = result.and_then(|()| fs::rename(&temp, path));
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
-    result.map_err(io_err(path))
+    result.map_err(io_err(path))?;
+    if let Some(dir) = path.parent() {
+        sync_dir(dir)?;
+    }
+    Ok(())
 }
 
-/// Publish with no replacement. A hard link gives create-if-absent semantics and preserves
-/// the file on NTFS. Across volumes, verify a copy in a newly reserved scratch directory
-/// before publishing that copy with the same semantics. Filesystems without hard links fail
-/// closed. After a crash between publishing and unlinking, both copies may be present.
-fn move_file(src: &Path, dst: &Path, expected: &str) -> Result<()> {
-    if plain(src, false)?.is_none() || hash_file_blocking(src)? != expected {
+/// Move an exact file without replacement. On Windows use a handle-bound same-volume rename.
+#[cfg(windows)]
+fn move_file(
+    src: &Path,
+    dst: &Path,
+    expected: &str,
+    reviewed: Option<&ReviewedFile>,
+    cancel: Option<&Cancel>,
+) -> Result<()> {
+    let src_parent = src
+        .parent()
+        .ok_or_else(|| blocked(src, "missing source parent"))?;
+    let dst_parent = dst
+        .parent()
+        .ok_or_else(|| blocked(dst, "missing destination parent"))?;
+    let _source_dirs = exor_fs::pin_parents(src_parent).map_err(io_err(src_parent))?;
+    let _dest_dirs = exor_fs::pin_parents(dst_parent).map_err(io_err(dst_parent))?;
+    let mut input = exor_fs::open_locked(src, true).map_err(io_err(src))?;
+    let stamp = FileStamp::of(&input.metadata().map_err(io_err(src))?);
+    let identity = exor_fs::identity(&input).map_err(io_err(src))?;
+    if let Some(r) = reviewed
+        && (r.stamp != stamp
+            || r.identity != identity
+            || src.canonicalize().map_err(io_err(src))? != r.canonical)
+    {
+        return Err(blocked(src, "the reviewed file changed; rebuild the plan"));
+    }
+    if hash_reader(
+        &mut (&mut input).take(stamp.size.saturating_add(1)),
+        src,
+        cancel,
+    )? != expected
+    {
+        return Err(blocked(src, "file contents changed"));
+    }
+    let dest = dst_parent.canonicalize().map_err(io_err(dst_parent))?.join(
+        dst.file_name()
+            .ok_or_else(|| blocked(dst, "missing destination name"))?,
+    );
+    exor_fs::rename_open(&input, &dest).map_err(|e| {
+        if e.kind() == ErrorKind::CrossesDevices {
+            blocked(
+                src,
+                "cross-volume quarantine is disabled on Windows to preserve metadata and streams",
+            )
+        } else {
+            io_err(dst)(e)
+        }
+    })
+}
+
+/// Unix development fallback: publish a matching file without replacement, then unlink.
+#[cfg(not(windows))]
+fn move_file(
+    src: &Path,
+    dst: &Path,
+    expected: &str,
+    reviewed: Option<&ReviewedFile>,
+    cancel: Option<&Cancel>,
+) -> Result<()> {
+    let mut input = open_plain(src)?;
+    let actual = FileStamp::of(&input.metadata().map_err(io_err(src))?);
+    if reviewed.is_some_and(|r| {
+        r.stamp != actual || src.canonicalize().ok().as_ref() != Some(&r.canonical)
+    }) || hash_reader(
+        &mut (&mut input).take(actual.size.saturating_add(1)),
+        src,
+        cancel,
+    )? != expected
+        || !plain(src, false)?.is_some_and(|meta| FileStamp::of(&meta) == actual)
+    {
         return Err(blocked(src, "missing file or content changed"));
     }
+    // Fail closed across volumes on all platforms; the previous copy path could not retain all metadata.
     match fs::hard_link(src, dst) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::CrossesDevices => {
-            let dir = dst
-                .parent()
-                .ok_or_else(|| blocked(dst, "no destination directory"))?;
-            let scratch = dir.join(format!(".exor-copy-{}", next_name(now_ms())));
-            fs::create_dir(&scratch).map_err(io_err(&scratch))?;
-            let copy = scratch.join("copy");
-            let result = (|| {
-                fs::copy(src, &copy).map_err(io_err(&copy))?;
-                if hash_file_blocking(&copy)? != expected {
-                    return Err(blocked(&copy, "copy verification failed"));
-                }
-                fs::hard_link(&copy, dst).map_err(io_err(dst))
-            })();
-            let _ = fs::remove_file(&copy);
-            let _ = fs::remove_dir(&scratch);
-            result?;
+            return Err(blocked(src, "cross-volume quarantine is disabled"));
         }
         Err(e) => return Err(io_err(dst)(e)),
     }
+    if let Some(dir) = dst.parent() {
+        sync_dir(dir)?;
+    }
     if let Err(e) = fs::remove_file(src) {
-        // Keep the just-published copy if cleanup fails; recovery will report the conflict
-        // rather than deleting a copy or overwriting the original.
+        // The original still exists. If we cannot remove the duplicate, recovery reports it.
         let _ = fs::remove_file(dst);
         return Err(io_err(src)(e));
+    }
+    if let Some(dir) = src.parent() {
+        sync_dir(dir)?;
     }
     Ok(())
 }
@@ -346,6 +625,20 @@ pub(crate) fn stage_files(
     files: &[PathBuf],
     registry: &[RegistryExport],
 ) -> Result<(QuarantineManifest, PathBuf)> {
+    let inspected = files
+        .iter()
+        .map(|f| inspect_file(f, u64::MAX, &Cancel::new()))
+        .collect::<Result<Vec<_>>>()?;
+    stage_reviewed(root, &inspected, registry, &Cancel::new())
+}
+
+/// Verify every reviewed file again before staging, then compare the open handle before each move.
+pub(crate) fn stage_reviewed(
+    root: &Path,
+    files: &[ReviewedFile],
+    registry: &[RegistryExport],
+    cancel: &Cancel,
+) -> Result<(QuarantineManifest, PathBuf)> {
     if files.is_empty() && registry.is_empty() {
         return Err(blocked(root, "nothing to quarantine"));
     }
@@ -355,18 +648,21 @@ pub(crate) fn stage_files(
     plain_dirs(root)?;
     let mut items = Vec::new();
     let mut seen = BTreeSet::new();
-    for (i, f) in files.iter().enumerate() {
+    for (i, item) in files.iter().enumerate() {
+        let f = item.path();
         original_path(root, f)?;
+        if &inspect_file(f, item.size(), cancel)? != item {
+            return Err(blocked(f, "the reviewed file changed; rebuild the plan"));
+        }
         let path = f.to_str().ok_or_else(|| blocked(f, "invalid path text"))?;
         if !seen.insert(path_key(f)) {
             return Err(blocked(f, "duplicate quarantine candidate"));
         }
-        let meta = plain(f, false)?.ok_or_else(|| blocked(f, "file is missing"))?;
         items.push(QuarantineItem::File {
             original_path: path.into(),
             blob: i.to_string(),
-            size: meta.len(),
-            blake3: hash_file_blocking(f)?,
+            size: item.stamp.size,
+            blake3: item.hash.clone(),
         });
     }
     for r in registry {
@@ -381,6 +677,7 @@ pub(crate) fn stage_files(
     let blobs = dir.join("blobs");
     fs::create_dir(&dir).map_err(io_err(&dir))?;
     fs::create_dir(&blobs).map_err(io_err(&blobs))?;
+    sync_dir(root)?;
     let path = dir.join("manifest.json");
     let m = QuarantineManifest {
         version: 1,
@@ -390,7 +687,7 @@ pub(crate) fn stage_files(
         items,
     };
     write_manifest(&path, &m)?;
-    for item in &m.items {
+    for (i, item) in m.items.iter().enumerate() {
         if let QuarantineItem::File {
             original_path: source,
             blob,
@@ -399,9 +696,13 @@ pub(crate) fn stage_files(
         } = item
         {
             let src = Path::new(source);
-            if let Err(e) =
-                original_path(root, src).and_then(|()| move_file(src, &blobs.join(blob), blake3))
-            {
+            let moved = cancel
+                .check()
+                .and_then(|()| original_path(root, src))
+                .and_then(|()| {
+                    move_file(src, &blobs.join(blob), blake3, files.get(i), Some(cancel))
+                });
+            if let Err(e) = moved {
                 return Err(rollback_after(&path, &e));
             }
         }
@@ -448,14 +749,15 @@ fn verified(blob: &Path, expected: &str) -> Result<()> {
 
 fn pending_writes<'a>(
     path: &Path,
-    m: &'a QuarantineManifest,
+    items: &'a [QuarantineItem],
+    allow_already_restored: bool,
     rollback: bool,
 ) -> Result<Vec<(PathBuf, &'a Path, &'a str)>> {
     let (root, _) = root_and_id(path)?;
     let blobs = path.with_file_name("blobs");
     let mut pending = Vec::new();
     let mut conflict = None;
-    for item in &m.items {
+    for item in items {
         if let QuarantineItem::File {
             original_path: original,
             blob,
@@ -481,7 +783,7 @@ fn pending_writes<'a>(
                         ));
                     }
                     pending.push((src, dst, blake3.as_str()));
-                } else if exists {
+                } else if exists && allow_already_restored {
                     verified(dst, blake3)?;
                 } else {
                     return Err(blocked(&src, "missing blob and original"));
@@ -513,7 +815,7 @@ fn put_back(root: &Path, pending: Vec<(PathBuf, &Path, &str)>) -> Result<()> {
             .ok_or_else(|| blocked(dst, "missing parent directory"))?;
         fs::create_dir_all(parent).map_err(io_err(parent))?;
         original_path(root, dst)?;
-        move_file(&src, dst, hash)?;
+        move_file(&src, dst, hash, None, None)?;
     }
     Ok(())
 }
@@ -522,14 +824,22 @@ fn put_back(root: &Path, pending: Vec<(PathBuf, &Path, &str)>) -> Result<()> {
 /// originals that already went back, and the in-progress source files remain recoverable.
 pub fn restore(path: &Path) -> Result<QuarantineManifest> {
     let mut m = load_manifest(path)?;
-    if m.status != ManifestStatus::Quarantined {
+    if !matches!(
+        m.status,
+        ManifestStatus::Quarantined | ManifestStatus::Restoring
+    ) {
         return Err(blocked(
             path,
             &format!("cannot restore batch in state {:?}", m.status),
         ));
     }
     let (root, _) = root_and_id(path)?;
-    put_back(root, pending_writes(path, &m, false)?)?;
+    let pending = pending_writes(path, &m.items, m.status == ManifestStatus::Restoring, false)?;
+    if m.status != ManifestStatus::Restoring {
+        m.status = ManifestStatus::Restoring;
+        write_manifest(path, &m)?;
+    }
+    put_back(root, pending)?;
     m.status = ManifestStatus::Restored;
     write_manifest(path, &m)?;
     Ok(m)
@@ -541,7 +851,13 @@ pub(crate) fn batch_ids(root: &Path) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let mut ids = Vec::new();
-    for entry in fs::read_dir(root).map_err(io_err(root))? {
+    for (index, entry) in fs::read_dir(root).map_err(io_err(root))?.enumerate() {
+        if index >= 40_000 {
+            return Err(blocked(
+                root,
+                "too many quarantine directories to enumerate safely",
+            ));
+        }
         let entry = entry.map_err(io_err(root))?;
         if let Some(id) = entry.file_name().to_str().filter(|name| valid_id(name)) {
             ids.push(id.to_string());
@@ -573,33 +889,123 @@ pub fn recover(path: &Path) -> Result<QuarantineManifest> {
         ));
     }
     let (root, _) = root_and_id(path)?;
-    put_back(root, pending_writes(path, &m, true)?)?;
+    put_back(root, pending_writes(path, &m.items, true, true)?)?;
     m.status = ManifestStatus::RolledBack;
     write_manifest(path, &m)?;
     Ok(m)
 }
 
-/// Delete only this batch's listed, regular blobs. A retry can finish a partial purge.
+fn check_held(input: &mut File, src: &Path, size: u64, expected: &str) -> Result<()> {
+    if input.metadata().map_err(io_err(src))?.len() != size
+        || hash_reader(&mut input.take(size.saturating_add(1)), src, None)? != expected
+    {
+        return Err(blocked(src, "held bytes do not match the manifest"));
+    }
+    Ok(())
+}
+
+/// Before sealing a disk-only operation in SQLite, check that it actually finished.
+pub(crate) fn check_finished(path: &Path, m: &QuarantineManifest) -> Result<()> {
+    let blobs = path.with_file_name("blobs");
+    let (root, _) = root_and_id(path)?;
+    for item in &m.items {
+        if let QuarantineItem::File {
+            blob,
+            original_path: original,
+            size,
+            blake3,
+        } = item
+        {
+            let src = blobs.join(blob);
+            if plain(&src, false)?.is_some() {
+                return Err(blocked(
+                    &src,
+                    "finished manifest still has a held file; no evidence was changed",
+                ));
+            }
+            if m.status == ManifestStatus::Restored {
+                let dest = Path::new(original);
+                original_path(root, dest)?;
+                check_held(&mut open_plain(dest)?, dest, *size, blake3)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delete only verified, listed files. A retry can finish a partial purge, but a missing or
+/// changed blob in a fresh held batch blocks the entire delete before any bytes are removed.
 pub fn purge(path: &Path) -> Result<QuarantineManifest> {
+    purge_matching(path, false, None)
+}
+
+pub(crate) fn purge_matching(
+    path: &Path,
+    archive: bool,
+    expected: Option<&QuarantineManifest>,
+) -> Result<QuarantineManifest> {
     let mut m = load_manifest(path)?;
-    if m.status != ManifestStatus::Quarantined {
+    if !matches!(
+        m.status,
+        ManifestStatus::Quarantined | ManifestStatus::Purging
+    ) || expected.is_some_and(|record| *record != m)
+    {
         return Err(blocked(
             path,
-            &format!("cannot purge batch in state {:?}", m.status),
+            "batch changed or cannot be deleted in its current state",
         ));
     }
     let blobs = path.with_file_name("blobs");
     let mut pending = Vec::new();
     for item in &m.items {
-        if let QuarantineItem::File { blob, .. } = item {
+        if let QuarantineItem::File {
+            blob, size, blake3, ..
+        } = item
+        {
             let src = blobs.join(blob);
             if plain(&src, false)?.is_some() {
-                pending.push(src);
+                #[cfg(windows)]
+                let _dirs = exor_fs::pin_parents(&blobs).map_err(io_err(&blobs))?;
+                let mut input = open_plain(&src)?;
+                check_held(&mut input, &src, *size, blake3)?;
+                #[cfg(windows)]
+                if archive {
+                    exor_fs::single_data_stream(&input).map_err(io_err(&src))?;
+                }
+                pending.push((src, *size, blake3.clone()));
+            } else if m.status == ManifestStatus::Quarantined {
+                return Err(blocked(&src, "held file is missing; nothing was deleted"));
             }
         }
     }
-    for src in pending {
-        fs::remove_file(&src).map_err(io_err(&src))?;
+    if m.status != ManifestStatus::Purging {
+        m.status = ManifestStatus::Purging;
+        write_manifest(path, &m)?;
+    }
+    for (src, size, expected) in pending {
+        #[cfg(windows)]
+        {
+            let _dirs = exor_fs::pin_parents(&blobs).map_err(io_err(&blobs))?;
+            let mut input = exor_fs::open_locked(&src, true).map_err(io_err(&src))?;
+            exor_fs::identity(&input).map_err(io_err(&src))?;
+            if archive {
+                exor_fs::single_data_stream(&input).map_err(io_err(&src))?;
+            }
+            check_held(&mut input, &src, size, &expected)?;
+            exor_fs::delete_open(&input).map_err(io_err(&src))?;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = archive;
+            if !plain_dirs(&blobs)? {
+                return Err(blocked(&blobs, "held folder disappeared"));
+            }
+            check_held(&mut open_plain(&src)?, &src, size, &expected)?;
+            fs::remove_file(&src).map_err(io_err(&src))?;
+        }
+    }
+    if blobs.is_dir() {
+        sync_dir(&blobs)?;
     }
     // Remove only an empty directory; unexpected entries are not purge targets.
     let _ = fs::remove_dir(&blobs);
@@ -695,8 +1101,10 @@ mod tests {
     fn restore_resumes_after_a_partial_restore() {
         let (d, a, b) = setup();
         let q = d.path().join("q");
-        let (_, mp) = quarantine(&q, &[a.clone(), b.clone()], &[]).unwrap();
-        // an earlier restore got one file back, then died before finishing
+        let (mut manifest, mp) = quarantine(&q, &[a.clone(), b.clone()], &[]).unwrap();
+        manifest.status = ManifestStatus::Restoring;
+        write_manifest(&mp, &manifest).unwrap();
+        // an earlier restore persisted intent and got one file back, then stopped
         std::fs::rename(mp.parent().unwrap().join("blobs").join("0"), &a).unwrap();
         let m = restore(&mp).unwrap();
         assert_eq!(m.status, ManifestStatus::Restored);
@@ -769,24 +1177,23 @@ mod tests {
     fn moving_cannot_replace_an_existing_destination() {
         let (_d, a, b) = setup();
         let hash = hash_file_blocking(&a).unwrap();
-        assert!(move_file(&a, &b, &hash).is_err());
+        assert!(move_file(&a, &b, &hash, None, None).is_err());
         assert_eq!(fs::read(&a).unwrap(), b"aaa");
         assert_eq!(fs::read(&b).unwrap(), b"bbbb");
     }
 
-    /// A quarantine folder on another filesystem forces the copy + verify + delete path.
+    /// Cross-filesystem movement fails closed rather than copying only the default stream.
     #[cfg(target_os = "linux")]
     #[test]
-    fn cross_filesystem_quarantine_and_restore() {
+    fn cross_filesystem_quarantine_leaves_originals_alone() {
         let shm = Path::new("/dev/shm");
         if !shm.is_dir() {
             return;
         }
         let (d, a, b) = setup();
         let q = tempfile::tempdir_in(shm).unwrap();
-        let (_, mp) = quarantine(q.path(), &[a.clone(), b.clone()], &[]).unwrap();
-        assert!(!a.exists() && !b.exists());
-        restore(&mp).unwrap();
+        assert!(quarantine(q.path(), &[a.clone(), b.clone()], &[]).is_err());
+        assert!(find_incomplete(q.path()).unwrap().is_empty());
         assert_eq!(std::fs::read(&a).unwrap(), b"aaa");
         assert_eq!(std::fs::read(&b).unwrap(), b"bbbb");
         drop(d);

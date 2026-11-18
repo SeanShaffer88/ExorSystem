@@ -192,6 +192,24 @@ pub fn close(app: &AppHandle) {
     });
 }
 
+#[derive(Serialize)]
+pub struct LogStatus {
+    cleared_through: u64,
+    last: Option<LogLine>,
+}
+
+#[tauri::command]
+pub fn log_status(dock: tauri::State<'_, Dock>) -> Result<LogStatus, String> {
+    let buffer = dock
+        .buffer
+        .lock()
+        .map_err(|_| "could not read the activity log")?;
+    Ok(LogStatus {
+        cleared_through: buffer.cleared_through,
+        last: buffer.lines.back().cloned(),
+    })
+}
+
 #[tauri::command]
 pub fn get_log(dock: tauri::State<'_, Dock>) -> Result<LogSnapshot, String> {
     let buffer = dock

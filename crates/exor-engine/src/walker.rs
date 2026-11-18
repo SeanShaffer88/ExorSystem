@@ -1,11 +1,9 @@
-//! Non-blocking, parallel, level-by-level recursive directory enumeration on `tokio::fs`.
+//! Cancellable, budgeted filesystem enumeration on a single blocking worker.
 
 use crate::cancel::Cancel;
 use crate::error::{EngineError, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 
 /// Entry kind. Symlinks and special files are never followed or recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -32,8 +30,10 @@ pub struct Entry {
 /// Walk tuning.
 #[derive(Debug, Clone)]
 pub struct WalkOptions {
-    /// Max directories read concurrently.
-    pub max_concurrency: usize,
+    /// Maximum filesystem entries inspected, including exclusions and redirects.
+    pub max_entries: usize,
+    /// Maximum bytes retained in path names (conservative text bound).
+    pub max_path_bytes: usize,
     /// Case-insensitive path substrings (with `\` normalised to `/`) to skip entirely.
     pub exclude_contains: Vec<String>,
 }
@@ -41,7 +41,8 @@ pub struct WalkOptions {
 impl Default for WalkOptions {
     fn default() -> Self {
         Self {
-            max_concurrency: 16,
+            max_entries: 24_000,
+            max_path_bytes: 8 * 1024 * 1024,
             exclude_contains: Vec::new(),
         }
     }
@@ -54,114 +55,157 @@ pub struct Walk {
     pub entries: Vec<Entry>,
     /// Directories/files that could not be read, with the reason.
     pub skipped: Vec<(PathBuf, String)>,
+    /// Total path bytes charged against the budget.
+    pub path_bytes: usize,
 }
 
 fn norm(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/").to_lowercase()
 }
 
-fn mtime_ns(md: &std::fs::Metadata) -> i64 {
+pub(crate) fn mtime_ns(md: &std::fs::Metadata) -> i64 {
     md.modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
 }
 
-struct DirResult {
-    entries: Vec<Entry>,
-    subdirs: Vec<PathBuf>,
-    skipped: Vec<(PathBuf, String)>,
-}
-
-async fn read_one(dir: PathBuf, excl: Arc<Vec<String>>) -> DirResult {
-    let mut out = DirResult {
-        entries: Vec::new(),
-        subdirs: Vec::new(),
-        skipped: Vec::new(),
-    };
-    let mut rd = match tokio::fs::read_dir(&dir).await {
-        Ok(r) => r,
-        Err(e) => {
-            out.skipped.push((dir, e.to_string()));
-            return out;
-        }
-    };
-    loop {
-        let de = match rd.next_entry().await {
-            Ok(Some(de)) => de,
-            Ok(None) => break,
-            Err(e) => {
-                out.skipped.push((dir.clone(), e.to_string()));
-                break;
-            }
-        };
-        let path = de.path();
-        if !excl.is_empty() {
-            let n = norm(&path);
-            if excl.iter().any(|x| n.contains(x.as_str())) {
-                continue;
-            }
-        }
-        // symlink_metadata: never follow links (avoids loops and escaping the root)
-        let md = match tokio::fs::symlink_metadata(&path).await {
-            Ok(m) => m,
-            Err(e) => {
-                out.skipped.push((path, e.to_string()));
-                continue;
-            }
-        };
-        let ft = md.file_type();
-        if ft.is_dir() {
-            out.entries.push(Entry {
-                path: path.clone(),
-                kind: EntryKind::Dir,
-                size: 0,
-                mtime_ns: mtime_ns(&md),
-            });
-            out.subdirs.push(path);
-        } else if ft.is_file() {
-            out.entries.push(Entry {
-                path,
-                kind: EntryKind::File,
-                size: md.len(),
-                mtime_ns: mtime_ns(&md),
-            });
-        }
+pub(crate) fn redirected(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & 0x400 != 0
     }
-    out
+    #[cfg(not(windows))]
+    meta.is_symlink()
 }
 
-/// Enumerate everything below `root`, reading up to `max_concurrency` directories in parallel.
-pub async fn walk(root: &Path, opts: &WalkOptions, cancel: &Cancel) -> Result<Walk> {
-    let excl: Arc<Vec<String>> = Arc::new(
-        opts.exclude_contains
-            .iter()
-            .map(|s| s.replace('\\', "/").to_lowercase())
-            .collect(),
-    );
-    let sem = Arc::new(Semaphore::new(opts.max_concurrency.max(1)));
+fn limit(root: &Path, detail: &str) -> EngineError {
+    EngineError::Watch(format!(
+        "{}: {detail} exceeded the capture budget. Choose a smaller scope.",
+        root.display()
+    ))
+}
+
+fn walk_blocking(
+    root: &Path,
+    opts: &WalkOptions,
+    cancel: &Cancel,
+    progress: &dyn Fn(u64),
+) -> Result<Walk> {
+    let excl: Vec<_> = opts
+        .exclude_contains
+        .iter()
+        .map(|s| s.replace('\\', "/").to_lowercase())
+        .collect();
+    let mut pending = vec![(root.to_path_buf(), 0)];
     let mut result = Walk::default();
-    let mut level = vec![root.to_path_buf()];
-    while !level.is_empty() {
+    let mut inspected = 0_usize;
+    let mut files = 0_u64;
+    let mut last = std::time::Instant::now();
+    while let Some((dir, depth)) = pending.pop() {
         cancel.check()?;
-        let mut set = JoinSet::new();
-        for dir in level.drain(..) {
-            let sem = Arc::clone(&sem);
-            let excl = Arc::clone(&excl);
-            set.spawn(async move {
-                let _permit = sem.acquire_owned().await;
-                read_one(dir, excl).await
-            });
+        if depth > 64 {
+            return Err(limit(root, "Directory depth"));
         }
-        let mut next = Vec::new();
-        while let Some(joined) = set.join_next().await {
-            let r = joined.map_err(EngineError::from)?;
-            result.entries.extend(r.entries);
-            result.skipped.extend(r.skipped);
-            next.extend(r.subdirs);
+        // Recheck ancestors rather than descending a redirect discovered after enumeration.
+        if let Err(e) = crate::quarantine::plain_dirs(&dir).and_then(|plain| {
+            if plain {
+                Ok(())
+            } else {
+                Err(EngineError::Watch(
+                    "directory disappeared during capture".into(),
+                ))
+            }
+        }) {
+            result.skipped.push((dir, e.to_string()));
+            continue;
         }
-        level = next;
+        let reader = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(e) => {
+                result.skipped.push((dir, e.to_string()));
+                continue;
+            }
+        };
+        for entry in reader {
+            cancel.check()?;
+            inspected += 1;
+            if inspected > opts.max_entries {
+                return Err(limit(root, "Entry count"));
+            }
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    result.skipped.push((dir.clone(), e.to_string()));
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let Some(text) = path.to_str() else {
+                result
+                    .skipped
+                    .push((path, "not a representable path".into()));
+                continue;
+            };
+            if text.len() > 4_096 {
+                return Err(limit(root, "Individual path length"));
+            }
+            result.path_bytes = result.path_bytes.saturating_add(text.len());
+            if result.path_bytes > opts.max_path_bytes {
+                return Err(limit(root, "Path storage"));
+            }
+            if !excl.is_empty() && excl.iter().any(|x| norm(&path).contains(x.as_str())) {
+                continue;
+            }
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    result.skipped.push((path, e.to_string()));
+                    continue;
+                }
+            };
+            if redirected(&meta) {
+                continue;
+            }
+            if meta.is_dir() {
+                pending.push((path.clone(), depth + 1));
+                result.entries.push(Entry {
+                    path,
+                    kind: EntryKind::Dir,
+                    size: 0,
+                    mtime_ns: mtime_ns(&meta),
+                });
+            } else if meta.is_file() {
+                result.entries.push(Entry {
+                    path,
+                    kind: EntryKind::File,
+                    size: meta.len(),
+                    mtime_ns: mtime_ns(&meta),
+                });
+                files += 1;
+            }
+            if last.elapsed() >= std::time::Duration::from_millis(125) {
+                progress(files);
+                last = std::time::Instant::now();
+            }
+        }
     }
-    result.entries.sort_by(|a, b| a.path.cmp(&b.path));
+    result.entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     Ok(result)
+}
+
+/// Walk `root` without following redirects. Exceeding a budget makes the whole scope incomplete.
+pub async fn walk(root: &Path, opts: &WalkOptions, cancel: &Cancel) -> Result<Walk> {
+    walk_progress(root, opts, cancel, Arc::new(|_| {})).await
+}
+
+pub(crate) async fn walk_progress(
+    root: &Path,
+    opts: &WalkOptions,
+    cancel: &Cancel,
+    progress: Arc<dyn Fn(u64) + Send + Sync>,
+) -> Result<Walk> {
+    let (root, opts, cancel) = (root.to_path_buf(), opts.clone(), cancel.clone());
+    tokio::task::spawn_blocking(move || walk_blocking(&root, &opts, &cancel, &*progress)).await?
 }

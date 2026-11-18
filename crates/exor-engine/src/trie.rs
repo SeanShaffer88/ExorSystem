@@ -2,7 +2,7 @@
 //!
 //! Every node stores a digest of its own state plus its children, so identical
 //! subtrees are skipped in O(1) during [`diff`]. Path components are compared
-//! case-insensitively (Windows semantics) on every platform.
+//! case-insensitively by default, with a strict, spelling-preserving mode.
 
 use crate::walker::EntryKind;
 use std::collections::BTreeMap;
@@ -77,12 +77,19 @@ pub struct PathTrie {
     root: TrieNode,
     len: usize,
     finalized: bool,
+    strict: bool,
 }
 
-fn components(path: &str) -> impl Iterator<Item = String> + '_ {
-    path.split(['\\', '/'])
+fn components(path: &str, strict: bool) -> impl Iterator<Item = String> + '_ {
+    path.split(move |ch| ch == '/' || (ch == '\\' && (!strict || cfg!(windows))))
         .filter(|c| !c.is_empty())
-        .map(str::to_lowercase)
+        .map(move |part| {
+            if strict {
+                part.to_owned()
+            } else {
+                part.to_lowercase()
+            }
+        })
 }
 
 impl PathTrie {
@@ -91,10 +98,18 @@ impl PathTrie {
         Self::default()
     }
 
+    /// Preserve case-only siblings rather than folding their path keys.
+    pub fn new_strict() -> Self {
+        Self {
+            strict: true,
+            ..Self::default()
+        }
+    }
+
     /// Insert or replace a state. Call [`PathTrie::finalize`] before diffing.
     pub fn insert(&mut self, state: FileState) {
         let mut node = &mut self.root;
-        for c in components(&state.path) {
+        for c in components(&state.path, self.strict) {
             node = node.children.entry(c).or_default();
         }
         if node.state.is_none() {
@@ -107,7 +122,7 @@ impl PathTrie {
     /// Look up a path.
     pub fn get(&self, path: &str) -> Option<&FileState> {
         let mut node = &self.root;
-        for c in components(path) {
+        for c in components(path, self.strict) {
             node = node.children.get(&c)?;
         }
         node.state.as_ref()

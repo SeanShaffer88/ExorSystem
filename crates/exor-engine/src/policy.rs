@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::jsonlogic::{apply, truthy};
-use exor_storage::{Node, NodeType, PolicyAction, PolicyRule, RelationshipType, Store};
+use exor_storage::{Node, NodeType, PolicyAction, PolicyRule, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -120,24 +120,7 @@ pub fn simulate(rules: &[PolicyRule], candidates: &[Candidate]) -> Result<Simula
 }
 
 pub(crate) fn candidate_from_node(store: &Store, n: &Node) -> Result<Candidate> {
-    let origins = store.edges_as_child(n.node_id)?;
-    let confidence = origins
-        .iter()
-        .filter(|e| e.relationship_type == RelationshipType::CreatedBy)
-        .map(|e| e.confidence_score)
-        .fold(0.3_f64, f64::max);
-    let impact = store.shared_component_impact(n.node_id)?;
-    let has_shared_edge = origins
-        .iter()
-        .any(|e| e.relationship_type == RelationshipType::SharedWith)
-        || store
-            .edges_as_parent(n.node_id)?
-            .iter()
-            .any(|e| e.relationship_type == RelationshipType::SharedWith);
-    let used_elsewhere = impact
-        .dependents
-        .iter()
-        .any(|d| d.first_detected_in != n.first_detected_in);
+    let (confidence, shared, dependents) = store.policy_metrics(n.node_id, n.first_detected_in)?;
     let ext = n
         .path
         .rsplit_once('.')
@@ -145,8 +128,8 @@ pub(crate) fn candidate_from_node(store: &Store, n: &Node) -> Result<Candidate> 
         .unwrap_or_default();
     let attrs = json!({
         "confidence": confidence,
-        "shared": has_shared_edge || used_elsewhere,
-        "dependents": impact.dependents.len(),
+        "shared": shared,
+        "dependents": dependents,
         "session_id": n.first_detected_in,
         "has_hash": n.hash.is_some(),
         "ext": ext,
@@ -163,6 +146,41 @@ pub(crate) fn candidate_from_node(store: &Store, n: &Node) -> Result<Candidate> 
         node_type: n.node_type,
         attrs,
     })
+}
+
+/// Simulate one bounded page of stored nodes, using the same policy context as cleanup review.
+pub fn simulate_nodes(
+    store: &Store,
+    rules: &[PolicyRule],
+    nodes: &[Node],
+) -> Result<SimulationReport> {
+    let candidates = nodes
+        .iter()
+        .map(|n| candidate_from_node(store, n))
+        .collect::<Result<Vec<_>>>()?;
+    simulate(rules, &candidates)
+}
+
+/// Return `None` rather than quietly using a partial evidence set when the budget is exceeded.
+pub fn bounded_candidates(
+    store: &Store,
+    session_id: i64,
+    max: usize,
+) -> Result<Option<Vec<Candidate>>> {
+    let mut out = Vec::new();
+    loop {
+        let page = store.session_nodes_page(session_id, None, out.len(), 100)?;
+        if usize::try_from(page.total).unwrap_or(usize::MAX) > max {
+            return Ok(None);
+        }
+        if page.nodes.is_empty() {
+            break;
+        }
+        for node in &page.nodes {
+            out.push(candidate_from_node(store, node)?);
+        }
+    }
+    Ok(Some(out))
 }
 
 /// Build candidates for every node first detected in `session_id`.

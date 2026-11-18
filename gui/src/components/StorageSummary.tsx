@@ -29,7 +29,7 @@ export function StorageSummary({ rows, action }: { rows: QuarantineRow[]; action
     return share > 0 ? <circle key={s.label} className={`storage-arc tone-${s.tone}`} cx="60" cy="60" r="49" pathLength="100" strokeDasharray={`${share} ${100 - share}`} strokeDashoffset={-start}/> : null;
   });
   return <section className="card storage-card" aria-label="Storage reclamation">
-    <CardHeading title="Storage reclamation" subtitle="Recorded file sizes by batch outcome" action={action}/>
+    <CardHeading title="Storage reclamation" subtitle="Recorded sizes by batch outcome · displayed batches" action={action}/>
     {rows.length ? <div className="storage-content">
       <div className="storage-ring">
         <svg aria-hidden="true" viewBox="0 0 120 120"><circle className="storage-track" cx="60" cy="60" r="49"/>{ring}</svg>

@@ -24,7 +24,7 @@ export function BatchReview({ row, state, reviewRestore, onClose, onReviewRestor
   const batch = current?.data;
   const created = batch ? new Date(batch.created_unix_ms) : null;
   const nextOffset = batch?.next_offset ?? null;
-  const held = row.status === "quarantined" && batch?.status === "quarantined" && batch.total_files > 0;
+  const held = (row.status === "quarantined" || row.status === "restoring") && batch?.status === row.status && batch.total_files > 0;
 
   return <section className="card tool-card batch-review" aria-labelledby="batch-review-title" onKeyDown={(event) => {
     if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onClose(); }

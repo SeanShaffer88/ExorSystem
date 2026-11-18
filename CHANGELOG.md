@@ -7,13 +7,17 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 ### Added
 - Change inspector and installation reports show saved Watch coverage, including scopes compared with zero changes and scopes skipped or not requested. Older sessions do not gain assumed coverage.
 - Save local Watch scope presets and reopen the six most recent saved comparisons, including zero-change and coverage-only results.
-- Filter the Change inspector by change type and export up to 1,000 matching observations to a new JSON file in Documents.
+- Filter the Change inspector by change type and UTC date range. Save matching observations to new JSON files in Documents, up to 1,000 per part, with a continuation for older matches.
+- Prepare cancellable, paged file cleanup plans and approve the exact included paths before moving them. Similar-name matches and registry, service, and task observations are review-only.
+- Measure profile storage, make a verified backup, restore to a separate copy, or rotate a held batch only after verifying the exact archive.
+- Use optional native file and folder pickers, strict content comparison in Watch, and actual file work counts in progress displays.
 - Sort Applications by name or reported size and search or page through all recorded items for a linked session.
 - Preview quarantine batches from their recorded manifests and review original destinations before confirming restore.
 
 ### Changed
 - Activity log opens as a separate window below the Windows workspace. Closing it returns the reserved space to a maximized main window.
-- The local profile upgrades to schema v4, backing up the existing v3 database before upgrading. Watch saves coverage and observations without storing full snapshots or registry values.
+- The local profile upgrades to schema v5 with a pre-migration SQLite copy, paged quarantine indexes, pending batch operations, and explicit session-to-registration links. Watch retains coverage and observations without storing full snapshots or registry values.
+- Moving held files requires a same-volume rename on Windows; a different volume is refused rather than copying a subset of the file. The Activity log and main workspace have separate IPC grants.
 
 ### Fixed
 - Selected application details stay reachable in short and narrow docks, including long registration paths and recorded evidence.

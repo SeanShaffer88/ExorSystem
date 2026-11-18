@@ -18,11 +18,15 @@
 | Live USN/registry port, kernel driver, WDK, signing | Not run | Windows user-mode sources and standalone lab probe are built/type-checked; real capture, driver build/load, assigned altitude and production signing have no evidence. Nothing is enabled or packaged by default. |
 | Windows 10/11 accessibility, DPI and log-window docking | Not run | Empty [client evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md); no Narrator, high-contrast, or multi-monitor test results. |
 
+## Unreleased audit-remediation work
+
+See [the remediation verification matrix](docs/AUDIT-REMEDIATION.md) for the new controls, local checks, and the still-open native release gates. The table above is historical baseline evidence.
+
 ## v0.2.0 automated evidence
 
 [Linux/Windows Rust and GUI/Tauri CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786809) and the [Windows Server candidate workflow](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786871) passed for `c3aa8c0c0c2d8ac20d107f62b91c38b5eb67b142`. The candidate workflow exercised the disposable fixture and inspected the NSIS, MSI and portable ZIP, including their SHA-256 hashes and package metadata. It did **not** install or launch the packages on Windows 10/11. The [promotion run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44284479160) verified and published the retained packages without rebuilding. Driver verification remains separate.
 
-## Limits that affect release decisions
+## Baseline limits that affect release decisions
 
 - The desktop never requests elevation. Windows Settings handles per-user uninstall and commands that cannot run safely without elevation. Some system files, tasks, services or registry scopes will be inaccessible to a normal account; incomplete probes are not evidence of absence.
 - Quarantine is recoverable file handling, not a complete backup. No-overwrite applies to restore and rollback. Batch paths are checked again before filesystem work; these path checks and the profile lock do not protect against arbitrary modification by another process running as the same Windows user. Moves require a filesystem with hard links; the cross-volume copy verifies the default data stream. Conflicts and corrupt entries keep their held files for review. Real power loss and Windows cross-volume/long-path behavior are still unverified.
@@ -32,4 +36,4 @@
 
 ## Optional native Windows testing
 
-Stable publishing requires CI and exact-artifact verification, not a native client sign-off. When running the optional tests, use the [Windows runbook](docs/WINDOWS-RELEASE.md) and attach an [evidence record](docs/WINDOWS-RELEASE-EVIDENCE.md) for the exact candidate, naming each OS build and package hash. Verify actual Windows 10/11 startup, installation/upgrade/removal, Watch and History, cleanup drills, and accessibility. Keep [driver WDK/load, altitude and signing](docs/LIVE-COLLECTION.md#distribution-gates-open) separate.
+Stable publishing currently requires CI and exact-artifact verification, not a native client sign-off. The [remediation matrix](docs/AUDIT-REMEDIATION.md) lists additional Windows checks to run for the new code. When running the optional tests, use the [Windows runbook](docs/WINDOWS-RELEASE.md) and attach an [evidence record](docs/WINDOWS-RELEASE-EVIDENCE.md) for the exact candidate, naming each OS build and package hash. Verify actual Windows 10/11 startup, installation/upgrade/removal, Watch and History, cleanup drills, and accessibility. Keep [driver WDK/load, altitude and signing](docs/LIVE-COLLECTION.md#distribution-gates-open) separate.

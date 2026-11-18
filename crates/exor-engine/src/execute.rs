@@ -4,14 +4,14 @@
 //! SQLite, then finalize the manifest. Startup uses the presence of a matching database
 //! record to distinguish finishing a commit from rolling an uncommitted batch back.
 
+use crate::Cancel;
 use crate::error::{EngineError, Result};
 use crate::policy::SimulationReport;
-use crate::quarantine::{self, ManifestStatus, QuarantineItem, QuarantineManifest};
+use crate::quarantine::{self, ManifestStatus, QuarantineItem, QuarantineManifest, ReviewedFile};
 use exor_storage::{
-    ChangeKind, ChangeSource, NewLedgerEntry, NodeType, PolicyAction, QuarantineRecord,
-    QuarantineStatus, Store,
+    ChangeKind, ChangeSource, NewLedgerEntry, NodeType, PolicyAction, QuarantineOperation,
+    QuarantineRecord, QuarantineStatus, Store,
 };
-use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 /// Outcome of [`quarantine_decided`].
@@ -117,7 +117,28 @@ pub(crate) fn record_files(
     session_id: Option<i64>,
     files: &[PathBuf],
 ) -> Result<(QuarantineManifest, PathBuf)> {
-    let (mut m, path) = quarantine::stage_files(root, files, &[])?;
+    let (m, path) = quarantine::stage_files(root, files, &[])?;
+    complete_stage(store, session_id, m, path)
+}
+
+/// Apply an approved, exact file plan. All candidates are revalidated before the first move.
+pub fn record_reviewed(
+    store: &Store,
+    root: &Path,
+    session_id: Option<i64>,
+    files: &[ReviewedFile],
+    cancel: &Cancel,
+) -> Result<(QuarantineManifest, PathBuf)> {
+    let (m, path) = quarantine::stage_reviewed(root, files, &[], cancel)?;
+    complete_stage(store, session_id, m, path)
+}
+
+fn complete_stage(
+    store: &Store,
+    session_id: Option<i64>,
+    mut m: QuarantineManifest,
+    path: PathBuf,
+) -> Result<(QuarantineManifest, PathBuf)> {
     if let Err(e) = commit_record(store, session_id, &m, &path) {
         return Err(quarantine::rollback_after(&path, &e));
     }
@@ -159,72 +180,32 @@ fn checked_batch(
     Ok((rec, m, path))
 }
 
-/// Original path and logical file size from the recorded manifest, not a live file probe.
-#[derive(Debug, Serialize)]
-pub struct BatchFile {
-    /// Where the file originally lived.
-    pub original_path: String,
-    /// Logical bytes at move time.
-    pub size: u64,
-}
-
-/// One page of the local database's batch record. No quarantined blobs are read or modified.
-#[derive(Debug, Serialize)]
-pub struct BatchPreview {
-    /// Database lifecycle state (not a live restore eligibility check).
-    pub status: QuarantineStatus,
-    /// Creation time stored in the manifest.
-    pub created_unix_ms: u64,
-    /// Number of files recorded in the batch.
-    pub total_files: usize,
-    /// Requested page of recorded file paths and lengths; no registry export data.
-    pub files: Vec<BatchFile>,
-    /// Offset of the next page if another exists.
-    pub next_offset: Option<usize>,
-}
-
-/// Inspect the manifest copy in SQLite. Do not resolve, validate against disk or finalize the
-/// active manifest here; only the restore and purge commands may perform those operations.
-pub fn preview_batch(store: &Store, id: &str, offset: usize) -> Result<BatchPreview> {
-    const PAGE_SIZE: usize = 24;
+/// Verify a disk manifest matches its committed database record, without repair or mutation.
+pub fn verified_held_manifest(store: &Store, root: &Path, id: &str) -> Result<QuarantineManifest> {
+    let path = quarantine::batch_path(root, id)?;
+    let manifest = quarantine::load_manifest(&path)?;
     let record = store
         .quarantine_record(id)?
-        .ok_or_else(|| EngineError::Quarantine("unknown quarantine batch".into()))?;
-    let manifest: QuarantineManifest = serde_json::from_str(&record.manifest_json)?;
-    if manifest.quarantine_id != record.quarantine_id || manifest.version != 1 {
+        .ok_or_else(|| EngineError::Quarantine("Held batch has no database record".into()))?;
+    check_record(&record, &manifest)?;
+    if manifest.status != ManifestStatus::Quarantined
+        || record.status != QuarantineStatus::Quarantined
+        || store.quarantine_operation(id)?.is_some()
+    {
         return Err(EngineError::Quarantine(
-            "unsupported or mismatched recorded manifest".into(),
+            "Held batch needs reconciliation before backup".into(),
         ));
     }
-    let total_files = manifest
-        .items
-        .iter()
-        .filter(|item| matches!(item, QuarantineItem::File { .. }))
-        .count();
-    let files = manifest
-        .items
-        .into_iter()
-        .filter_map(|item| match item {
-            QuarantineItem::File {
-                original_path,
-                size,
-                ..
-            } => Some(BatchFile {
-                original_path,
-                size,
-            }),
-            QuarantineItem::Registry { .. } => None,
-        })
-        .skip(offset)
-        .take(PAGE_SIZE)
-        .collect::<Vec<_>>();
-    let next = offset.saturating_add(files.len());
-    Ok(BatchPreview {
-        status: record.status,
-        created_unix_ms: manifest.created_unix_ms,
-        total_files,
-        files,
-        next_offset: (next < total_files).then_some(next),
+    Ok(manifest)
+}
+
+/// Indexed quarantine preview. The page represents recorded paths, never live restore eligibility.
+pub type BatchPreview = exor_storage::BatchIndexPage;
+
+/// Inspect one indexed page without opening or re-parsing the manifest and without touching disk.
+pub fn preview_batch(store: &Store, id: &str, offset: usize) -> Result<BatchPreview> {
+    store.batch_index_page(id, offset, 24)?.ok_or_else(|| {
+        EngineError::Quarantine("unknown quarantine batch or unreadable manifest index".into())
     })
 }
 
@@ -240,7 +221,18 @@ pub fn restore_by_id(store: &Store, root: &Path, id: &str) -> Result<QuarantineM
     if rec.status != QuarantineStatus::Restored {
         let entries = ledger(store, rec.session_id, &m, true)?;
         if m.status != ManifestStatus::Restored {
-            m = quarantine::restore(&path)?;
+            if !matches!(
+                m.status,
+                ManifestStatus::Quarantined | ManifestStatus::Restoring
+            ) {
+                return Err(EngineError::Quarantine(
+                    "this batch is not eligible for restore".into(),
+                ));
+            }
+            store.begin_quarantine_operation(id, QuarantineOperation::Restoring)?;
+            m = finish_or_report(store, id, &path, quarantine::restore(&path))?;
+        } else {
+            quarantine::check_finished(&path, &m)?;
         }
         store.set_quarantine_status_with_ledger(id, QuarantineStatus::Restored, &entries)?;
     }
@@ -249,19 +241,71 @@ pub fn restore_by_id(store: &Store, root: &Path, id: &str) -> Result<QuarantineM
 
 /// Permanently delete a named batch's blobs. The manifest stays as evidence.
 pub fn purge_by_id(store: &Store, root: &Path, id: &str) -> Result<QuarantineManifest> {
+    purge_checked(store, root, id, None)
+}
+
+/// Rotate only a matching held batch with a verified archive. The current bytes are checked
+/// again, and named streams cannot be discarded by a byte-only archival rotation.
+pub fn rotate_by_id(
+    store: &Store,
+    root: &Path,
+    id: &str,
+    archive: &Path,
+) -> Result<QuarantineManifest> {
+    let verified = crate::backup::verify_archived_manifest(store, root, archive, id)?;
+    purge_checked(store, root, id, Some(&verified))
+}
+
+fn purge_checked(
+    store: &Store,
+    root: &Path,
+    id: &str,
+    archived: Option<&QuarantineManifest>,
+) -> Result<QuarantineManifest> {
     let (rec, mut m, path) = checked_batch(store, root, id)?;
-    if rec.status == QuarantineStatus::Restored {
+    if rec.status == QuarantineStatus::Restored || archived.is_some_and(|verified| *verified != m) {
         return Err(EngineError::Quarantine(
-            "cannot purge a restored batch".into(),
+            "cannot purge a restored or changed batch".into(),
         ));
     }
     if rec.status != QuarantineStatus::Purged {
         if m.status != ManifestStatus::Purged {
-            m = quarantine::purge(&path)?;
+            if !matches!(
+                m.status,
+                ManifestStatus::Quarantined | ManifestStatus::Purging
+            ) {
+                return Err(EngineError::Quarantine(
+                    "this batch is not eligible for purge".into(),
+                ));
+            }
+            store.begin_quarantine_operation(id, QuarantineOperation::Purging)?;
+            m = finish_or_report(
+                store,
+                id,
+                &path,
+                quarantine::purge_matching(&path, archived.is_some(), Some(&m)),
+            )?;
+        } else {
+            quarantine::check_finished(&path, &m)?;
         }
         store.set_quarantine_status(id, QuarantineStatus::Purged)?;
     }
     Ok(m)
+}
+
+fn finish_or_report(
+    store: &Store,
+    id: &str,
+    path: &Path,
+    outcome: Result<QuarantineManifest>,
+) -> Result<QuarantineManifest> {
+    if outcome.is_err()
+        && quarantine::load_manifest(path).is_ok_and(|m| m.status == ManifestStatus::Quarantined)
+    {
+        // The operation validates and syncs its transitional manifest before changing any file.
+        store.clear_quarantine_operation(id)?;
+    }
+    outcome
 }
 
 /// Startup recovery reports problems per batch; a corrupt batch cannot block unrelated batches.
@@ -278,33 +322,84 @@ pub struct RecoveryReport {
 /// Recover only validated batches under the current profile's quarantine root.
 pub fn recover_interrupted(store: &Store, root: &Path) -> Result<RecoveryReport> {
     let mut report = RecoveryReport::default();
-    for id in quarantine::batch_ids(root)? {
+    let ids = quarantine::batch_ids(root)?;
+    if ids.len() > 4096 {
+        report.warnings.push("Startup recovery inspected at most 4,096 recent batches. Open an older batch explicitly before attempting to act on it.".into());
+    }
+    for id in ids.into_iter().rev().take(4096) {
         let result = (|| {
             let path = quarantine::batch_path(root, &id)?;
             let mut m = quarantine::load_manifest(&path)?;
-            if m.status != ManifestStatus::InProgress {
-                return Ok::<_, EngineError>(());
-            }
-            match store.quarantine_record(&id)? {
-                None => {
+            let rec = store.quarantine_record(&id)?;
+            match (m.status, rec) {
+                (ManifestStatus::InProgress, None) => {
                     quarantine::recover(&path)?;
                     report.rolled_back += 1;
                 }
-                Some(rec) if rec.status == QuarantineStatus::Quarantined => {
+                (ManifestStatus::InProgress, Some(rec))
+                    if rec.status == QuarantineStatus::Quarantined =>
+                {
                     check_record(&rec, &m)?;
                     quarantine::finish_stage(&path, &mut m)?;
                     report.finalized += 1;
                 }
-                Some(_) => {
+                (ManifestStatus::Restored, Some(rec)) => {
+                    check_record(&rec, &m)?;
+                    if rec.status == QuarantineStatus::Quarantined {
+                        quarantine::check_finished(&path, &m)?;
+                        let entries = ledger(store, rec.session_id, &m, true)?;
+                        store.set_quarantine_status_with_ledger(
+                            &id,
+                            QuarantineStatus::Restored,
+                            &entries,
+                        )?;
+                        report.finalized += 1;
+                    }
+                }
+                (ManifestStatus::Purged, Some(rec)) => {
+                    check_record(&rec, &m)?;
+                    if rec.status == QuarantineStatus::Quarantined {
+                        quarantine::check_finished(&path, &m)?;
+                        store.set_quarantine_status(&id, QuarantineStatus::Purged)?;
+                        report.finalized += 1;
+                    }
+                }
+                (ManifestStatus::Restoring | ManifestStatus::Purging, Some(rec)) => {
+                    check_record(&rec, &m)?;
+                    let operation = if m.status == ManifestStatus::Restoring {
+                        QuarantineOperation::Restoring
+                    } else {
+                        QuarantineOperation::Purging
+                    };
+                    store.begin_quarantine_operation(&id, operation)?;
+                    report.warnings.push(format!("Batch {id}: {} was interrupted. Review the batch before retrying; nothing was resumed automatically.", operation.as_str()));
+                }
+                (ManifestStatus::InProgress, _)
+                | (
+                    ManifestStatus::Quarantined
+                    | ManifestStatus::Purged
+                    | ManifestStatus::Restored
+                    | ManifestStatus::Restoring
+                    | ManifestStatus::Purging,
+                    None,
+                ) => {
                     return Err(EngineError::Quarantine(
-                        "unexpected database state; held files were kept".into(),
+                        "unexpected database state; no disk changes were attempted".into(),
                     ));
                 }
+                _ => {}
             }
             Ok(())
         })();
         if let Err(e) = result {
             report.warnings.push(format!("Batch {id}: {e}"));
+        }
+        if report.warnings.len() >= 32 {
+            report.warnings.push(
+                "Startup recovery stopped after 32 warnings. Remaining batches were not inspected."
+                    .into(),
+            );
+            break;
         }
     }
     Ok(report)

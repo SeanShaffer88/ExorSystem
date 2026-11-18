@@ -1,7 +1,7 @@
 // Vite development only. Synthetic in-memory responses; no native command, registry or file access.
 import { installFixture } from "./bridge";
 import type { LogLine } from "./logApi";
-import type { AppInfo, BatchPreview, Decision, GraphNode, HistoryRow, InstalledProgram, LeftoverReview, ProgramRow, QuarantineRow, RelationshipGraph, Session, SessionItems, UninstallPreview, WatchRun, WatchStart, WatchSummary, WatchSystem } from "./types";
+import type { AppInfo, BatchPreview, Decision, GraphNode, HistoryRow, InstalledProgram, LeftoverReview, PlanHeader, PlanRequest, ProgramRow, QuarantineRow, RelationshipGraph, Session, SessionItems, UninstallPreview, WatchRun, WatchStart, WatchSummary, WatchSystem } from "./types";
 
 const MiB = 1024 ** 2;
 const KiB = 1024;
@@ -29,7 +29,7 @@ function demoPrograms(): ProgramRow[] {
       scope: i === 1 || source !== 0 ? "user" : "machine", system_component: false, parent_key: null, windows_installer: false,
       uninstall_command: source === 0 ? `"${root}\\unins000.exe"` : null, quiet_uninstall_command: null,
       install_date: `202611${String(18 - i).padStart(2, "0")}`,
-    }, removed: false, session_ids: i === 0 ? [18] : i === 3 ? [16] : i === 5 ? [15] : [] };
+    }, removed: false, inferred_session_ids: [], session_ids: i === 0 ? [18] : i === 3 ? [16] : i === 5 ? [15] : [] };
   });
 }
 
@@ -96,7 +96,7 @@ export function startDemo() {
     if (capture) throw new Error("Another capture is already in progress.");
     const attempt = { id: args.captureId, stopped: false };
     capture = attempt;
-    try { (args.onReady as () => void)(); await wait(ms); return attempt.stopped; }
+    try { (args.onReady as (e: { event: "ready" }) => void)({ event: "ready" }); await wait(ms); return attempt.stopped; }
     finally { capture = null; }
   };
   const closeSession = (id: number, status: Session["status"]) => {
@@ -107,6 +107,8 @@ export function startDemo() {
     const filter = typeof args.filter === "string" ? args.filter.toLowerCase() : "";
     return observations.filter((r) => (!args.domain || r.domain === args.domain) && (args.sessionId == null || r.session_id === args.sessionId)
       && (!args.changeKind || r.what === args.changeKind)
+      && (typeof args.fromDate !== "string" || (r.when ?? "") >= args.fromDate)
+      && (typeof args.beforeDate !== "string" || (r.when ?? "") < args.beforeDate)
       && (typeof args.beforeId !== "number" || r.id < args.beforeId) && r.path.toLowerCase().includes(filter));
   };
   let sequence = 0;
@@ -117,12 +119,12 @@ export function startDemo() {
     if (logs.length > 1000) logs.shift();
     for (const callback of subscriptions.get("log") ?? []) callback(line);
   };
-  const moveFixture = (session_id: number | null) => {
-    const row = { quarantine_id: `demo-${batches.length + 1}`, session_id, files: 2, file_bytes: 8 * MiB, status: "quarantined" };
+  const moveFixture = (session_id: number | null, files: number, file_bytes: number) => {
+    const row = { quarantine_id: `demo-${batches.length + 1}`, session_id, files, file_bytes, status: "quarantined" };
     batches.unshift(row);
-    const summary = "Demo: moved 2 files to quarantine. No real files were accessed.";
+    const summary = `Demo: moved ${files} files to quarantine. No real files were accessed.`;
     updateLog(summary);
-    return { quarantine_id: row.quarantine_id, moved: 2, skipped: 0, summary };
+    return { quarantine_id: row.quarantine_id, moved: files, skipped: 1, summary };
   };
   updateLog("Demo workspace · no access to your files or registry");
 
@@ -133,6 +135,15 @@ export function startDemo() {
     return { executable: `${row.program.install_location}\\unins000.exe`, args: ["/NORESTART"] };
   };
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  let nextPlanId = 1;
+  const plans = new Map<number, { plan: PlanHeader; sessionId: number | null; read: boolean }>();
+  const foldersFor = (id: unknown) => {
+    const root = findProgram(id)?.program.install_location ?? codeRoot;
+    return [
+      { path: `${root}\\cache`, reason: "An application folder matches this registration.", confidence: .7, can_quarantine: true },
+      { path: String.raw`D:\Backups\Setup`, reason: "Reported backup location.", confidence: .3, can_quarantine: false },
+    ];
+  };
   installFixture({
     listen<T>(event: string, callback: (event: { payload: T }) => void) {
       const listeners = subscriptions.get(event) ?? new Set();
@@ -154,7 +165,7 @@ export function startDemo() {
         case "list_templates": return templates;
         case "list_programs": return { programs: [
           ...rows.filter((r) => r.program.source !== "portable"),
-          ...[...portable].map(([executable, name]) => ({ program: { ...rows[0]!.program, source: "portable", id: `portable:${executable}`, scope: "user", name, version: null, publisher: null, size_kb: null, install_location: executable, uninstall_command: null, install_date: null }, removed: false, session_ids: [] })),
+          ...[...portable].map(([executable, name]) => ({ program: { ...rows[0]!.program, source: "portable", id: `portable:${executable}`, scope: "user", name, version: null, publisher: null, size_kb: null, install_location: executable, uninstall_command: null, install_date: null }, removed: false, inferred_session_ids: [], session_ids: [] })),
         ].map((r) => ({ ...r })), warnings: [] };
         case "list_sessions": return [...sessions];
         case "watch_comparison": return comparisons.get(Number(args.sessionId)) ?? null;
@@ -163,13 +174,13 @@ export function startDemo() {
           return summary ? [{ summary, app_name: s.app_name, ended_at: s.ended_at } satisfies WatchRun] : [];
         }).slice(0, 6);
         case "history": {
-          const matches = matchingRows(args);
+          const matches = matchingRows(args.filters as Record<string, unknown>);
           const size = Number(args.limit);
           return { rows: matches.slice(0, size), next_before_id: matches.length > size ? matches[size - 1]?.id : null };
         }
         case "save_changes": {
-          const records = matchingRows(args).length;
-          return { path: "", records: Math.min(records, 1000), truncated: records > 1000 };
+          const records = matchingRows(args.filters as Record<string, unknown>).length;
+          return { path: "", records: Math.min(records, 1000), truncated: records > 1000, next_before_id: null };
         }
         case "session_items": {
           const items = [...new Map(observations.filter((r) => r.session_id === args.sessionId && r.what !== "deleted").map((r) => [r.path, { path: r.path, node_type: r.domain === "registry" ? "registry_key" : r.domain === "file" ? "file" : r.path.startsWith("service:") ? "service" : "task", confidence: r.path === updater ? .7 : .3, shared: r.path === codeExe }])).values()]
@@ -190,17 +201,46 @@ export function startDemo() {
           updateLog(`Demo: simulated the vendor exit for ${row.program.name}.`);
           return { exit_code: 0, summary: "Demo vendor process finished. No Windows process was launched." };
         }
-        case "find_leftovers": {
-          await wait(220);
-          const root = findProgram(args.programId)?.program.install_location ?? codeRoot;
-          return { folders: [
-            { path: `${root}\\cache`, reason: "An application folder matches this registration.", confidence: .7, can_quarantine: true },
-            { path: String.raw`D:\Backups\Setup`, reason: "Reported backup location.", confidence: .3, can_quarantine: false },
-          ], system_entries: [{ kind: "registry_key", path: registryPath, reason: "Key name matches the recorded publisher and product." }], warnings: [] } satisfies LeftoverReview;
+        case "find_leftovers": return { folders: foldersFor(args.programId), system_entries: [{ kind: "registry_key", path: registryPath, reason: "Key name matches the recorded publisher and product." }], warnings: [] } satisfies LeftoverReview;
+        case "cleanup_folders": return foldersFor(args.programId);
+        case "link_cleanup_session": {
+          const row = findProgram(args.programId);
+          const id = Number(args.sessionId);
+          if (!row || !sessions.some((s) => s.session_id === id && s.status === "completed")) throw new Error("Choose a completed session and registration.");
+          if (!row.session_ids.includes(id)) row.session_ids.push(id);
+          return;
         }
-        case "quarantine_leftovers":
-        case "quarantine_session": return moveFixture(typeof args.sessionId === "number" ? args.sessionId : null);
-        case "list_quarantines": return batches.map((b) => ({ ...b }));
+        case "prepare_cleanup": {
+          const req = args.request as PlanRequest;
+          const roots = req.folders.filter((path) => foldersFor(req.programId).some((f) => f.can_quarantine && f.path === path));
+          if (!roots.length || roots.length !== req.folders.length) throw new Error("Folder no longer eligible.");
+          const plan = { id: nextPlanId++, roots, files: 2, bytes: 8 * KiB, excluded: 1, expires_in_seconds: 600 };
+          plans.set(plan.id, { plan, sessionId: req.sessionId, read: false });
+          return plan;
+        }
+        case "cleanup_plan_page": {
+          const entry = plans.get(Number(args.id));
+          if (!entry) throw new Error("Plan expired.");
+          if (args.excluded) return { offset: 0, total: 1, next_offset: null, files: [], exclusions: [{ path: registryPath, reason: "System entries are advisory." }] };
+          entry.read = true;
+          return { offset: 0, total: 2, next_offset: null, files: [1, 2].map((n) => ({ path: `${entry.plan.roots[0]}\\cache-${n}.bin`, size: 4 * KiB })), exclusions: [] };
+        }
+        case "apply_cleanup": {
+          const id = Number(args.id);
+          const entry = plans.get(id);
+          if (!entry?.read || args.approvedFiles !== entry.plan.files) throw new Error("Review the whole plan first.");
+          plans.delete(id);
+          return moveFixture(entry.sessionId, entry.plan.files, entry.plan.bytes);
+        }
+        case "discard_cleanup_plan": plans.delete(Number(args.id)); return;
+        case "stop_cleanup_preflight": return false;
+        case "list_quarantines": {
+          const offset = Number(args.offset), end = offset + 40;
+          return { rows: batches.slice(offset, end).map((b) => ({ ...b })), next_offset: end < batches.length ? end : null };
+        }
+        case "pick_path": return null;
+        case "storage_usage": return { database_bytes: 4 * MiB, wal_bytes: 128 * KiB, manifests_bytes: 12 * KiB, held_bytes: batches.filter((b) => b.status === "quarantined").reduce((n, b) => n + (b.file_bytes ?? 0), 0), migration_backup_bytes: 0, other_bytes: 0, incomplete: false };
+        case "backup_profile": case "restore_profile_copy": case "rotate_archived_batch": throw new Error("Browser demo only. No profile or archive files are available.");
         case "quarantine_batch": {
           const batch = batches.find((b) => b.quarantine_id === args.quarantineId);
           if (!batch) throw new Error("Unknown demo batch.");
@@ -226,7 +266,7 @@ export function startDemo() {
             { path: codeExe, node_type: "file", action: "keep", reason: "Another item depends on this component.", rule: null },
             { path: registryPath, node_type: "registry_key", action: "flag_for_review", reason: "System items are review-only.", rule: null },
           ] : [];
-          return { summary: "Synthetic policy decisions", keep: decisions.filter((d) => d.action === "keep").length, quarantine: decisions.filter((d) => d.action === "quarantine").length, flag_for_review: decisions.filter((d) => d.action === "flag_for_review").length, decisions };
+          return { total: decisions.length, next_offset: null, summary: "Synthetic policy decisions", keep: decisions.filter((d) => d.action === "keep").length, quarantine: decisions.filter((d) => d.action === "quarantine").length, flag_for_review: decisions.filter((d) => d.action === "flag_for_review").length, decisions };
         }
         case "provenance": {
           const path = String(args.path);
@@ -280,7 +320,7 @@ export function startDemo() {
           portable.set(String(args.executable), String(args.name)); return;
         }
         case "forget_portable_program": portable.delete(String(args.executable)); return;
-        case "update_risk": return { low: [{ name: "7-Zip", why: "No recorded service or task changes." }], medium: [{ name: "Visual Studio Code", why: "A shared file appears in recorded evidence." }], high: [] };
+        case "update_risk": return { not_assessed: [], low: [{ name: "7-Zip", why: "No recorded service or task changes." }], medium: [{ name: "Visual Studio Code", why: "A shared file appears in recorded evidence." }], high: [] };
         case "scan": return { event: "done", data: { files: 14, skipped: 0, root_digest: afterHash } };
         case "cancel_scan": return;
         case "export_report": return "Demo preview only (no file saved)";

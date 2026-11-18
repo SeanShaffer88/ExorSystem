@@ -13,6 +13,7 @@ export interface LogSnapshot {
 }
 
 export const logApi = {
+  status: () => invoke<{ last: LogLine | null; cleared_through: number }>("log_status"),
   get: () => invoke<LogSnapshot>("get_log"),
   clear: () => invoke<number>("clear_log"),
   onClear: (cb: (through: number) => void) => listen<number>("log-cleared", (e) => cb(e.payload)),

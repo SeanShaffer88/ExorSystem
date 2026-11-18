@@ -68,14 +68,15 @@ try {
   await wizard.getByRole('button', {name:'Find leftovers'}).click();
   await wizard.getByRole('heading', {name:'System items (review only)'}).waitFor();
   assert.equal(await wizard.getByRole('checkbox').count(), 1);
-  const quarantine = wizard.getByRole('button', {name:'Quarantine selected folders…'});
+  const quarantine = wizard.getByRole('button', {name:'Review exact files…'});
   assert(await quarantine.isDisabled());
   await wizard.getByText('A registry view could not be checked.').waitFor();
   await wizard.getByRole('checkbox').check();
   await quarantine.click();
   assert.equal((await callsOf('quarantine_leftovers')).length, 0);
-  assert(await wizard.getByRole('checkbox').isDisabled());
-  await wizard.getByRole('button', {name:'Confirm: move files'}).click();
+  await wizard.getByText('1 of 1 included-file pages opened.', { exact: false }).waitFor();
+  await wizard.getByRole('checkbox', { name: /approve moving/ }).check();
+  await wizard.getByRole('button', {name:'Confirm: move reviewed files'}).click();
   await wizard.getByText('Step 4 of 4').waitFor();
   await wizard.getByText('Moved 2 files to quarantine.', { exact: false }).waitFor();
   await wizard.getByRole('button', {name:'Done'}).click();
@@ -91,9 +92,9 @@ try {
   const held = page.getByRole('row').filter({ hasText: 'fixture-held' });
   await held.getByRole('button', { name: 'Delete permanently…' }).click();
   assert.equal((await callsOf('purge_quarantine')).length, 0);
-  await held.getByRole('button', { name: 'Confirm: delete' }).click();
+  await page.getByRole('dialog', { name: 'Confirm permanent delete' }).getByRole('button', { name: 'Confirm: delete' }).click();
   await page.getByRole('region', {name:'Storage reclamation'}).getByText('104 MiB', { exact: true }).first().waitFor();
-  await held.getByRole('cell', {name:'Deleted permanently'}).waitFor();
+  await held.getByRole('cell', {name:'Deleted locally'}).waitFor();
   await tool('Policy simulator').click();
   await page.locator('#panel-simulator').getByLabel('Installation', {exact: true}).selectOption('9');
   await button('Run dry run').click();
@@ -296,7 +297,7 @@ try {
   const calls = await page.evaluate(() => window.exorCalls);
   assert.equal(calls.filter(([c]) => c === 'run_uninstaller').length, 3);
   assert.equal(calls.filter(([c]) => c === 'purge_quarantine').length, 1);
-  assert.equal(calls.filter(([c]) => c === 'quarantine_leftovers').length, 1);
+  assert.equal(calls.filter(([c]) => c === 'apply_cleanup').length, 1);
   const begun = calls.filter(([c]) => c === 'begin_watch').map(([, args]) => args.request);
   assert.deepEqual(begun.map((args) => args.registrySubtrees), [subtrees, '', '', '', '']);
   assert.deepEqual(begun.map((args) => args.folders), [[watchFolder], [watchFolder], [watchFolder], [], []]);
@@ -306,7 +307,7 @@ try {
   ]);
   assert.equal(calls.filter(([c]) => c === 'finish_watch').length, 4);
   assert.equal(calls.filter(([c]) => c === 'cancel_watch').length, 1);
-  const historyCalls = calls.filter(([c]) => c === 'history').map(([, args]) => args);
+  const historyCalls = calls.filter(([c]) => c === 'history').map(([, args]) => ({ ...args.filters, limit: args.limit }));
   assert(historyCalls.some(args => args.sessionId === 40 && args.domain === 'registry' && args.limit === 6));
   assert(historyCalls.some(args => args.sessionId === 40 && args.domain === 'file' && args.limit === 6));
   assert(historyCalls.some(args => args.sessionId === 40 && args.domain === null && args.limit === 100));

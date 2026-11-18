@@ -15,7 +15,7 @@ fn node(path: &str, t: NodeType, s: Option<i64>) -> NewNode {
 #[test]
 fn migrations_apply_once_and_are_idempotent() {
     let mut c = rusqlite::Connection::open_in_memory().unwrap();
-    assert_eq!(migrate(&mut c).unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(migrate(&mut c).unwrap(), vec![1, 2, 3, 4, 5]);
     assert!(migrate(&mut c).unwrap().is_empty());
     assert_eq!(current_version(&c).unwrap(), latest_version());
 }
@@ -116,7 +116,7 @@ fn comparison_migration_keeps_existing_evidence_without_inventing_coverage() {
         ).unwrap();
     }
     let store = Store::open(&db).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 4);
+    assert_eq!(store.schema_version().unwrap(), latest_version());
     assert_eq!(store.session(1).unwrap().unwrap().app_name, "Older watch");
     assert_eq!(
         store.ledger_for_session(1).unwrap()[0].entry.path,
@@ -912,4 +912,45 @@ fn session_node_pages_search_past_the_old_500_item_preview() {
             .nodes
             .is_empty()
     );
+}
+
+#[test]
+fn utc_dates_compose_with_path_kind_and_continuation() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("exor.db");
+    let store = Store::open(&db).unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    for (id, time, kind, path) in [
+        (1, "2026-11-17 23:59:59", "created", "fixture file"),
+        (2, "2026-11-18 00:00:00", "created", "fixture file"),
+        (3, "2026-11-18 18:00:00", "created", "fixture path"),
+        (4, "2026-11-18 19:00:00", "modified", "fixture file"),
+        (5, "2026-11-19 00:00:00", "created", "fixture file"),
+    ] {
+        conn.execute(
+            "INSERT INTO change_ledger(entry_id, observed_at, path, change_kind, source) VALUES (?1, ?2, ?3, ?4, 'snapshot_diff')",
+            rusqlite::params![id, time, path, kind],
+        ).unwrap();
+    }
+    let query = LedgerQuery {
+        path_contains: Some("fixture"),
+        change_kind: Some(ChangeKind::Created),
+        from_utc: Some("2026-11-18 00:00:00"),
+        until_utc: Some("2026-11-19 00:00:00"),
+        ..LedgerQuery::default()
+    };
+    let first = store.ledger_query(1, query).unwrap();
+    assert_eq!(first.entries[0].entry_id, 3);
+    assert_eq!(first.next_before_id, Some(3));
+    let second = store
+        .ledger_query(
+            1,
+            LedgerQuery {
+                before_id: first.next_before_id,
+                ..query
+            },
+        )
+        .unwrap();
+    assert_eq!(second.entries[0].entry_id, 2);
+    assert_eq!(second.next_before_id, None);
 }

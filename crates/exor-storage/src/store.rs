@@ -4,7 +4,7 @@ use crate::error::{Result, StorageError};
 use crate::migrate;
 use crate::model::*;
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params, params_from_iter};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -128,7 +128,7 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA synchronous = NORMAL;
+             PRAGMA synchronous = FULL;
              PRAGMA busy_timeout = 5000;",
         )?;
         Ok(())
@@ -141,13 +141,138 @@ impl Store {
         Self::configure(&conn)?;
         let current = migrate::current_version(&conn)?;
         if current > 0 && current < migrate::latest_version() {
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-            let mut bak: PathBuf = path.as_os_str().to_owned().into();
+            let mut bak = PathBuf::from(path);
             bak.set_extension(format!("pre-v{current}.bak"));
-            std::fs::copy(path, bak)?;
+            if !bak
+                .symlink_metadata()
+                .is_ok_and(|m| m.is_file() && !m.is_symlink())
+            {
+                let stage = bak.with_extension(format!("backup-{}.tmp", std::process::id()));
+                std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&stage)?;
+                let saved = Self::snapshot_to(&conn, &stage)
+                    .and_then(|()| std::fs::hard_link(&stage, &bak).map_err(Into::into));
+                let _ = std::fs::remove_file(&stage);
+                saved?;
+            }
         }
         migrate::migrate(&mut conn)?;
         Ok(Self { conn })
+    }
+
+    /// A reader for an existing, already-migrated desktop profile. Never creates or migrates it.
+    pub fn open_reader(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")?;
+        Ok(Self { conn })
+    }
+
+    /// A writer for an already-open profile. The desktop must hold its profile and job locks.
+    pub fn open_writer(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;",
+        )?;
+        Ok(Self { conn })
+    }
+
+    fn snapshot_to(conn: &Connection, dest: &Path) -> Result<()> {
+        let dest_text = dest.to_str().ok_or_else(|| StorageError::InvalidValue {
+            field: "backup path",
+            value: dest.display().to_string(),
+        })?;
+        conn.execute("VACUUM INTO ?1", [dest_text])?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dest)?
+            .sync_all()?;
+        Ok(())
+    }
+
+    /// Make a consistent, flushed SQLite snapshot in a new file in a caller-owned staging directory.
+    pub fn backup_to(&self, dest: &Path) -> Result<()> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)?;
+        Self::snapshot_to(&self.conn, dest)
+    }
+
+    /// Verify integrity of an offline backup without loading it as an active desktop database.
+    pub fn verify_backup(path: &Path) -> Result<()> {
+        let store = Self::open_reader(path)?;
+        let result: String = store
+            .conn
+            .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))?;
+        let version: Option<u32> =
+            store
+                .conn
+                .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+                    r.get(0)
+                })?;
+        if result != "ok" || !version.is_some_and(|v| (1..=migrate::latest_version()).contains(&v))
+        {
+            return Err(StorageError::InvalidValue {
+                field: "backup database",
+                value: result,
+            });
+        }
+        Ok(())
+    }
+
+    /// Persist a user's explicit link without altering historical attribution edges.
+    pub fn link_program(&self, session_id: i64, program_id: &str, label: &str) -> Result<()> {
+        self.conn.execute("INSERT INTO application_sessions(session_id, program_id, program_label) VALUES (?1, ?2, ?3)
+            ON CONFLICT(session_id) DO UPDATE SET program_id=excluded.program_id, program_label=excluded.program_label",
+            params![session_id, program_id, label])?;
+        Ok(())
+    }
+
+    /// The explicit registration linked to one session.
+    pub fn program_link(&self, session_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT program_id FROM application_sessions WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Bounded session summaries, newest first.
+    pub fn recent_sessions(&self, limit: usize) -> Result<Vec<Session>> {
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {SESSION_COLS} FROM installation_sessions ORDER BY session_id DESC LIMIT ?1"
+        ))?;
+        Ok(st
+            .query_map([limit.clamp(1, 250) as i64], session_row)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Explicit session-to-program links, never inferred from names.
+    pub fn program_links(&self) -> Result<std::collections::BTreeMap<i64, String>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT session_id, program_id FROM application_sessions")?;
+        Ok(st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Find the session's latest observed bytes only if it observed the file being created, and no
+    /// later ledger event outside the session superseded it. A missing hash is review-only.
+    pub fn cleanup_hash(&self, session_id: i64, path: &str) -> Result<Option<String>> {
+        let row = self.conn.query_row(
+            "SELECT q.new_hash FROM change_ledger q WHERE q.session_id = ?1 AND q.path = ?2
+             AND q.entry_id = (SELECT MAX(recent.entry_id) FROM change_ledger recent WHERE recent.path = ?2)
+             AND q.change_kind IN ('created','modified')
+             AND EXISTS (SELECT 1 FROM change_ledger birth WHERE birth.session_id = ?1 AND birth.path = ?2 AND birth.change_kind = 'created')",
+            params![session_id, path], |r| r.get::<_, Option<String>>(0),
+        ).optional()?;
+        Ok(row.flatten())
     }
 
     /// In-memory database (tests, simulations).
@@ -622,6 +747,22 @@ impl Store {
         })
     }
 
+    /// Policy context as scalars, without allocating a graph for every candidate.
+    pub fn policy_metrics(&self, node: i64, session: Option<i64>) -> Result<(f64, bool, i64)> {
+        Ok(self.conn.prepare_cached(
+            "WITH dependents(id) AS (
+                 SELECT child_node_id FROM node_relationships WHERE parent_node_id = ?1 AND relationship_type IN ('depends_on','shared_with')
+                 UNION
+                 SELECT parent_node_id FROM node_relationships WHERE child_node_id = ?1 AND relationship_type = 'shared_with'
+             ) SELECT MAX(0.3, COALESCE((SELECT MAX(confidence_score) FROM node_relationships
+                    WHERE child_node_id = ?1 AND relationship_type = 'created_by'), 0.3)),
+                 EXISTS(SELECT 1 FROM node_relationships WHERE parent_node_id = ?1 AND relationship_type = 'shared_with')
+                  OR EXISTS(SELECT 1 FROM node_relationships WHERE child_node_id = ?1 AND relationship_type = 'shared_with')
+                  OR EXISTS(SELECT 1 FROM dependents d JOIN system_nodes n ON n.node_id = d.id WHERE n.first_detected_in IS NOT ?2),
+                 (SELECT COUNT(*) FROM dependents)",
+        )?.query_row(params![node, session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
+    }
+
     /// Dependencies that only `session_id` relies on and nobody shares: removal candidates for review.
     pub fn orphaned_dependencies(&self, session_id: i64) -> Result<Vec<Node>> {
         let mut st = self.conn.prepare(
@@ -808,6 +949,14 @@ impl Store {
             sql.push_str(" AND change_kind = ?");
             args.push(Value::Text(kind.as_str().into()));
         }
+        if let Some(from) = query.from_utc {
+            sql.push_str(" AND observed_at >= ?");
+            args.push(Value::Text(from.into()));
+        }
+        if let Some(until) = query.until_utc {
+            sql.push_str(" AND observed_at < ?");
+            args.push(Value::Text(until.into()));
+        }
         sql.push_str(" ORDER BY entry_id DESC LIMIT ?");
         args.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
         let mut statement = self.conn.prepare(&sql)?;
@@ -846,10 +995,151 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![q.quarantine_id, q.rule_id, q.session_id, q.status.as_str(), q.manifest_path, q.manifest_json],
         )?;
+        tx.execute("INSERT INTO quarantine_batch_index SELECT ?1, json_extract(?2, '$.created_unix_ms')
+            WHERE json_valid(?2) AND json_extract(?2, '$.version') = 1 AND json_extract(?2, '$.quarantine_id') = ?1
+              AND json_type(?2, '$.created_unix_ms') = 'integer' AND json_type(?2, '$.items') = 'array'",
+            params![q.quarantine_id, q.manifest_json])?;
+        if tx.changes() != 0 {
+            tx.execute("INSERT INTO quarantine_file_index
+                SELECT ?1, CAST(j.key AS INTEGER), json_extract(j.value,'$.original_path'), json_extract(j.value,'$.size')
+                FROM json_each(?2,'$.items') j WHERE j.type = 'object' AND json_extract(j.value,'$.type') = 'file'
+                AND json_type(j.value,'$.original_path') = 'text' AND json_type(j.value,'$.size') = 'integer'
+                AND json_extract(j.value,'$.size') >= 0", params![q.quarantine_id, q.manifest_json])?;
+        }
         for entry in entries {
             Self::insert_ledger(&tx, entry)?;
         }
         Ok(tx.commit()?)
+    }
+
+    /// Record an authorized operation. Switching to a different unfinished operation is forbidden.
+    pub fn begin_quarantine_operation(
+        &self,
+        id: &str,
+        operation: QuarantineOperation,
+    ) -> Result<()> {
+        let n = self.conn.execute(
+            "INSERT INTO quarantine_operations(quarantine_id, operation) VALUES (?1, ?2)
+             ON CONFLICT(quarantine_id) DO UPDATE SET operation = excluded.operation WHERE operation = excluded.operation",
+            params![id, operation.as_str()],
+        )?;
+        if n == 0 {
+            return Err(StorageError::InvalidValue {
+                field: "quarantine operation",
+                value: "a different operation is already pending".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Read any authorized but unfinished mutation without changing the batch state.
+    pub fn quarantine_operation(&self, id: &str) -> Result<Option<QuarantineOperation>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT operation FROM quarantine_operations WHERE quarantine_id = ?1",
+                [id],
+                |r| col(r, 0),
+            )
+            .optional()?)
+    }
+
+    /// Clear intent after a failure verified to precede any restore or purge changes.
+    pub fn clear_quarantine_operation(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM quarantine_operations WHERE quarantine_id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    /// Bounded summaries with no manifest JSON materialization. Status can include in-flight work.
+    pub fn batch_summaries(&self, limit: usize, offset: usize) -> Result<Vec<BatchSummary>> {
+        let mut st = self.conn.prepare("SELECT q.quarantine_id, q.session_id, COALESCE(o.operation, q.status),
+             (SELECT COUNT(*) FROM quarantine_file_index f WHERE f.quarantine_id = q.quarantine_id),
+             CASE WHEN b.quarantine_id IS NOT NULL THEN COALESCE((SELECT SUM(f.size) FROM quarantine_file_index f WHERE f.quarantine_id = q.quarantine_id), 0) END
+             FROM quarantine_manifests q LEFT JOIN quarantine_batch_index b USING(quarantine_id)
+             LEFT JOIN quarantine_operations o USING(quarantine_id) ORDER BY q.rowid DESC LIMIT ?1 OFFSET ?2")?;
+        Ok(st
+            .query_map(
+                params![
+                    limit.clamp(1, 101) as i64,
+                    i64::try_from(offset).unwrap_or(i64::MAX)
+                ],
+                |r| {
+                    Ok(BatchSummary {
+                        quarantine_id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        status: r.get(2)?,
+                        files: r.get(3)?,
+                        file_bytes: r.get(4)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Logical bytes and batch counts by final status, excluding unfinished operations.
+    pub fn batch_totals(&self) -> Result<Vec<(String, i64, i64)>> {
+        let mut st = self.conn.prepare("SELECT q.status, COUNT(*), SUM(COALESCE((SELECT SUM(size)
+            FROM quarantine_file_index f WHERE f.quarantine_id = q.quarantine_id), 0))
+            FROM quarantine_manifests q JOIN quarantine_batch_index b USING(quarantine_id)
+            WHERE NOT EXISTS (SELECT 1 FROM quarantine_operations o WHERE o.quarantine_id = q.quarantine_id)
+            GROUP BY q.status")?;
+        Ok(st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Read only the requested range of an indexed batch.
+    pub fn batch_index_page(
+        &self,
+        id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Option<BatchIndexPage>> {
+        let head: Option<(String, i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(o.operation, q.status), b.created_unix_ms,
+            (SELECT COUNT(*) FROM quarantine_file_index f WHERE f.quarantine_id = q.quarantine_id)
+            FROM quarantine_manifests q JOIN quarantine_batch_index b USING(quarantine_id)
+            LEFT JOIN quarantine_operations o USING(quarantine_id) WHERE q.quarantine_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((status, created_unix_ms, total)) = head else {
+            return Ok(None);
+        };
+        let total_files = usize::try_from(total).unwrap_or(usize::MAX);
+        let mut st = self.conn.prepare(
+            "SELECT original_path, size FROM quarantine_file_index
+            WHERE quarantine_id = ?1 ORDER BY ordinal LIMIT ?2 OFFSET ?3",
+        )?;
+        let files = st
+            .query_map(
+                params![
+                    id,
+                    limit.clamp(1, 100) as i64,
+                    i64::try_from(offset).unwrap_or(i64::MAX)
+                ],
+                |r| {
+                    Ok(BatchIndexFile {
+                        original_path: r.get(0)?,
+                        size: r.get(1)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let next = offset.saturating_add(files.len());
+        Ok(Some(BatchIndexPage {
+            status,
+            created_unix_ms,
+            total_files,
+            files,
+            next_offset: (next < total_files).then_some(next),
+        }))
     }
 
     /// Change a quarantine's status.
@@ -877,7 +1167,11 @@ impl Store {
             )
             .optional()?;
         if current == Some(status) {
-            return Ok(());
+            tx.execute(
+                "DELETE FROM quarantine_operations WHERE quarantine_id = ?1",
+                [quarantine_id],
+            )?;
+            return Ok(tx.commit()?);
         }
         if current.is_none() {
             return Err(StorageError::NotFound(format!(
@@ -887,6 +1181,10 @@ impl Store {
         tx.execute(
             "UPDATE quarantine_manifests SET status = ?2 WHERE quarantine_id = ?1",
             params![quarantine_id, status.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM quarantine_operations WHERE quarantine_id = ?1",
+            [quarantine_id],
         )?;
         for entry in entries {
             Self::insert_ledger(&tx, entry)?;

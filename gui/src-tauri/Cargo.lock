@@ -814,11 +814,19 @@ name = "exor-engine"
 version = "0.2.0"
 dependencies = [
  "blake3",
+ "exor-fs",
  "exor-storage",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "exor-fs"
+version = "0.2.0"
+dependencies = [
+ "windows",
 ]
 
 [[package]]

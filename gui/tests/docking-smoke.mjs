@@ -61,6 +61,9 @@ try {
 
   await page.goto('https://exor.test/');
   await panel('Overview').waitFor();
+  await page.getByText('Fixture started', { exact: true }).waitFor();
+  assert.equal((await callsOf('get_log')).length, 0);
+  assert.equal((await callsOf('log_status')).length, 1);
   assert(await panel('Overview').evaluate(el => {
     const dataTransfer = new DataTransfer();
     dataTransfer.items.add(new File(['fixture'], 'external-file.txt'));
@@ -230,7 +233,7 @@ try {
   assert.equal(await scan.count(), 0);
   await page.evaluate(() => window.finishExorScan());
   await tool('Scan folder').click();
-  await scan.getByRole('status').getByText(/Scan finished. 6 items recorded/).waitFor();
+  await scan.getByRole('status').getByText(/Scan finished. 6 files found/).waitFor();
   assert.equal((await callsOf('scan')).length, 1);
 
   await tool('Appearance').click();

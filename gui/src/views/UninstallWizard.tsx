@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { CleanupPlanReview } from "../components/CleanupPlanReview";
 import { Icon } from "../components/Icon";
 import { TerminalPanel } from "../components/TerminalPanel";
 import { Badge, Empty, nodeText } from "../components/Workspace";
-import type { InstalledProgram, LeftoverReview, QuarantineResult, UninstallPreview, UninstallRun } from "../types";
+import type { InstalledProgram, LeftoverReview, PlanHeader, QuarantineResult, UninstallPreview, UninstallRun } from "../types";
 
 const steps = ["Review plan", "Vendor uninstall", "Review leftovers", "Summary"];
 type Task = "uninstall" | "review" | "quarantine";
 
-export function UninstallWizard({ program, sessionId, reviewOnly, onClose, onUninstallComplete }: {
+export function UninstallWizard({ program, reviewOnly, onClose, onUninstallComplete }: {
   program: InstalledProgram; sessionId: number | null; reviewOnly: boolean; onClose: () => void; onUninstallComplete: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -20,7 +21,13 @@ export function UninstallWizard({ program, sessionId, reviewOnly, onClose, onUni
   const [planError, setPlanError] = useState("");
   const [busy, setBusy] = useState<Task | null>(null);
   const [confirmedRun, setConfirmedRun] = useState(false);
-  const [confirmMove, setConfirmMove] = useState(false);
+  const [movePlan, setMovePlan] = useState<PlanHeader | null>(null);
+  const planTrigger = useRef<HTMLButtonElement>(null);
+  const wasReviewing = useRef(false);
+  useEffect(() => {
+    if (movePlan) wasReviewing.current = true;
+    else if (wasReviewing.current && step === 2) { planTrigger.current?.focus(); wasReviewing.current = false; }
+  }, [movePlan, step]);
   const [review, setReview] = useState<LeftoverReview | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [run, setRun] = useState<UninstallRun | null>(null);
@@ -41,7 +48,7 @@ export function UninstallWizard({ program, sessionId, reviewOnly, onClose, onUni
     return () => { live = false; };
   }, [program.id, reviewOnly]);
 
-  const close = () => { if (!gate.current) { dialog.current?.close(); onClose(); } };
+  const close = () => { if (!gate.current && !movePlan) { dialog.current?.close(); onClose(); } };
   const perform = async (task: Task, work: () => Promise<void>) => {
     if (gate.current) return;
     gate.current = true; setBusy(task); setError("");
@@ -57,7 +64,7 @@ export function UninstallWizard({ program, sessionId, reviewOnly, onClose, onUni
     <div className="wizard-top">
       <span className="tile-icon tone-safe"><Icon name="shield"/></span>
       <div><div className="eyebrow">Guided uninstall</div><h2 id="wizard-title">{program.name}</h2></div>
-      <button className="icon-button" type="button" aria-label="Close wizard" disabled={!!busy} onClick={close}><Icon name="close"/></button>
+      <button className="icon-button" type="button" aria-label="Close wizard" disabled={!!busy || !!movePlan} onClick={close}><Icon name="close"/></button>
     </div>
     <ol className="wizard-steps" aria-label="Wizard progress">
       {steps.map((label, i) => <li key={label} aria-current={i === step ? "step" : undefined} className={i === step ? "step-current" : i < step && (!skipVendor || i >= 2) ? "step-done" : ""}>
@@ -68,7 +75,7 @@ export function UninstallWizard({ program, sessionId, reviewOnly, onClose, onUni
     <div className="wizard-body">
       <div className="eyebrow">Step {step + 1} of {steps.length}</div>
       <h3 ref={heading} tabIndex={-1}>{steps[step]}</h3>
-      {busy && <div className="notice busy-notice" role="status"><progress aria-label={busy === "uninstall" ? "Vendor uninstaller running" : "Working"}/><span>{busy === "uninstall" ? "Waiting for the vendor uninstaller. Windows does not report its progress here." : busy === "review" ? "Checking for possible leftovers…" : "Moving selected files into quarantine…"}</span></div>}
+      {busy && <div className="notice busy-notice" role="status"><progress aria-label={busy === "uninstall" ? "Vendor uninstaller running" : "Working"}/><span>{busy === "uninstall" ? "Waiting for the vendor uninstaller. Windows does not report its progress here." : busy === "review" ? "Checking for possible leftovers…" : "Reading and fingerprinting eligible files…"}</span></div>}
       {error && <p role="alert" className="notice review-notice">{error}</p>}
       {step === 0 && <>
         <p>Review the live Windows registration first. The next step lets you start this vendor’s uninstaller. Cleanup is a separate decision.</p>
@@ -106,9 +113,9 @@ export function UninstallWizard({ program, sessionId, reviewOnly, onClose, onUni
             <legend>Leftover folders</legend>
             {review.folders.map((folder) => <div className="leftover-row" key={folder.path}>
               {folder.can_quarantine ? <label className="check">
-                <input type="checkbox" checked={selected.has(folder.path)} disabled={!!busy || confirmMove} onChange={(e) => {
+                <input type="checkbox" checked={selected.has(folder.path)} disabled={!!busy || !!movePlan} onChange={(e) => {
                   const next = new Set(selected);
-                  if (e.target.checked) next.add(folder.path); else next.delete(folder.path);
+                  if (e.target.checked && next.size < 8) next.add(folder.path); else next.delete(folder.path);
                   setSelected(next);
                 }}/><span><code>{folder.path}</code><small>{folder.reason}</small></span>
               </label> : <div><code>{folder.path}</code><small>{folder.reason} Outside an application root.</small></div>}
@@ -119,16 +126,13 @@ export function UninstallWizard({ program, sessionId, reviewOnly, onClose, onUni
             <Badge tone="review">{nodeText[item.kind]}</Badge> <code>{item.path}</code><small>{item.reason}</small></li>)}</ul></div>}
           {!review.folders.length && !review.system_entries.length && <Empty title="No matches found" detail="Uninspected locations are not treated as empty."/>}
         </>}
-        {confirmMove && <div role="group" aria-label="Confirm quarantine" className="notice review-notice">
-          <Icon name="archive"/><div><strong>Move files from {selected.size} selected folder(s)?</strong><p>Review the paths above. Files are retained for restore and still use storage. This does not delete anything permanently.</p></div>
-          <button type="button" className="quiet-button" disabled={!!busy} onClick={() => setConfirmMove(false)}>Cancel move</button>
-        </div>}
+        {movePlan && <CleanupPlanReview key={movePlan.id} plan={movePlan} onClose={() => setMovePlan(null)} onComplete={(result) => { setMovePlan(null); setMove(result); setStep(3); }}/>}
         <div className="wizard-controls">
-          <button type="button" className="quiet-button" disabled={!!busy} onClick={() => setStep(3)}>Skip quarantine</button>
-          {confirmMove ? <button type="button" className="primary" disabled={!!busy || !selected.size} onClick={() => {
-            const folders = [...selected]; setConfirmMove(false);
-            void perform("quarantine", async () => { setMove(await api.quarantineLeftovers(program.id, folders, sessionId)); setStep(3); });
-          }}>Confirm: move files</button> : <button type="button" className="primary" disabled={!!busy || !selected.size} onClick={() => setConfirmMove(true)}>Quarantine selected folders…</button>}
+          {busy === "quarantine" && <button type="button" className="quiet-button" onClick={() => void api.stopCleanup().catch((e: unknown) => setError(String(e)))}>Stop preparing plan</button>}
+          <button type="button" className="quiet-button" disabled={!!busy || !!movePlan} onClick={() => setStep(3)}>Skip quarantine</button>
+          <button ref={planTrigger} type="button" className="primary" disabled={!!busy || !!movePlan || !selected.size} onClick={() => {
+            void perform("quarantine", async () => setMovePlan(await api.prepareCleanup({ programId: program.id, folders: [...selected], sessionId: null, template: null })));
+          }}>Review exact files…</button>
         </div>
       </>}
       {step === 3 && <>

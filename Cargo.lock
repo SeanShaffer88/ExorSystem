@@ -73,6 +73,7 @@ name = "exor-engine"
 version = "0.2.0"
 dependencies = [
  "blake3",
+ "exor-fs",
  "exor-storage",
  "rusqlite",
  "serde",
@@ -80,6 +81,13 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "exor-fs"
+version = "0.2.0"
+dependencies = [
+ "windows",
 ]
 
 [[package]]

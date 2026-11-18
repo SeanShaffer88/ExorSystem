@@ -10,12 +10,13 @@ function mergeLog(state: LogSnapshot, update: { cleared_through?: number; lines?
   return { cleared_through, lines: [...unique.values()].sort((a, b) => a.seq - b.seq).slice(-1000) };
 }
 
-export function useActivityLog() {
+export function useActivityLog(enabled = true) {
   const [{ lines }, update] = useReducer(mergeLog, { cleared_through: 0, lines: [] });
   const [error, setError] = useState("");
   const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
+    if (!enabled) return;
     let live = true;
     const report = (e: unknown) => { if (live) setError(`Activity log unavailable: ${String(e)}`); };
     const listeners = [
@@ -32,7 +33,7 @@ export function useActivityLog() {
       live = false;
       for (const listener of listeners) void listener.then((stop) => stop()).catch(() => {});
     };
-  }, []);
+  }, [enabled]);
 
   const clear = async () => {
     if (clearing) return;
@@ -43,6 +44,25 @@ export function useActivityLog() {
   };
 
   return { lines, error, clear, clearing };
+}
+
+/** Latest status and watermark only; the native main window never loads scrollback. */
+export function useLatestLog(enabled: boolean) {
+  const [status, update] = useReducer((old: { last: LogLine | null; cleared_through: number }, next: { last?: LogLine | null; cleared_through?: number }) => {
+    const cleared_through = Math.max(old.cleared_through, next.cleared_through ?? 0);
+    const last = next.last && next.last.seq > (old.last?.seq ?? 0) ? next.last : old.last;
+    return { cleared_through, last: last && last.seq > cleared_through ? last : null };
+  }, { cleared_through: 0, last: null });
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    const listeners = [logApi.onLine((last) => { if (live) update({ last }); }), logApi.onClear((cleared_through) => { if (live) update({ cleared_through }); })];
+    void Promise.all(listeners).then(() => logApi.status()).then((snapshot) => { if (live) update(snapshot); })
+      .catch((e: unknown) => { if (live) setError(`Activity status unavailable: ${String(e)}`); });
+    return () => { live = false; for (const l of listeners) void l.then((stop) => stop()).catch(() => {}); };
+  }, [enabled]);
+  return { ...status, error };
 }
 
 export type ActivityLogState = ReturnType<typeof useActivityLog>;

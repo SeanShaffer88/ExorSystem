@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { BrowsePath } from "../components/BrowsePath";
 import { ChangeBadge } from "../components/ChangeEvidence";
 import { Icon } from "../components/Icon";
 import { RecentWatches } from "../components/RecentWatches";
 import { WatchPresets } from "../components/WatchPresets";
 import { comparisonLabel, hasSkipped, hasUsable, WatchCoverageCards, WatchWarnings } from "../components/WatchCoverage";
-import { Badge, CardHeading, Empty, Intro, leafName } from "../components/Workspace";
-import type { HistoryRow, WatchStart, WatchSummary, WatchSystem } from "../types";
+import { Badge, CardHeading, Empty, Intro, formatBytes, leafName } from "../components/Workspace";
+import type { HistoryRow, WatchProgress, WatchStart, WatchSummary, WatchSystem } from "../types";
 
 type Operation = "begin" | "finish" | "cancel";
 let nextCaptureId = 0;
 
 export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boolean; onOpenHistory: (id: number | null, row?: HistoryRow) => void; onWatching: (active: boolean) => void }) {
   const [appName, setAppName] = useState("");
+  const [strict, setStrict] = useState(false);
+  const [captureProgress, setCaptureProgress] = useState<WatchProgress | null>(null);
   const [installer, setInstaller] = useState("");
   const [folders, setFolders] = useState("");
   const [registrySubtrees, setRegistrySubtrees] = useState("");
@@ -47,13 +50,13 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
     }
   }, [hidden, active, pending, summary]);
 
-  const run = async (operation: Operation, fn: (captureId: number, ready: () => void) => Promise<void>) => {
+  const run = async (operation: Operation, fn: (captureId: number, ready: () => void, progress: (p: WatchProgress) => void) => Promise<void>) => {
     if (running.current !== null) return;
     const id = ++nextCaptureId;
     running.current = id;
-    setPending(operation); setError(""); setCancelled(""); setStopNote("");
+    setPending(operation); setCaptureProgress(null); setError(""); setCancelled(""); setStopNote("");
     try {
-      await fn(id, () => { if (running.current === id) setCaptureReady(true); });
+      await fn(id, () => { if (running.current === id) setCaptureReady(true); }, (p) => { if (running.current === id) setCaptureProgress(p); });
     } catch (e) {
       setError(operation === "finish" ? `Could not finish recording: ${String(e)}. Start a new watch to try again.` : String(e));
     } finally {
@@ -98,9 +101,9 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
           }}/>
           <form className="stack watch-form" onSubmit={(e) => {
             e.preventDefault();
-            if (canStart) void run("begin", async (id, ready) => {
+            if (canStart) void run("begin", async (id, ready, progress) => {
               const roots = [...new Set(folders.split("\n").map((path) => path.trim()).filter(Boolean))];
-              const start = await api.beginWatch({ appName: appName.trim(), installerPath: installer.trim() || null, folders: roots, registrySubtrees, system }, id, ready);
+              const start = await api.beginWatch({ appName: appName.trim(), installerPath: installer.trim() || null, folders: roots, registrySubtrees, system, strict }, id, ready, progress);
               if (start) setActive(start); else setCancelled("Baseline cancelled. No changes were recorded.");
             });
           }}>
@@ -108,11 +111,13 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
               <div><label htmlFor="w-app">Application name</label>
                 <input ref={appField} id="w-app" value={appName} onChange={(e) => setAppName(e.target.value)} required disabled={busy} placeholder="e.g. Example Editor"/></div>
               <div><label htmlFor="w-inst">Installer file (optional)</label>
-                <input id="w-inst" value={installer} onChange={(e) => setInstaller(e.target.value)} disabled={busy} placeholder="Full path to the installer"/></div>
+                <input id="w-inst" value={installer} onChange={(e) => setInstaller(e.target.value)} disabled={busy} placeholder="Full path to the installer"/><BrowsePath directory={false} label="Browse installer…" onPick={setInstaller} disabled={busy}/></div>
             </div>
             <label htmlFor="w-folders">Folders to watch (optional)</label>
             <small id="w-folders-hint" className="muted">Enter one full path per line. Start with an application or test folder rather than an entire drive.</small>
             <textarea id="w-folders" rows={2} aria-describedby="w-folders-hint" placeholder="C:\Program Files\Example" value={folders} onChange={(e) => setFolders(e.target.value)} disabled={busy}/>
+            <BrowsePath directory label="Add folder…" onPick={(p) => setFolders((old) => old ? `${old}\n${p}` : p)} disabled={busy}/>
+            <label className="check"><input type="checkbox" checked={strict} disabled={busy} onChange={(e) => setStrict(e.target.checked)}/> Strict file comparison (rehash content, preserve case-only paths)</label>
             <label htmlFor="w-registry">Registry subtrees to watch (optional)</label>
             <small id="w-registry-hint" className="muted">Up to eight specific Software subtrees. Use <code>HKCU</code> or <code>HKLM</code>, and <code>HKLM32</code> for the 32-bit machine view. Leave blank to skip registry comparison.</small>
             <textarea id="w-registry" rows={2} maxLength={8192} aria-describedby="w-registry-hint" placeholder="HKCU\Software\Example" value={registrySubtrees} onChange={(e) => setRegistrySubtrees(e.target.value)} disabled={busy}/>
@@ -140,10 +145,15 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
           </div>
           <WatchCoverageCards coverage={active.coverage}/>
           <WatchWarnings warnings={active.warnings}/>
-          <div className="button-row"><button className="primary" type="button" disabled={busy} onClick={() => void run("finish", async (id, ready) => {
-            const result = await api.finishWatch(id, ready);
+          <div className="button-row"><button className="primary" type="button" disabled={busy} onClick={() => void run("finish", async (id, ready, progress) => {
+            const result = await api.finishWatch(id, ready, progress);
             if (result) setSummary(result); else setCancelled("Comparison cancelled. No changes were recorded. Take a new baseline to continue.");
           })}>Compare snapshots</button>{stopButton}<button className="quiet-button" type="button" disabled={busy} onClick={() => void run("cancel", api.cancelWatch)}>Cancel watch</button></div>
+        </div>}
+        {busy && captureProgress && <div className="notice" role="status">
+          <div><strong>{captureProgress.phase}{captureProgress.files?.phase === "walking" ? " — listing folders" : ""}</strong>
+          {captureProgress.scope && <p><code>{captureProgress.scope}</code></p>}
+          {captureProgress.files && <p>{captureProgress.files.files_processed} processed · {captureProgress.files.files_reused} reused · {captureProgress.files.files_unhashed} unhashed · {formatBytes(captureProgress.files.bytes_hashed)} read</p>}</div>
         </div>}
         {stopNote && <p role="status" className="muted">{stopNote}</p>}
         {cancelled && <p role="status" className="notice">{cancelled}</p>}

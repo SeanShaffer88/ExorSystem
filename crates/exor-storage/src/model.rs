@@ -297,6 +297,10 @@ pub struct LedgerQuery<'a> {
     pub domain: Option<ChangeDomain>,
     /// One observation kind, or all kinds.
     pub change_kind: Option<ChangeKind>,
+    /// Inclusive UTC timestamp lower bound in SQLite timestamp form.
+    pub from_utc: Option<&'a str>,
+    /// Exclusive UTC timestamp upper bound in SQLite timestamp form.
+    pub until_utc: Option<&'a str>,
 }
 
 /// A bounded, path-ordered page of nodes first detected in one session.
@@ -308,6 +312,50 @@ pub struct SessionNodePage {
     pub matching: i64,
     /// Nodes on the requested page.
     pub nodes: Vec<Node>,
+}
+
+str_enum! {
+    /// Durable intent for an unfinished destructive operation.
+    QuarantineOperation { Restoring => "restoring", Purging => "purging" }
+}
+
+/// Small indexed batch summary; the on-disk manifest is still the authority for disk actions.
+#[derive(Debug, Serialize)]
+pub struct BatchSummary {
+    /// Batch identifier.
+    pub quarantine_id: String,
+    /// Session that requested the batch, if known.
+    pub session_id: Option<i64>,
+    /// Effective status, including interrupted operations.
+    pub status: String,
+    /// Number of recorded files.
+    pub files: i64,
+    /// Sum of recorded logical sizes; unknown if there is no usable index.
+    pub file_bytes: Option<i64>,
+}
+
+/// Indexed original file path and logical byte length.
+#[derive(Debug, Serialize)]
+pub struct BatchIndexFile {
+    /// Original recorded path, not a live destination check.
+    pub original_path: String,
+    /// Size in logical bytes at the time of the move.
+    pub size: i64,
+}
+
+/// Indexed read-only page of a batch.
+#[derive(Debug, Serialize)]
+pub struct BatchIndexPage {
+    /// Effective status, including interrupted operations.
+    pub status: String,
+    /// Creation time in Unix milliseconds.
+    pub created_unix_ms: i64,
+    /// Total recorded files in this batch.
+    pub total_files: usize,
+    /// Page of original paths and lengths.
+    pub files: Vec<BatchIndexFile>,
+    /// Offset to request next when more records exist.
+    pub next_offset: Option<usize>,
 }
 
 /// Stored quarantine record.

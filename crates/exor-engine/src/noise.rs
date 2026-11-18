@@ -3,6 +3,9 @@
 use crate::events::RawEvent;
 use std::collections::HashMap;
 
+const MAX_KEYS: usize = 8_192;
+const MAX_KEY_BYTES: usize = 4_096;
+
 /// A match rule. All text matching is case-insensitive with `\` normalised to `/`.
 #[derive(Debug, Clone)]
 pub enum NoiseRule {
@@ -138,14 +141,15 @@ impl NoiseFilter {
                 return Verdict::Drop(reason.clone());
             }
         }
-        if self.dedupe_window_ms > 0 {
+        if self.dedupe_window_ms > 0 && dedupe_key.len() <= MAX_KEY_BYTES {
             let ts = ev.ts_ms();
-            if self.last_seen.len() > 100_000 {
-                let cutoff = ts.saturating_sub(self.dedupe_window_ms);
-                self.last_seen.retain(|_, t| *t >= cutoff);
+            if self.last_seen.len() == MAX_KEYS && !self.last_seen.contains_key(&dedupe_key) {
+                // Explicitly bounded; resetting only loses suppression, never drops observations.
+                self.last_seen.clear();
             }
             if let Some(prev) = self.last_seen.insert(dedupe_key, ts)
-                && ts.saturating_sub(prev) < self.dedupe_window_ms
+                && ts >= prev
+                && ts - prev < self.dedupe_window_ms
             {
                 return Verdict::Drop("burst duplicate".into());
             }

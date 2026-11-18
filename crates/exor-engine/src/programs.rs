@@ -100,28 +100,21 @@ impl InstalledProgram {
     }
 }
 
-/// Tidy for display: drop hidden entries (unless `include_system`), collapse the same program
-/// reported by both registry views, and sort by name ignoring case.
+/// Hide system entries unless requested, dedup only an identical source/identity, and sort.
 pub fn visible(programs: Vec<InstalledProgram>, include_system: bool) -> Vec<InstalledProgram> {
-    let mut seen_registry = std::collections::HashSet::new();
-    let mut seen_other = std::collections::HashSet::new();
-    let mut out: Vec<InstalledProgram> = programs
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<_> = programs
         .into_iter()
         .filter(|p| !p.name.trim().is_empty() && (include_system || p.is_listed()))
-        .filter(|p| {
-            if p.source == ProgramSource::Registry {
-                seen_registry.insert((
-                    p.name.trim().to_lowercase(),
-                    p.version.clone().unwrap_or_default().to_lowercase(),
-                    p.publisher.clone().unwrap_or_default().to_lowercase(),
-                    p.scope == Scope::User,
-                ))
-            } else {
-                seen_other.insert((p.source, p.id.to_lowercase()))
-            }
-        })
+        .filter(|p| seen.insert((p.source, p.id.to_lowercase())))
         .collect();
-    out.sort_by_key(|p| (p.name.to_lowercase(), p.version.clone().unwrap_or_default()));
+    out.sort_by_cached_key(|p| {
+        (
+            p.name.to_lowercase(),
+            p.version.clone().unwrap_or_default(),
+            p.id.clone(),
+        )
+    });
     out
 }
 
@@ -205,7 +198,7 @@ pub(crate) fn norm(s: &str) -> String {
         .collect()
 }
 
-/// Recorded sessions that belong to this program: equal names, or one name inside the other
+/// Advisory name matches (never an explicit link): equal names, or one name inside the other
 /// (for example session "Foo" and program "Foo 2.1 (x64)"). Names under 4 letters must match exactly.
 pub fn match_sessions<'a>(p: &InstalledProgram, sessions: &'a [Session]) -> Vec<&'a Session> {
     let pn = norm(&p.name);
@@ -299,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn hides_system_and_updates_dedupes_and_sorts() {
+    fn hides_system_and_updates_but_preserves_registry_views() {
         let mut hidden = prog("Runtime", "1", Scope::Machine);
         hidden.system_component = true;
         let mut update = prog("Patch KB1", "1", Scope::Machine);
@@ -307,7 +300,8 @@ mod tests {
         let list = vec![
             prog("zeta", "1.0", Scope::Machine),
             prog("Alpha", "2.0", Scope::Machine),
-            prog("ALPHA", "2.0", Scope::Machine32), // same program via the 32-bit view
+            prog("ALPHA", "2.0", Scope::Machine32),
+            prog("Alpha", "2.0", Scope::Machine), // exact duplicate identity
             prog("", "1", Scope::User),
             hidden.clone(),
             update,
@@ -315,25 +309,22 @@ mod tests {
         let v = visible(list.clone(), false);
         assert_eq!(
             v.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-            ["Alpha", "zeta"]
+            ["ALPHA", "Alpha", "zeta"]
         );
         let all = visible(list, true);
         assert!(
             all.iter().any(|p| p.name == "Runtime"),
             "system entries shown on request"
         );
-        assert_eq!(all.len(), 4);
+        assert_eq!(all.len(), 5);
     }
 
     #[test]
     fn different_versions_are_different_entries() {
-        let v = visible(
-            vec![
-                prog("Foo", "1.0", Scope::Machine),
-                prog("Foo", "2.0", Scope::Machine),
-            ],
-            false,
-        );
+        let first = prog("Foo", "1.0", Scope::Machine);
+        let mut second = prog("Foo", "2.0", Scope::Machine);
+        second.id.push_str("-v2");
+        let v = visible(vec![first, second], false);
         assert_eq!(v.len(), 2);
     }
 

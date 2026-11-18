@@ -35,6 +35,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "watch_comparisons",
         sql: include_str!("../migrations/0004_watch_comparisons.sql"),
     },
+    Migration {
+        version: 5,
+        name: "review_and_index",
+        sql: include_str!("../migrations/0005_review_and_index.sql"),
+    },
 ];
 
 /// Highest version known to this build.

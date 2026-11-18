@@ -30,8 +30,12 @@ Record the format used for each functional run. Repeat it for another format if 
 | Watch → session Change inspector / History: selected/captured/skipped scopes, registry/file split, A/B isolation, warnings, removals, hashes, pages, literal filter | Not run | Not run |
 | Case-insensitive trace, relationship links, and registry/service/task review only | Not run | Not run |
 | Quarantine, conflicting destination, restore hash, purge confirmation, and storage totals | Not run | Not run |
-| Sharing violation, junction, cross-volume NTFS and long paths | Not run | Not run |
-| Interrupted-batch/restart and legacy data preservation | Not run | Not run |
+| Exact cleanup approval: explicit link, cancel, all pages, replay, stale registration and replaced file | Not run | Not run |
+| Sharing violation, junction, named streams, cross-volume refusal and long paths | Not run | Not run |
+| Interrupted operation/restart, DB write failure and v4 → v5 data preservation | Not run | Not run |
+| Verified backup and separate restore, bad archive rejection and history-preserving rotation | Not run | Not run |
+| Packaged IPC allow/deny from main and log, capture Channels, native pickers and reviewed argv | Not run | Not run |
+| UI under bounded concurrent work, close during capture/apply/vendor process, UTC export continuation | Not run | Not run |
 | Docking: drag and keyboard move/reorder, close/reopen, focus recovery, both splitters | Not run | Not run |
 | Compact dock switcher, restart persistence, layout presets/reset and theme preview/Undo | Not run | Not run |
 | Active Watch/Scan retained; context links update existing inspector and Script preview; modal shortcuts blocked | Not run | Not run |
