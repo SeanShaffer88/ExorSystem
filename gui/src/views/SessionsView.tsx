@@ -9,6 +9,8 @@ interface Entry {
   key: string; name: string; program: InstalledProgram | null; sessionIds: number[]; removed: boolean;
 }
 const PAGE_SIZE = 16;
+// The session_items command returns this many rows per page.
+const ITEM_PAGE_SIZE = 12;
 
 export function SessionsView({ visible, initialProgramId, onTrace, onHistory, onSimulate, onCleanup, onTerminal }: {
   visible: boolean;
@@ -21,6 +23,7 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
   const [error, setError] = useState("");
   const [pending, setPending] = useState(true);
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("name");
   const [source, setSource] = useState("");
   const [showSystem, setShowSystem] = useState(false);
   const [selected, setSelected] = useState(initialProgramId ? `p:${initialProgramId}` : null);
@@ -53,6 +56,11 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
     const p = e.program;
     const text = `${e.name} ${p?.publisher ?? ""} ${p?.version ?? ""}`.toLowerCase();
     return (!source || (p?.source ?? "recorded") === source) && text.includes(query.trim().toLowerCase());
+  });
+  if (sort !== "name") shown.sort((a, b) => {
+    const first = a.program?.size_kb, second = b.program?.size_kb;
+    if (first == null || second == null) return Number(first == null) - Number(second == null);
+    return sort === "largest" ? second - first : first - second;
   });
   // Keep details stable when the user moves between result pages; changes to search clear hidden selections.
   const current = shown.find((e) => e.key === selected) ?? null;
@@ -89,6 +97,9 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
         <div className="inventory-filters">
           <label className="search-box"><Icon name="search"/><span className="sr-only">Search programs</span><input type="search" placeholder="Search name, publisher or version" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }}/></label>
           <label><span className="sr-only">Application source</span><select value={source} onChange={(e) => { setSource(e.target.value); setPage(0); }}><option value="">All sources</option><option value="registry">Classic</option><option value="msix">MSIX</option><option value="portable">Portable</option><option value="recorded">Recorded only</option></select></label>
+          <label><span className="sr-only">Sort applications</span><select value={sort} onChange={(e) => { setSort(e.target.value); setPage(null); }}>
+            <option value="name">Name A–Z</option><option value="largest">Largest first</option><option value="smallest">Smallest first</option>
+          </select></label>
           <label className="check system-filter"><input type="checkbox" checked={showSystem} onChange={(e) => { setShowSystem(e.target.checked); setPage(0); }}/> Show system components</label>
         </div>
         {shown.length > 0 ? <div className="dashboard-scroll"><table className="dashboard-table inventory-table">
@@ -123,15 +134,6 @@ function ApplicationDetail({ entry, sessions, onTrace, onHistory, onSimulate, on
 }) {
   const [selected, setSelected] = useState<number | null>(null);
   const sessionId = selected !== null && entry.sessionIds.includes(selected) ? selected : entry.sessionIds[0] ?? null;
-  const [result, setResult] = useState<{ id: number; items?: SessionItems; error?: string } | null>(null);
-  useEffect(() => {
-    if (sessionId === null) return;
-    let live = true;
-    api.sessionItems(sessionId).then((items) => { if (live) setResult({ id: sessionId, items }); })
-      .catch((e: unknown) => { if (live) setResult({ id: sessionId, error: String(e) }); });
-    return () => { live = false; };
-  }, [sessionId]);
-  const info = result?.id === sessionId ? result : null;
   const p = entry.program;
   return <aside className="card app-detail" aria-label="Application details" ref={details} tabIndex={0}>
     <button className="quiet-button inventory-back" type="button" ref={back} onClick={onBack}>Back to applications</button>
@@ -143,12 +145,45 @@ function ApplicationDetail({ entry, sessions, onTrace, onHistory, onSimulate, on
       {sessionId === null ? <p className="muted">No recorded installation is linked to this entry.</p> : <>
         {entry.sessionIds.length > 1 && <label className="field">Recorded session<select value={sessionId} onChange={(e) => setSelected(Number(e.target.value))}>{entry.sessionIds.map((id) => <option key={id} value={id}>{sessions.find((s) => s.session_id === id)?.app_name ?? "Session"} #{id}</option>)}</select></label>}
         <button className="text-button" type="button" onClick={() => onHistory(sessionId)}>Inspect session #{sessionId} <Icon name="arrow" size={15}/></button>
-        {info?.error ? <p role="alert" className="error">{info.error}</p> : !info?.items ? <p role="status">Loading evidence…</p> : <>
-          <p className="muted">{info.items.total} recorded item(s) · {info.items.shared} possibly shared</p>
-          <ul className="artifact-list">{info.items.items.slice(0, 12).map((i) => <li key={i.path}><button type="button" className="row-button" onClick={() => onTrace(i.path)} title={i.path}><span><code>{i.path}</code><small>{nodeText[i.node_type] ?? i.node_type} · {Math.round(i.confidence * 100)}% confidence</small></span><Badge tone={i.shared ? "critical" : i.node_type === "file" ? "neutral" : "review"}>{i.shared ? "Shared · keep" : i.node_type === "file" ? "Unassessed" : "Read-only"}</Badge></button></li>)}</ul>
-          {info.items.total > 12 && <small className="muted">Showing the first 12 items. Open the session inspector for recorded changes.</small>}
-        </>}
+        <RecordedItems key={sessionId} sessionId={sessionId} onTrace={onTrace}/>
       </>}
     </div>
   </aside>;
+}
+
+function RecordedItems({ sessionId, onTrace }: { sessionId: number; onTrace: (path: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const [retry, setRetry] = useState(0);
+  const filter = query.trim() || null;
+  const key = JSON.stringify([filter, page, retry]);
+  const [result, setResult] = useState<{ key: string; filter: string | null; data?: SessionItems; error?: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.sessionItems(sessionId, filter, page * ITEM_PAGE_SIZE).then((data) => { if (live) setResult({ key, filter, data }); })
+      .catch((e: unknown) => { if (live) setResult((prev) => ({ key, filter, error: String(e), data: prev?.filter === filter ? prev?.data : undefined })); });
+    return () => { live = false; };
+  }, [sessionId, filter, page, key]);
+  const current = result?.key === key ? result : null;
+  const data = current?.data;
+  const matches = result?.filter === filter ? result?.data?.matching : undefined;
+  const pages = matches === undefined ? null : Math.max(1, Math.ceil(matches / ITEM_PAGE_SIZE));
+  return <>
+    <label className="field evidence-search">Filter recorded items<input type="search" placeholder="Search recorded paths" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }}/></label>
+    {current?.error ? <div><p role="alert" className="error">Could not load recorded items: {current.error}</p><button className="quiet-button" type="button" onClick={() => setRetry((n) => n + 1)}>Retry items</button></div>
+      : !data ? <p role="status">Loading evidence…</p> : <>
+        <p className="muted" role="status">{filter ? `${data.matching} of ${data.total} recorded items match` : `${data.total} recorded item(s)`}</p>
+        {data.items.length ? <ul className="artifact-list">{data.items.map((i) => <li key={i.path}>
+          <button type="button" className="row-button" onClick={() => onTrace(i.path)} title={i.path}>
+            <span><code>{i.path}</code><small>{nodeText[i.node_type] ?? i.node_type} · {Math.round(i.confidence * 100)}% confidence</small></span>
+            <Badge tone={i.shared ? "critical" : i.node_type === "file" ? "neutral" : "review"}>{i.shared ? "Shared · keep" : i.node_type === "file" ? "Unassessed" : "Read-only"}</Badge>
+          </button>
+        </li>)}</ul> : <p className="muted">{filter ? "No recorded items match this path filter." : "No recorded items on this page."}</p>}
+      </>}
+    {(page > 0 || (pages !== null && pages > 1)) && <div className="pager evidence-pager">
+      <button type="button" aria-disabled={!page || (!data && !current?.error)} onClick={() => { if (page > 0 && (data || current?.error)) setPage(page - 1); }}>Previous items</button>
+      <span aria-live="polite">Page {page + 1}{pages !== null ? ` of ${pages}` : ""}</span>
+      <button type="button" aria-disabled={!data || !!current?.error || pages === null || page + 1 >= pages} onClick={() => { if (data && !current?.error && pages !== null && page + 1 < pages) setPage(page + 1); }}>Next items</button>
+    </div>}
+  </>;
 }

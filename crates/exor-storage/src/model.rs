@@ -160,6 +160,18 @@ pub struct WatchSummary {
     pub warnings: Vec<String>,
 }
 
+/// A recent saved comparison and its display context. Only sessions with actual comparisons enter
+/// this list, including zero-change runs and failed comparisons with no comparable scopes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchRun {
+    /// Name entered for the session.
+    pub app_name: String,
+    /// Time the comparison was saved, as UTC text.
+    pub ended_at: Option<String>,
+    /// Saved coverage and counts.
+    pub summary: WatchSummary,
+}
+
 /// A portable application a user chose to list in the inventory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortableProgram {
@@ -270,6 +282,32 @@ pub struct LedgerPage {
     pub entries: Vec<LedgerEntry>,
     /// Exclusive cursor for the next page, only present if older matches exist.
     pub next_before_id: Option<i64>,
+}
+
+/// Filters for one bounded page of the change ledger. All filters apply before pagination.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LedgerQuery<'a> {
+    /// Literal substring of the recorded path.
+    pub path_contains: Option<&'a str>,
+    /// Installation to include, or all (including unassigned observations).
+    pub session_id: Option<i64>,
+    /// Exclusive newest bound for older pages.
+    pub before_id: Option<i64>,
+    /// One evidence domain, or all domains.
+    pub domain: Option<ChangeDomain>,
+    /// One observation kind, or all kinds.
+    pub change_kind: Option<ChangeKind>,
+}
+
+/// A bounded, path-ordered page of nodes first detected in one session.
+#[derive(Debug)]
+pub struct SessionNodePage {
+    /// Number of nodes first detected in the session, before filtering.
+    pub total: usize,
+    /// Number of nodes matching the literal path filter.
+    pub matching: usize,
+    /// Nodes on the requested page.
+    pub nodes: Vec<Node>,
 }
 
 /// Stored quarantine record.

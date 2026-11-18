@@ -749,3 +749,167 @@ fn inspector_pages_classify_unlinked_removals_and_filter_before_limit() {
         (path, ChangeDomain::File)
     );
 }
+
+#[test]
+fn restart_marks_only_open_sessions_failed_without_inventing_end_time_or_comparisons() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("restart.db");
+    let store = Store::open(&db).unwrap();
+    let older = store.begin_session("Older install", None, None).unwrap();
+    store.end_session(older, SessionStatus::Completed).unwrap();
+    let saved = store.begin_session("No changes", None, None).unwrap();
+    let skipped = store.begin_session("Only coverage", None, None).unwrap();
+    for (session_id, usable) in [(saved, 1), (skipped, 0)] {
+        store
+            .record_watch_comparison::<StorageError>(|_| {
+                Ok(WatchSummary {
+                    session_id,
+                    coverage: WatchCoverage {
+                        folders: ScopeCoverage {
+                            requested: 1,
+                            usable,
+                        },
+                        ..Default::default()
+                    },
+                    files_changed: 0,
+                    registry_keys_changed: 0,
+                    services_changed: 0,
+                    tasks_changed: 0,
+                    warnings: Vec::new(),
+                })
+            })
+            .unwrap();
+    }
+    let open = store.begin_session("Interrupted", None, None).unwrap();
+    let original = store.session(open).unwrap().unwrap();
+    drop(store);
+
+    let store = Store::open(&db).unwrap();
+    let before = store.recent_watch_runs(6).unwrap();
+    assert_eq!(store.recover_unfinished_sessions().unwrap(), 1);
+    assert_eq!(store.recover_unfinished_sessions().unwrap(), 0);
+    let recovered = store.session(open).unwrap().unwrap();
+    assert_eq!(
+        recovered,
+        Session {
+            ended_at: None,
+            status: Some(SessionStatus::Failed),
+            ..original
+        }
+    );
+    assert!(store.watch_comparison(open).unwrap().is_none());
+    assert!(store.ledger_for_session(open).unwrap().is_empty());
+    assert_eq!(store.recent_watch_runs(6).unwrap(), before);
+    assert_eq!(
+        before
+            .iter()
+            .map(|run| run.summary.session_id)
+            .collect::<Vec<_>>(),
+        [skipped, saved]
+    );
+    assert_eq!(before[0].app_name, "Only coverage");
+    assert!(before[0].ended_at.is_some());
+    assert!(!before[0].summary.coverage.has_usable());
+    assert!(before[1].summary.coverage.has_usable());
+    assert_eq!(before[1].summary.files_changed, 0);
+    assert_eq!(store.recent_watch_runs(1).unwrap(), before[..1]);
+    assert_eq!(
+        store.session(older).unwrap().unwrap().status,
+        Some(SessionStatus::Completed)
+    );
+}
+
+#[test]
+fn ledger_kind_composes_with_domain_session_path_and_cursor_before_limit() {
+    let store = Store::open_in_memory().unwrap();
+    let a = store.begin_session("A", None, None).unwrap();
+    let b = store.begin_session("B", None, None).unwrap();
+    let append = |session_id, path: &str, change_kind| {
+        store
+            .append_ledger(&NewLedgerEntry {
+                session_id: Some(session_id),
+                node_id: None,
+                path: path.into(),
+                change_kind,
+                old_hash: None,
+                new_hash: None,
+                source: ChangeSource::SnapshotDiff,
+            })
+            .unwrap()
+    };
+    let old = append(a, r"HKLM32\Software\App_%\Old", ChangeKind::Deleted);
+    let new = append(a, r"HKCU\Software\App_%\New", ChangeKind::Deleted);
+    append(b, r"HKCU\Software\App_%\Other", ChangeKind::Deleted);
+    append(a, r"C:\Software\App_%\File", ChangeKind::Deleted);
+    append(a, r"HKCU\Software\App_%\Modified", ChangeKind::Modified);
+    append(a, r"HKCU\Software\App_ab\NotLiteral", ChangeKind::Deleted);
+
+    let query = LedgerQuery {
+        session_id: Some(a),
+        domain: Some(ChangeDomain::Registry),
+        path_contains: Some(r"software\app_%"),
+        change_kind: Some(ChangeKind::Deleted),
+        ..Default::default()
+    };
+    let first = store.ledger_query(1, query).unwrap();
+    assert_eq!(first.entries[0].entry_id, new);
+    assert_eq!(first.next_before_id, Some(new));
+    append(a, r"HKCU\Software\App_%\Later", ChangeKind::Deleted);
+    let older = store
+        .ledger_query(
+            1,
+            LedgerQuery {
+                before_id: first.next_before_id,
+                ..query
+            },
+        )
+        .unwrap();
+    assert_eq!(older.entries[0].entry_id, old);
+    assert!(older.next_before_id.is_none());
+}
+
+#[test]
+fn session_node_pages_search_past_the_old_500_item_preview() {
+    let mut store = Store::open_in_memory().unwrap();
+    let session = store.begin_session("Large install", None, None).unwrap();
+    let other = store.begin_session("Separate install", None, None).unwrap();
+    let nodes: Vec<_> = (0..530)
+        .rev()
+        .map(|i| {
+            node(
+                &format!(r"C:\Demo\Asset_{i:03}%.txt"),
+                NodeType::File,
+                Some(session),
+            )
+        })
+        .collect();
+    store.upsert_nodes(&nodes).unwrap();
+    store
+        .upsert_node(&node(
+            r"D:\Demo\asset_529%.txt",
+            NodeType::File,
+            Some(other),
+        ))
+        .unwrap();
+    let first = store.session_nodes_page(session, None, 0, 12).unwrap();
+    let last = store.session_nodes_page(session, None, 528, 12).unwrap();
+    assert_eq!(
+        (first.total, first.matching, first.nodes.len()),
+        (530, 530, 12)
+    );
+    assert_eq!(first.nodes[0].path, r"C:\Demo\Asset_000%.txt");
+    assert_eq!(last.nodes.len(), 2);
+    assert_eq!(last.nodes[1].path, r"C:\Demo\Asset_529%.txt");
+    let found = store
+        .session_nodes_page(session, Some(r"demo\asset_529%"), 0, 12)
+        .unwrap();
+    assert_eq!((found.total, found.matching), (530, 1));
+    assert_eq!(found.nodes, last.nodes[1..]);
+    assert!(
+        store
+            .session_nodes_page(session, Some("asset_5_%"), usize::MAX, 12)
+            .unwrap()
+            .nodes
+            .is_empty()
+    );
+}

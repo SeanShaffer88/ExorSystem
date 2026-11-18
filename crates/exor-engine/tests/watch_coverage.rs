@@ -443,3 +443,44 @@ async fn cancellation_during_a_later_probe_does_not_commit_earlier_file_changes(
         Some(SessionStatus::Failed)
     );
 }
+
+#[tokio::test]
+async fn stop_during_baseline_closes_the_session_before_any_comparison() {
+    struct StopBaseline(Cancel);
+    impl SystemProbe for StopBaseline {
+        fn services(&self) -> Result<Vec<ServiceInfo>, String> {
+            self.0.cancel();
+            Ok(Vec::new())
+        }
+        fn tasks(&self) -> Result<Vec<TaskInfo>, String> {
+            panic!("a later scope should not run after cancellation");
+        }
+    }
+    let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let stop = Cancel::new();
+    let result = InstallWatch::begin(
+        Arc::clone(&store),
+        "Stopped baseline",
+        None,
+        WatchPlan {
+            folders: &[],
+            registry: &RegistryScopes::default(),
+            services: true,
+            tasks: true,
+        },
+        Arc::new(StopBaseline(stop.clone())),
+        &stop,
+    )
+    .await;
+    assert!(matches!(result, Err(EngineError::Cancelled)));
+    let db = store.lock().unwrap();
+    let sessions = db.sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].status, Some(SessionStatus::Failed));
+    assert!(db.recent_watch_runs(6).unwrap().is_empty());
+    assert!(
+        db.ledger_for_session(sessions[0].session_id)
+            .unwrap()
+            .is_empty()
+    );
+}
