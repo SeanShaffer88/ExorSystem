@@ -13,7 +13,7 @@ ExorSystem records system changes and helps people review the evidence before cl
 - **Dockable workspace** ([PR #26](https://github.com/SeanShaffer88/ExorSystem/pull/26)): move and resize panels, save layouts, use a compact dock switcher, and retain Watch/Scan progress while switching tools. The activity log is separate from the read-only Script preview.
 - **Stable package promotion** ([PR #23](https://github.com/SeanShaffer88/ExorSystem/pull/23), [PR #27](https://github.com/SeanShaffer88/ExorSystem/pull/27)): publish a retained candidate using its original SHA-256-verified packages rather than rebuilding. Passing CI and package verification are required; interactive testing is optional.
 
-## Unreleased development
+## v0.3.0 release scope
 
 - **Audited desktop boundaries:** exact cleanup plans, verified profile backup and archive rotation, bounded capture and exports, separate main/log permissions. See the [remediation verification matrix](docs/AUDIT-REMEDIATION.md) for unverified Windows scenarios.
 

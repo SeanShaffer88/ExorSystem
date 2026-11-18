@@ -18,7 +18,7 @@
 | Live USN/registry port, kernel driver, WDK, signing | Not run | Windows user-mode sources and standalone lab probe are built/type-checked; real capture, driver build/load, assigned altitude and production signing have no evidence. Nothing is enabled or packaged by default. |
 | Windows 10/11 accessibility, DPI and log-window docking | Not run | Empty [client evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md); no Narrator, high-contrast, or multi-monitor test results. |
 
-## Unreleased audit-remediation work
+## v0.3.0 audit remediation
 
 See [the remediation verification matrix](docs/AUDIT-REMEDIATION.md) for the new controls, local checks, and the still-open native release gates. The table above is historical baseline evidence.
 
