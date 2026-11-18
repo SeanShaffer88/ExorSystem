@@ -138,8 +138,9 @@ pub fn rename_open(file: &File, dest: &Path) -> io::Result<()> {
     let name = wide(dest)?;
     let offset = offset_of!(FILE_RENAME_INFO, FileName);
     let name_bytes = size_of_val(name.as_slice());
-    let bytes = (offset + name_bytes).max(size_of::<FILE_RENAME_INFO>());
-    // Storage aligned for the Windows structure; trailing name is length-delimited UTF-16.
+    // Win32's path conversion needs a NUL after the filename, but FileNameLength excludes it.
+    let bytes = (offset + name_bytes + size_of::<u16>()).max(size_of::<FILE_RENAME_INFO>());
+    // Zero-initialized storage includes the terminator and is aligned for the Windows structure.
     let mut buffer = vec![0_usize; bytes.div_ceil(size_of::<usize>())];
     let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     // SAFETY: a suitably aligned allocation holds the full header and trailing name. Windows
