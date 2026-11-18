@@ -6,7 +6,7 @@ import { getPolicy } from "../settings";
 import type { PolicyAction, Session, SimulationView } from "../types";
 
 const PAGE_SIZE = 50;
-export function SimulatorView({ initialSessionId }: { initialSessionId: number | null }) {
+export function SimulatorView({ visible, initialSessionId }: { visible: boolean; initialSessionId: number | null }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState(initialSessionId);
   const [template, setTemplate] = useState(getPolicy());
@@ -17,10 +17,11 @@ export function SimulatorView({ initialSessionId }: { initialSessionId: number |
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (!visible) return;
     let live = true;
     api.listSessions().then((s) => { if (live) setSessions(s); }).catch((e: unknown) => { if (live) setError(String(e)); });
     return () => { live = false; };
-  }, []);
+  }, [visible]);
 
   const run = async (e: React.FormEvent) => {
     e.preventDefault();

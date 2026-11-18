@@ -35,6 +35,9 @@ const shapes = {
   trash: <><path d="M3 6h18M8 6V3h8v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></>,
   list: <><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></>,
   monitor: <><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v4m-4 0h8"/></>,
+  layout: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 15h18M15 4v11"/></>,
+  dockRight: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16m3-11v6"/></>,
+  dockBottom: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 13h18m-12 3.5h6"/></>,
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof shapes;

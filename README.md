@@ -14,7 +14,7 @@ Get the Windows x64 NSIS installer, MSI, or portable ZIP from [GitHub Releases](
 
 | Layer | Path | Tech | Status |
 |---|---|---|---|
-| GUI | `gui/` | Tauri v2 + React/TypeScript, keyboard-first, plain-language reports | workspace dashboard, split inspector, guided uninstall, docked log |
+| GUI | `gui/` | Tauri v2 + React/TypeScript, keyboard-first, plain-language reports | dockable workspace, split inspector, guided uninstall, activity log |
 | User-space engine | `crates/exor-engine` | Rust + tokio, BLAKE3 | implemented, 100% safe Rust, tested |
 | Storage | `crates/exor-storage` | SQLite, WAL | implemented, tested |
 | Windows sources | `crates/exor-win` | windows-rs: registry snapshots, inventory, USN journal, driver client | see [verification matrix](AUDIT.md) |
@@ -24,7 +24,7 @@ See the [dashboard guide](docs/DASHBOARD.md), [architecture](docs/ARCHITECTURE.m
 
 ## Features
 
-- **Workspace dashboard**: installed inventory, recent changes, cleanup metrics, and links into focused review tools. Storage totals reflect recorded file sizes, not measured free space.
+- **Dockable workspace**: arrange tools as tabs in Main, Right or Bottom. Resize splits, apply a layout preset, or keep Watch and the Activity log beside the evidence you are reviewing. Overview shows inventory, recent changes, and cleanup metrics. Storage totals reflect recorded file sizes, not measured free space.
 - **Program inventory**: classic Windows programs, current-user MSIX apps, and portable apps added explicitly in Settings. MSIX and portable entries are listed without uninstall actions.
 - **Guided leftover review**: preview the registered command, confirm the vendor uninstall, and separately review possible leftover folders, registry keys, services and tasks. ExorSystem runs without elevation and launches only supported live machine-wide registrations; use Windows Settings for per-user or incompatible uninstallers. System findings are read-only.
 - **BOM & inference graph**: confidence `1.0` manifest-confirmed, `0.7` inferred from timing, `0.3` heuristic/unknown. Edges are cycle-checked.

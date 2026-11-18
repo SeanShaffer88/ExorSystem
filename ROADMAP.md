@@ -14,6 +14,7 @@ ExorSystem records system changes and helps people review the evidence before cl
 
 | Roadmap item | Delivered | Remaining verification |
 |---|---|---|
+| Modular workspace | Move, resize and reopen panels with mouse or keyboard; presets, compact docks and local layout persistence | Verify the exact Windows 10/11 client packages using the [docking checklist](docs/WINDOWS-RELEASE.md#docking-and-accessibility-on-each-windows-client). |
 | Review install evidence | Session-scoped History, storage regression tests and built-bundle browser smoke | Run Watch → History against real HKCU and file changes on Windows 10 and 11, including removals and two separate sessions. |
 | Cleanup boundaries ([original review #18](https://github.com/SeanShaffer88/ExorSystem/pull/18)) | Remove desktop elevation instead of adding privileged storage. Enforce live machine-registration uninstall commands and use a new per-user profile; preserve older portable data. Derive quarantine paths by ID, refuse links and overwrites, and recover both cleanup entry points after failed record/ledger writes. | Exercise standard/elevated startup, the supported classic uninstall path and cleanup failure drills in the native release matrix. |
 | Repeatable release checks | Build-only package workflow, static artifact inspection, disposable Windows fixture, end-to-end [runbook](docs/WINDOWS-RELEASE.md) and [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md) | Complete and attach Windows 10/11 results for NSIS, MSI and portable ZIP. Do not replace desktop checks with Windows Server CI. |
@@ -33,7 +34,7 @@ Use the [Windows runbook](docs/WINDOWS-RELEASE.md), not a live user profile. Che
 - Pass Linux/Windows CI and the **Windows candidate packages (no publish)** workflow. These are automated gates, not desktop sign-off.
 - [ ] Verify installation/extraction, normal launch, WebView2, elevation behavior, upgrade/removal and data location on both Windows 10 and 11 x64 for each installer format where applicable.
 - [ ] Verify real Watch → History, inventory and uninstall/review, quarantine/restore/purge, and Windows-specific failure drills with disposable fixture data.
-- [ ] Verify keyboard navigation, Narrator, high contrast, 100%/150% DPI, and activity-log docking across two monitors. Attach completed evidence before [tagging and publishing the same packages](docs/WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate).
+- [ ] Verify dock moves and splitters, persistence, Watch/Scan continuity, keyboard navigation, Narrator, high contrast, 100%/150% DPI, and Activity log on both clients. Attach completed evidence before [tagging and publishing the same packages](docs/WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate).
 
 ## Driver work is separate
 

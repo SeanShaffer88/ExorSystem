@@ -1,14 +1,21 @@
 import { invoke, listen } from "./bridge";
 
 export interface LogLine {
+  seq: number;
   t: number;
   level: "info" | "warn" | "error";
   msg: string;
 }
 
+export interface LogSnapshot {
+  cleared_through: number;
+  lines: LogLine[];
+}
+
 export const logApi = {
-  get: () => invoke<LogLine[]>("get_log"),
-  clear: () => invoke<void>("clear_log"),
+  get: () => invoke<LogSnapshot>("get_log"),
+  clear: () => invoke<number>("clear_log"),
+  onClear: (cb: (through: number) => void) => listen<number>("log-cleared", (e) => cb(e.payload)),
   isOpen: () => invoke<boolean>("log_is_open"),
   /** Slide the log window out or back behind the main window. */
   setOpen: (open: boolean) =>

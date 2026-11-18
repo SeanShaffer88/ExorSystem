@@ -50,8 +50,8 @@ export function ScanView() {
       <h2 id="h-scan">Scan folder</h2>
       <p>Records the current state of a folder. Read only; the window stays responsive while it runs.</p>
       <form onSubmit={start}>
-        <label htmlFor="root">Folder</label>
-        <input id="root" value={root} onChange={(e) => setRoot(e.target.value)} title="Full path of the folder to scan, for example C:\Program Files\App" />
+        <label htmlFor="scan-root">Folder</label>
+        <input id="scan-root" value={root} onChange={(e) => setRoot(e.target.value)} title="Full path of the folder to scan, for example C:\Program Files\App" />
         <button type="submit" disabled={running} title="Start scanning this folder">Scan</button>
         <button type="button" disabled={!running} onClick={() => void api.cancelScan()} title="Stop the scan; nothing is changed">Cancel</button>
       </form>

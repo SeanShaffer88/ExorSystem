@@ -81,11 +81,12 @@ export function startDemo() {
   const logs: LogLine[] = [];
   const subscriptions = new Map<string, Set<(payload: unknown) => void>>();
   let active: { baseline: WatchStart; folder?: string; registry?: string } | null = null;
-  let logOpen = false;
-  let logWindow: Window | null = null;
+  let sequence = 0;
+  let clearedThrough = 0;
   const updateLog = (msg: string) => {
-    const line: LogLine = { t: Date.now(), level: "info", msg };
+    const line: LogLine = { seq: ++sequence, t: Date.now(), level: "info", msg };
     logs.push(line);
+    if (logs.length > 1000) logs.shift();
     for (const callback of subscriptions.get("log") ?? []) callback(line);
   };
   const moveFixture = (session_id: number | null) => {
@@ -114,15 +115,12 @@ export function startDemo() {
     },
     async invoke(command, args) {
       switch (command) {
-        case "get_log": return [...logs];
-        case "clear_log": logs.splice(0); return;
-        case "log_is_open": return logOpen && !!logWindow && !logWindow.closed;
-        case "set_log_open": {
-          logOpen = !!args.open && window.location.hash !== "#log";
-          if (logOpen) logWindow = window.open("#log", "exor-demo-log", "popup,width=420,height=380");
-          else if (window.location.hash === "#log") window.close(); else logWindow?.close();
-          for (const callback of subscriptions.get("log-open") ?? []) callback(logOpen && !!logWindow);
-          return;
+        case "get_log": return { cleared_through: clearedThrough, lines: [...logs] };
+        case "clear_log": {
+          logs.length = 0;
+          clearedThrough = sequence;
+          for (const callback of subscriptions.get("log-cleared") ?? []) callback(clearedThrough);
+          return clearedThrough;
         }
         case "app_info": return { version: "0.2.0", data_folder: String.raw`C:\Users\Demo\AppData\Local\ExorSystem`, quarantine_folder: String.raw`C:\Users\Demo\AppData\Local\ExorSystem\quarantine`, legacy_data_folder: null, recovery_warnings: [] } satisfies AppInfo;
         case "list_templates": return templates;

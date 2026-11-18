@@ -6,4 +6,6 @@
 4. `relationships.png`: One-hop graph from a recorded artifact with a dependency or shared edge.
 5. `cleanup.png`: Cleanup summary with held, purged, and restored batches, or the simulator with policy decisions.
 
+6. `docks.png`: Investigation layout with Watch, Change inspector, and Activity log visible. Capture the compact dock switcher as a separate shot.
+
 Capture at 100% and 150% DPI. Use fixture paths or redact user data. Browser demo screenshots are not native release evidence.

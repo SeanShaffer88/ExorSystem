@@ -8,10 +8,16 @@ const tiers: { key: keyof Risk; title: string; advice: string }[] = [
   { key: "high", title: "High risk", advice: "Change one at a time, after making a restore point." },
 ];
 
-export function RiskView() {
+export function RiskView({ visible }: { visible: boolean }) {
   const [risk, setRisk] = useState<Risk | null>(null);
   const [error, setError] = useState("");
-  useEffect(() => { api.updateRisk().then(setRisk).catch((e: unknown) => setError(String(e))); }, []);
+  useEffect(() => {
+    if (!visible) return;
+    let live = true;
+    setError("");
+    api.updateRisk().then((value) => { if (live) setRisk(value); }).catch((e: unknown) => { if (live) setError(String(e)); });
+    return () => { live = false; };
+  }, [visible]);
   if (error) return <p role="alert" className="error">{error}</p>;
   if (!risk) return <p>Loading…</p>;
   const total = risk.low.length + risk.medium.length + risk.high.length;

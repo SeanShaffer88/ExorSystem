@@ -1,7 +1,7 @@
 //! The activity-log window: a small fixed-size borderless window docked to the right edge of the
 //! main window. It rests hidden *behind* the main window and slides out sideways when opened.
 //!
-//! Also owns the in-memory activity log (a ring buffer) that feeds it.
+//! Also owns the in-memory activity log shared by the main workspace and the attached window.
 
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -20,6 +20,8 @@ const STEP_MS: u64 = 12;
 /// One line of the activity log.
 #[derive(Clone, Serialize)]
 pub struct LogLine {
+    /// Session-local sequence, so multiple views can merge a snapshot with streamed events.
+    pub seq: u64,
     /// Milliseconds since the Unix epoch.
     pub t: u64,
     /// `info`, `warn` or `error`.
@@ -28,10 +30,23 @@ pub struct LogLine {
     pub msg: String,
 }
 
+#[derive(Serialize)]
+pub struct LogSnapshot {
+    cleared_through: u64,
+    lines: Vec<LogLine>,
+}
+
+#[derive(Default)]
+struct LogBuffer {
+    lines: VecDeque<LogLine>,
+    last_sequence: u64,
+    cleared_through: u64,
+}
+
 /// Log buffer plus slide state. Managed by Tauri.
 #[derive(Default)]
 pub struct Dock {
-    lines: Mutex<VecDeque<LogLine>>,
+    buffer: Mutex<LogBuffer>,
     /// Where the window is heading: `true` = out, `false` = tucked behind.
     open: AtomicBool,
     /// Bumped by every slide so an older animation stops when a newer one starts.
@@ -42,7 +57,13 @@ pub struct Dock {
 
 /// Record a line and tell every window.
 pub fn log(app: &AppHandle, level: &'static str, msg: impl Into<String>) {
+    let dock = app.state::<Dock>();
+    let Ok(mut buffer) = dock.buffer.lock() else {
+        return;
+    };
+    buffer.last_sequence += 1;
     let line = LogLine {
+        seq: buffer.last_sequence,
         t: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -50,12 +71,11 @@ pub fn log(app: &AppHandle, level: &'static str, msg: impl Into<String>) {
         level,
         msg: msg.into(),
     };
-    if let Ok(mut q) = app.state::<Dock>().lines.lock() {
-        if q.len() >= MAX_LINES {
-            q.pop_front();
-        }
-        q.push_back(line.clone());
+    if buffer.lines.len() >= MAX_LINES {
+        buffer.lines.pop_front();
     }
+    buffer.lines.push_back(line.clone());
+    drop(buffer);
     let _ = app.emit("log", line);
 }
 
@@ -162,18 +182,31 @@ pub fn follow(app: &AppHandle) {
 }
 
 #[tauri::command]
-pub fn get_log(dock: tauri::State<'_, Dock>) -> Vec<LogLine> {
-    dock.lines
+pub fn get_log(dock: tauri::State<'_, Dock>) -> Result<LogSnapshot, String> {
+    let buffer = dock
+        .buffer
         .lock()
-        .map(|q| q.iter().cloned().collect())
-        .unwrap_or_default()
+        .map_err(|_| "could not read the activity log")?;
+    Ok(LogSnapshot {
+        cleared_through: buffer.cleared_through,
+        lines: buffer.lines.iter().cloned().collect(),
+    })
 }
 
 #[tauri::command]
-pub fn clear_log(dock: tauri::State<'_, Dock>) {
-    if let Ok(mut q) = dock.lines.lock() {
-        q.clear();
-    }
+pub fn clear_log(app: AppHandle, dock: tauri::State<'_, Dock>) -> Result<u64, String> {
+    let cleared_through = {
+        let mut buffer = dock
+            .buffer
+            .lock()
+            .map_err(|_| "could not clear the activity log")?;
+        buffer.lines.clear();
+        buffer.cleared_through = buffer.last_sequence;
+        buffer.cleared_through
+    };
+    // An event before this sequence can still be in flight to a WebView.
+    let _ = app.emit("log-cleared", cleared_through);
+    Ok(cleared_through)
 }
 
 #[tauri::command]

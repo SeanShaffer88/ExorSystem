@@ -5,6 +5,8 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 ## [Unreleased]
 
 ### Added
+- Dockable workspace panels with keyboard and drag-and-drop placement, resize, saved layouts, compact navigation, and presets. Watch and Scan keep running when moved or hidden.
+- Activity log panel with common scrollback and clear behavior across the workspace and optional attached window.
 - Local workspace dashboard with filterable applications, a registry snapshot monitor, and an evidence inspector with independent registry/file pages and before/after details.
 - Guided uninstall with a read-only terminal preview, explicit vendor launch and quarantine confirmations, and a cleanup summary. The engine re-reads the live registration before starting the reviewed invocation.
 - One-hop relationship graph with evidence and confidence for each recorded link; storage charts of logical file lengths by quarantine outcome.
