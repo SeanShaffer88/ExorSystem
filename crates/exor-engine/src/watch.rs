@@ -6,12 +6,12 @@
 use crate::cancel::Cancel;
 use crate::collectors::{ServiceInfo, TaskInfo, diff_services, diff_tasks};
 use crate::error::{EngineError, Result, io_err};
-use crate::monitor::SessionMonitor;
+use crate::monitor::{SessionMonitor, WatchChanges};
 use crate::registry::{RegistryKeyState, RegistryScope, RegistryScopes, diff_registry_keys};
 use crate::snapshot::{CaptureOptions, capture};
 use crate::trie::{PathTrie, diff};
+pub use exor_storage::{ScopeCoverage, WatchCoverage, WatchSummary};
 use exor_storage::{SessionStatus, Store};
-use serde::Serialize;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -53,56 +53,6 @@ pub struct WatchPlan<'a> {
     pub services: bool,
     /// Include scheduled-task metadata.
     pub tasks: bool,
-}
-
-/// Scope counts for one source. A skipped source is different from an opted-out source.
-#[derive(Debug, Default, Clone, Copy, Serialize, PartialEq, Eq)]
-pub struct ScopeCoverage {
-    /// Number of folders or subtrees requested, or 0/1 for each system probe.
-    pub requested: usize,
-    /// Usable baselines at start; successfully compared snapshot pairs at finish.
-    pub usable: usize,
-}
-
-/// Baseline or comparison coverage, independent of how many changes were observed.
-#[derive(Debug, Default, Clone, Copy, Serialize, PartialEq, Eq)]
-pub struct WatchCoverage {
-    /// Folder scopes.
-    pub folders: ScopeCoverage,
-    /// Registry subtree scopes.
-    pub registry: ScopeCoverage,
-    /// Service listing scope.
-    pub services: ScopeCoverage,
-    /// Scheduled-task scope.
-    pub tasks: ScopeCoverage,
-}
-
-impl WatchCoverage {
-    /// Whether at least one scope has evidence at this stage.
-    pub fn has_usable(&self) -> bool {
-        [self.folders, self.registry, self.services, self.tasks]
-            .iter()
-            .any(|scope| scope.usable > 0)
-    }
-}
-
-/// Result of [`InstallWatch::finish`]. Counts are only meaningful for compared scopes.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct WatchSummary {
-    /// Session that now holds the evidence, or a failed session if there were no comparable scopes.
-    pub session_id: i64,
-    /// Successfully compared scopes out of those requested.
-    pub coverage: WatchCoverage,
-    /// Files added, changed or removed in comparable watched folders.
-    pub files_changed: usize,
-    /// Service changes recorded.
-    pub services_changed: usize,
-    /// Scheduled-task changes recorded.
-    pub tasks_changed: usize,
-    /// Registry key changes recorded.
-    pub registry_keys_changed: usize,
-    /// Reasons for skipped scopes at either end of the watch.
-    pub warnings: Vec<String>,
 }
 
 /// An installation being watched.
@@ -319,26 +269,28 @@ impl InstallWatch {
         self.monitor.finish(SessionStatus::Failed)
     }
 
-    /// Re-capture the usable baselines, record evidence, and close the session.
+    /// Re-capture the usable baselines, then commit the changes and coverage together.
     pub async fn finish(mut self, cancel: &Cancel) -> Result<WatchSummary> {
-        match self.record(cancel).await {
-            Ok(summary) => {
-                let status = if summary.coverage.has_usable() {
-                    SessionStatus::Completed
-                } else {
-                    SessionStatus::Failed
-                };
-                self.monitor.finish(status)?;
-                Ok(summary)
-            }
+        let (summary, changes) = match self.compare(cancel).await {
+            Ok(comparison) => comparison,
             Err(e) => {
                 let _ = self.monitor.finish(SessionStatus::Failed);
-                Err(e)
+                return Err(e);
             }
-        }
+        };
+        let monitor = self.monitor;
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = monitor.record_watch(summary, &changes, &cancel);
+            if result.is_err() {
+                let _ = monitor.finish(SessionStatus::Failed);
+            }
+            result
+        })
+        .await?
     }
 
-    async fn record(&mut self, cancel: &Cancel) -> Result<WatchSummary> {
+    async fn compare(&mut self, cancel: &Cancel) -> Result<(WatchSummary, WatchChanges)> {
         let mut summary = WatchSummary {
             session_id: self.session_id(),
             coverage: self.coverage,
@@ -352,10 +304,11 @@ impl InstallWatch {
         summary.coverage.services.usable = 0;
         summary.coverage.tasks.usable = 0;
         summary.coverage.registry.usable = 0;
-        for (root, before) in &self.roots {
-            match folder_snapshot(root, Some(before), cancel).await {
+        let mut changes = WatchChanges::default();
+        for (root, before) in std::mem::take(&mut self.roots) {
+            match folder_snapshot(&root, Some(&before), cancel).await {
                 Ok(after) => {
-                    summary.files_changed += self.monitor.attribute_diff(&diff(before, &after))?;
+                    changes.files.extend(diff(&before, &after));
                     summary.coverage.folders.usable += 1;
                 }
                 Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
@@ -369,9 +322,7 @@ impl InstallWatch {
             cancel.check()?;
             match probe_services(&self.probe).await {
                 Ok(new) => {
-                    summary.services_changed = self
-                        .monitor
-                        .attribute_services(&diff_services(&old, &new))?;
+                    changes.services = diff_services(&old, &new);
                     summary.coverage.services.usable = 1;
                 }
                 Err(e) => summary
@@ -383,8 +334,7 @@ impl InstallWatch {
             cancel.check()?;
             match probe_tasks(&self.probe).await {
                 Ok(new) => {
-                    summary.tasks_changed =
-                        self.monitor.attribute_tasks(&diff_tasks(&old, &new))?;
+                    changes.tasks = diff_tasks(&old, &new);
                     summary.coverage.tasks.usable = 1;
                 }
                 Err(e) => summary.warnings.push(format!(
@@ -398,9 +348,7 @@ impl InstallWatch {
             cancel.check()?;
             match after {
                 Ok(after) => {
-                    summary.registry_keys_changed += self
-                        .monitor
-                        .attribute_registry_keys(&diff_registry_keys(&before, &after))?;
+                    changes.registry.extend(diff_registry_keys(&before, &after));
                     summary.coverage.registry.usable += 1;
                 }
                 Err(e) => summary.warnings.push(format!(
@@ -409,6 +357,6 @@ impl InstallWatch {
             }
         }
         cancel.check()?;
-        Ok(summary)
+        Ok((summary, changes))
     }
 }

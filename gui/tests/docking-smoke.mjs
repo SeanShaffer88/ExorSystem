@@ -6,6 +6,10 @@ import { mockDesktop } from './ipc-fixture.mjs';
 // WebView2's HTML drop events do not reach the app with Tauri's native drop handler enabled.
 const config = JSON.parse(await readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
 assert.equal(config.app.windows.find(window => window.label === 'main').dragDropEnabled, false);
+const logWindow = config.app.windows.find(window => window.label === 'log');
+assert.equal(logWindow.parent, 'main');
+assert.equal(logWindow.visible, false);
+assert.equal(logWindow.focus, false);
 const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
 const layoutKey = 'exor.workspace.layout.v1';
 try {
@@ -55,7 +59,7 @@ try {
     await page.mouse.up();
   };
 
-  await page.goto('https://exor.test/?deferred-log');
+  await page.goto('https://exor.test/');
   await panel('Overview').waitFor();
   assert(await panel('Overview').evaluate(el => {
     const dataTransfer = new DataTransfer();
@@ -127,16 +131,39 @@ try {
   assert(await wizard.isVisible());
   assert.equal(await page.locator('#tab-activity').count(), 0);
   assert.equal(await page.locator('#tab-history').count(), 0);
+  assert.equal((await callsOf('set_log_open')).length, 0);
   await page.keyboard.press('Escape');
 
-  // Preserve a second dock's selected tool while the activity stream comes forward.
+  // All desktop launchers drive the native window without creating or selecting a dock tab.
+  const logToggle = btn('Toggle activity log');
+  const logPressed = (on) => page.locator(`.status-actions [aria-pressed="${on}"]`).waitFor();
+  const beforeLog = await saved();
   await page.keyboard.press('Control+Backquote');
-  const activity = panel('Activity log');
+  await logPressed(true);
+  assert.equal(await tool('Activity log').getAttribute('aria-pressed'), 'true');
+  await logToggle.click();
+  await logPressed(false);
+  await tool('Script preview').focus();
+  await page.keyboard.press('ArrowDown');
+  assert(await focused(tool('Activity log')));
+  assert.equal((await callsOf('set_log_open')).length, 2, 'focusing the launcher must not toggle the window');
+  await page.keyboard.press('Enter');
+  assert.equal(await tool('Activity log').getAttribute('aria-pressed'), 'true');
+  await page.evaluate(() => window.setExorLogOpen(false)); // Native close, e.g. Alt+F4.
+  await logPressed(false);
+  assert.deepEqual(await saved(), beforeLog);
+  assert.equal(await page.locator('#tab-activity').count(), 0);
+  assert.equal(await page.getByRole('log').count(), 0);
+
+  // Exercise the attached WebView's actual route, not a replacement dock panel.
+  const activity = await browser.newPage({ viewport: { width: 1000, height: 180 } });
+  activity.on('pageerror', error => errors.push(error.message));
+  await mockDesktop(activity);
+  await activity.goto('https://exor.test/?deferred-log#log');
   const log = activity.getByRole('log', { name: 'Activity messages' });
   await log.waitFor();
-  assert(await focused(tab('Activity log')));
-  await page.waitForFunction(() => !!window.releaseExorLog);
-  await page.evaluate(() => {
+  await activity.waitForFunction(() => !!window.releaseExorLog);
+  await activity.evaluate(() => {
     const line = { seq: 2, t: 1, level: 'warn', msg: 'A warning' };
     window.appendExorLog({ seq: 3, t: 1, level: 'error', msg: 'A failure' });
     window.appendExorLog(line);
@@ -145,10 +172,9 @@ try {
   await log.getByText(/A failure/).waitFor();
   assert.deepEqual(await log.locator('.log-l').allTextContents(), ['WARN', 'FAIL']);
   assert.equal(await log.getByText(/A warning/).count(), 1);
-  assert.equal(await page.locator('.status-text').textContent(), 'A failure');
-  await activity.getByRole('button', { name: 'Clear log', exact: true }).click();
+  await activity.getByRole('button', { name: 'Clear', exact: true }).click();
   await log.getByText('No activity yet.').waitFor();
-  await page.evaluate(() => {
+  await activity.evaluate(() => {
     window.releaseExorLog(); // Response from before the clear; must not bring the old line back.
     window.emitExor('log', { seq: 2, t: 1, level: 'warn', msg: 'Late, already cleared' });
     window.appendExorLog({ seq: 4, t: 1, level: 'info', msg: 'After clear' });
@@ -156,13 +182,14 @@ try {
   });
   await log.getByText(/After clear/).waitFor();
   assert.equal(await log.locator('.logline').count(), 1);
-  await btn('Open attached window').click();
-  await btn('Hide attached window').waitFor();
-  await btn('Hide attached window').click();
-  assert.deepEqual((await callsOf('set_log_open')).map(([, args]) => args.open), [true, false]);
+  await activity.getByRole('button', { name: 'Close', exact: true }).click();
+  await log.press('Escape');
+  assert.deepEqual(await activity.evaluate(() => window.exorCalls.filter(([name]) => name === 'set_log_open').map(([, args]) => args)), [{ open: false }, { open: false }]);
+  await activity.close();
 
   await preset(/Investigation layout/);
   assert(await focused(tab('Change inspector')));
+  assert.equal(await bottom.count(), 0);
   await panel('Change inspector').getByLabel('Filter by path').fill('No matching path');
   const watch = panel('Registry monitor');
   await watch.getByLabel('Application name', { exact: true }).fill('Watch Fixture');
@@ -178,7 +205,8 @@ try {
   await watch.getByRole('button', {name: 'Compare snapshots', exact: true}).click();
   await watch.getByText('Comparing snapshots…', { exact: true }).waitFor();
   await keyboardMove('Registry monitor', 'Bottom dock');
-  await tab('Activity log').click();
+  await tool('Script preview').click();
+  await keyboardMove('Script preview', 'Bottom dock');
   assert.equal(await watch.count(), 0);
   await page.evaluate(() => window.finishWatchSnapshot());
   await tool('Registry monitor').click();
@@ -214,17 +242,20 @@ try {
   assert(!(await page.evaluate(() => window.exorCalls)).some(([name]) => destructive.test(name)));
 
   // Persist placement, order, focus and percentages across an actual reload of the app bundle.
+  await tool('Script preview').click();
+  await keyboardMove('Script preview', 'Bottom dock');
   await right.press('End');
   await bottom.press('ArrowUp');
+  await tool('Cleanup summary').click();
   await keyboardMove('Cleanup summary', 'Right dock');
-  await tab('Activity log').press('Delete');
   const before = await saved();
   await page.goto('https://exor.test/');
   await rightTabs.getByRole('tab', { name: 'Cleanup summary' }).waitFor();
   assert.deepEqual(await saved(), before);
   assert.equal(await right.getAttribute('aria-valuenow'), String(before.sizes.right));
-  await btn('Toggle activity log panel').click();
-  await bottomTabs.getByRole('tab', { name: 'Activity log' }).waitFor();
+  await logToggle.click();
+  await logPressed(true);
+  assert.deepEqual(await saved(), before);
   const wide = await saved();
   const switcher = page.getByRole('navigation', { name: 'Compact docks' });
   for (const size of [{ width: 800, height: 560 }, { width: 390, height: 844 }, { width: 1360, height: 410 }]) {
@@ -250,8 +281,8 @@ try {
   await inject(JSON.stringify({ version: 1, groups: {
     main: { ids: ['overview', 'overview', 'not-a-tool', 7], active: 'unavailable' },
     right: { ids: ['overview', 'history'], active: 'overview' },
-    bottom: { ids: 'malformed' },
-  }, sizes: { right: -40, bottom: 999 }, focus: 'missing', reopen: { activity: 'nowhere', scan: 'right' } }));
+    bottom: { ids: ['activity'], active: 'activity' },
+  }, sizes: { right: -40, bottom: 999 }, focus: 'bottom', reopen: { activity: 'bottom', scan: 'right' } }));
   await page.reload();
   await rightTabs.getByRole('tab', { name: 'Change inspector' }).waitFor();
   const fixed = await saved();
@@ -261,6 +292,8 @@ try {
   assert.equal(fixed.focus, 'main');
   assert.deepEqual(fixed.sizes, { right: 34, bottom: 52 });
   assert.deepEqual(fixed.reopen, { scan: 'right' });
+  assert.equal(await bottom.count(), 0);
+  assert.equal((await callsOf('set_log_open')).length, 0);
   await preset(/Reset layout/);
   assert.deepEqual(await mainTabs.getByRole('tab').allTextContents(), ['Overview', 'Applications']);
   assert.equal(await right.count(), 0);
@@ -275,8 +308,48 @@ try {
   await page.reload();
   await panel('Overview').waitFor();
   assert.deepEqual(await mainTabs.getByRole('tab').allTextContents(), ['Overview', 'Applications']);
+  // A long detail card stays in the dock scrollport after selecting a lower list row, and every
+  // evidence item is reachable. The compact detail page restores the previous page and row focus.
+  await page.setViewportSize({ width: 1280, height: 560 });
+  await page.goto('https://exor.test/?inventory-stress');
+  await tab('Applications').click();
+  const inventory = applications.getByRole('region', { name: 'Application inventory' });
+  const detail = applications.getByRole('complementary', { name: 'Application details' });
+  const selected = inventory.getByRole('button', { name: /^Inventory Fixture 24 / });
+  const lastEvidence = detail.getByRole('button', { name: /Evidence-12 / });
+  const back = detail.getByRole('button', { name: 'Back to applications' });
+  const within = (locator) => locator.evaluate(el => {
+    const visible = el.closest('.dock-panel').getBoundingClientRect();
+    const bounds = el.getBoundingClientRect();
+    return bounds.top >= visible.top && bounds.bottom <= visible.bottom + 1 &&
+      bounds.left >= visible.left && bounds.right <= visible.right + 1;
+  });
+  await inventory.getByRole('button', { name: 'Next', exact: true }).click();
+  await selected.click();
+  await lastEvidence.waitFor();
+  assert(await within(detail), 'wide details should be visible after picking a scrolled list row');
+  assert(await detail.evaluate(el => el.scrollHeight > el.clientHeight && el.scrollWidth <= el.clientWidth));
+  await lastEvidence.focus();
+  assert(await within(lastEvidence), 'the last evidence action must be reachable in a short window');
+  assert(await focused(lastEvidence));
+
+  await page.setViewportSize({ width: 390, height: 560 });
+  await back.click();
+  assert(await focused(selected));
+  assert.equal(await selected.getAttribute('aria-pressed'), 'false');
+  await selected.press('Enter');
+  await lastEvidence.waitFor();
+  assert(await focused(back));
+  assert(await within(back));
+  assert.equal(await inventory.count(), 0);
+  assert(await applications.evaluate(el => el.scrollWidth <= el.clientWidth));
+  await lastEvidence.focus();
+  assert(await within(lastEvidence));
+  await back.press('Enter');
+  assert(await focused(selected));
+  await inventory.getByText(/Page 2 of/).waitFor();
   assert.deepEqual(errors, []);
-  console.log('Docking smoke passed: keyboard and pointer docking, resize, focus and compact layout, reload and reset, retained Watch/Scan, cross-panel requests, and ordered Activity log.');
+  console.log('Docking smoke passed: keyboard and pointer docking, resize, focus and compact layout, reload and reset, retained Watch/Scan, cross-panel requests, visible application details, and ordered Activity log in its own route.');
 } finally {
   await browser.close();
 }

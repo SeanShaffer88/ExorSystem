@@ -4,6 +4,10 @@
 pub mod proto;
 pub mod usn;
 
+#[cfg(any(windows, test))]
+mod activity_layout;
+#[cfg(windows)]
+mod activity_window;
 #[cfg(windows)]
 mod desktop;
 #[cfg(windows)]
@@ -19,6 +23,8 @@ mod services_source;
 #[cfg(windows)]
 mod usn_source;
 
+#[cfg(windows)]
+pub use activity_window::{place_activity_window, show_activity_window};
 #[cfg(windows)]
 pub use desktop::{
     prepare_user_data_dir, process_is_elevated, show_startup_error, uninstall_executable,

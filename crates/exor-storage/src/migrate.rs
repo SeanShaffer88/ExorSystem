@@ -30,6 +30,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "inventory_and_lookup",
         sql: include_str!("../migrations/0003_inventory_and_lookup.sql"),
     },
+    Migration {
+        version: 4,
+        name: "watch_comparisons",
+        sql: include_str!("../migrations/0004_watch_comparisons.sql"),
+    },
 ];
 
 /// Highest version known to this build.

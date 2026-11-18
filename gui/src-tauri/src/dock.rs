@@ -1,21 +1,14 @@
-//! The activity-log window: a small fixed-size borderless window docked to the right edge of the
-//! main window. It rests hidden *behind* the main window and slides out sideways when opened.
-//!
-//! Also owns the in-memory activity log shared by the main workspace and the attached window.
+//! The owned Activity log window attaches below the main window without taking focus. The
+//! in-memory log is shared with the main window's status bar.
 
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LINES: usize = 1000;
-/// Logical size of the log window.
-const WIDTH: f64 = 420.0;
-const HEIGHT: f64 = 380.0;
-const STEPS: u32 = 14;
-const STEP_MS: u64 = 12;
 
 /// One line of the activity log.
 #[derive(Clone, Serialize)]
@@ -43,16 +36,13 @@ struct LogBuffer {
     cleared_through: u64,
 }
 
-/// Log buffer plus slide state. Managed by Tauri.
+/// Scrollback plus native visibility and work-area reservation state.
 #[derive(Default)]
 pub struct Dock {
     buffer: Mutex<LogBuffer>,
-    /// Where the window is heading: `true` = out, `false` = tucked behind.
     open: AtomicBool,
-    /// Bumped by every slide so an older animation stops when a newer one starts.
-    generation: AtomicU64,
-    /// Current slide position, 0.0 (hidden behind) to 1.0 (fully out).
-    frac: Mutex<f64>,
+    reserved: AtomicBool,
+    follow_pending: AtomicBool,
 }
 
 /// Record a line and tell every window.
@@ -79,106 +69,127 @@ pub fn log(app: &AppHandle, level: &'static str, msg: impl Into<String>) {
     let _ = app.emit("log", line);
 }
 
-fn windows(app: &AppHandle) -> Option<(WebviewWindow, WebviewWindow)> {
-    Some((
-        app.get_webview_window("main")?,
-        app.get_webview_window("log")?,
-    ))
+// Called only on the GUI thread. The owned window follows minimize/restore automatically, but we
+// still reconcile on restore (including a close requested while the main window was minimized).
+fn reconcile(app: &AppHandle, open: bool) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or("main window not found")?;
+    let log = app
+        .get_webview_window("log")
+        .ok_or("activity log window not found")?;
+    let result = |e: tauri::Error| e.to_string();
+    #[cfg(windows)]
+    let log_hwnd = log.hwnd().map_err(result)?;
+    if !open {
+        #[cfg(windows)]
+        exor_win::show_activity_window(log_hwnd, false)?;
+        #[cfg(not(windows))]
+        log.hide().map_err(result)?;
+    }
+    if main.is_minimized().map_err(result)? {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        let dock = app.state::<Dock>();
+        let mut reserved = dock.reserved.load(Ordering::SeqCst);
+        if open || reserved {
+            let monitor = main
+                .current_monitor()
+                .map_err(result)?
+                .ok_or("monitor not found")?;
+            let area = monitor.work_area();
+            let placement = exor_win::place_activity_window(
+                main.hwnd().map_err(result)?,
+                log_hwnd,
+                (
+                    area.position.x,
+                    area.position.y,
+                    area.size.width,
+                    area.size.height,
+                ),
+                monitor.scale_factor(),
+                open,
+                &mut reserved,
+            );
+            dock.reserved.store(reserved, Ordering::SeqCst);
+            placement?;
+        }
+    }
+    if open {
+        #[cfg(windows)]
+        exor_win::show_activity_window(log_hwnd, true)?;
+        #[cfg(not(windows))]
+        log.show().map_err(result)?;
+    }
+    Ok(())
 }
 
-/// Fixed size, scaled for the screen and never taller than the main window.
-fn fit(main: &WebviewWindow, log: &WebviewWindow) -> Option<PhysicalSize<u32>> {
-    let scale = main.scale_factor().ok()?;
-    let main_h = main.outer_size().ok()?.height as f64;
-    let h = (HEIGHT * scale).min(main_h * 0.9).max(120.0 * scale);
-    let size = PhysicalSize::new((WIDTH * scale).round() as u32, h.round() as u32);
-    log.set_size(size).ok()?;
-    Some(size)
-}
-
-/// Put the log window at slide position `f`, bottom-aligned with the main window. At `f = 0` it
-/// sits entirely inside the main window's footprint, so the main window covers it.
-fn place(main: &WebviewWindow, log: &WebviewWindow, f: f64) -> Option<()> {
-    let mp = main.outer_position().ok()?;
-    let ms = main.outer_size().ok()?;
-    let ls = log.outer_size().ok()?;
-    let right = mp.x + ms.width as i32;
-    let x = right - ls.width as i32 + (f * ls.width as f64).round() as i32;
-    let y = mp.y + ms.height as i32 - ls.height as i32;
-    log.set_position(PhysicalPosition::new(x, y)).ok()
-}
-
-fn ease(t: f64) -> f64 {
-    1.0 - (1.0 - t).powi(3)
-}
-
-/// Slide the log window out (`true`) or back behind the main window (`false`).
-pub fn set_open(app: &AppHandle, open: bool, animate: bool) {
+fn set_open(app: &AppHandle, open: bool) -> Result<(), String> {
     let dock = app.state::<Dock>();
-    if dock.open.swap(open, Ordering::SeqCst) == open {
+    // Initial placement can itself send DPI/resize notifications. Let them queue a follow pass.
+    dock.open.store(open, Ordering::SeqCst);
+    let result = reconcile(app, open);
+    if open && result.is_err() {
+        // If the owner was resized but the attachment failed, give the space back.
+        let _ = reconcile(app, false);
+    }
+    let open = open && result.is_ok();
+    dock.open.store(open, Ordering::SeqCst);
+    let _ = app.emit("log-open", open);
+    result
+}
+
+/// Batch move, resize, restore and DPI notifications. Do not change bounds recursively from a
+/// window callback: SetWindowPos can synchronously deliver further native messages.
+pub fn follow(app: &AppHandle) {
+    let dock = app.state::<Dock>();
+    if !(dock.open.load(Ordering::SeqCst) || dock.reserved.load(Ordering::SeqCst))
+        || dock.follow_pending.swap(true, Ordering::SeqCst)
+    {
         return;
     }
-    let generation = dock.generation.fetch_add(1, Ordering::SeqCst) + 1;
     let app = app.clone();
-    std::thread::spawn(move || {
-        let Some((main, log)) = windows(&app) else {
-            return;
-        };
-        let dock = app.state::<Dock>();
-        if open {
-            if fit(&main, &log).is_none() {
-                return;
-            }
-            if !log.is_visible().unwrap_or(false) {
-                *dock.frac.lock().unwrap_or_else(|e| e.into_inner()) = 0.0;
-                place(&main, &log, 0.0);
-                let _ = log.show();
-                // showing activates the window; hand focus straight back so it stays underneath
-                let _ = main.set_focus();
-            }
-        }
-        let from = *dock.frac.lock().unwrap_or_else(|e| e.into_inner());
-        let to = if open { 1.0 } else { 0.0 };
-        let steps = if animate { STEPS } else { 1 };
-        for i in 1..=steps {
-            if dock.generation.load(Ordering::SeqCst) != generation {
-                return;
-            }
-            let f = from + (to - from) * ease(f64::from(i) / f64::from(steps));
-            place(&main, &log, f);
-            *dock.frac.lock().unwrap_or_else(|e| e.into_inner()) = f;
-            if i < steps {
-                std::thread::sleep(Duration::from_millis(STEP_MS));
-            }
-        }
-        if !open && dock.generation.load(Ordering::SeqCst) == generation {
-            let _ = log.hide();
+    tauri::async_runtime::spawn(async move {
+        let handle = app.clone();
+        if app
+            .run_on_main_thread(move || {
+                let dock = handle.state::<Dock>();
+                dock.follow_pending.store(false, Ordering::SeqCst);
+                let open = dock.open.load(Ordering::SeqCst);
+                if let Err(e) = reconcile(&handle, open)
+                    && open
+                {
+                    let _ = set_open(&handle, false);
+                    log(
+                        &handle,
+                        "error",
+                        format!("Could not keep the activity log attached: {e}"),
+                    );
+                }
+            })
+            .is_err()
+        {
+            app.state::<Dock>()
+                .follow_pending
+                .store(false, Ordering::SeqCst);
         }
     });
 }
 
-/// Keep the log window glued to the main window when it moves, resizes or minimizes.
-pub fn follow(app: &AppHandle) {
-    let dock = app.state::<Dock>();
-    if !dock.open.load(Ordering::SeqCst) {
-        return;
-    }
-    let Some((main, log)) = windows(app) else {
-        return;
-    };
-    if main.is_minimized().unwrap_or(false) {
-        let _ = log.hide();
-        return;
-    }
-    // a slide in progress places the window itself on its next step
-    let f = *dock.frac.lock().unwrap_or_else(|e| e.into_inner());
-    if fit(&main, &log).is_some() {
-        place(&main, &log, f);
-    }
-    if !log.is_visible().unwrap_or(true) {
-        let _ = log.show();
-        let _ = main.set_focus();
-    }
+/// Native close (for example Alt+F4) hides the owned window without destroying its scrollback.
+pub fn close(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = set_log_open(app.clone(), Some(false)).await {
+            log(
+                &app,
+                "error",
+                format!("Could not close the activity log: {e}"),
+            );
+        }
+    });
 }
 
 #[tauri::command]
@@ -210,9 +221,18 @@ pub fn clear_log(app: AppHandle, dock: tauri::State<'_, Dock>) -> Result<u64, St
 }
 
 #[tauri::command]
-pub fn set_log_open(app: AppHandle, open: bool, animate: bool) {
-    set_open(&app, open, animate);
-    let _ = app.emit("log-open", open);
+pub async fn set_log_open(app: AppHandle, open: Option<bool>) -> Result<(), String> {
+    let (send, mut receive) = tauri::async_runtime::channel(1);
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let open = open.unwrap_or_else(|| !handle.state::<Dock>().open.load(Ordering::SeqCst));
+        let _ = send.try_send(set_open(&handle, open));
+    })
+    .map_err(|e| e.to_string())?;
+    receive
+        .recv()
+        .await
+        .ok_or_else(|| "window update interrupted".to_string())?
 }
 
 #[tauri::command]

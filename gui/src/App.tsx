@@ -7,17 +7,18 @@ import { DockWorkspace, tabId } from "./docking/DockWorkspace";
 import { dockName, dockReducer, locationOf, readLayout, saveLayout, workspaceState, type DockArea, type LayoutPreset } from "./docking/layout";
 import { PanelModule, type Inputs, type Requests } from "./docking/PanelModule";
 import { panel, quickTools, toolGroups, tools, type PanelId } from "./docking/panels";
+import { logApi } from "./logApi";
 import { StatusBar } from "./StatusBar";
 import { ThemeUndoBar } from "./ThemeUndoBar";
 
 const presets = [
   { id: "default", title: "Reset layout", detail: "Overview and inventory in one dock" },
-  { id: "investigate", title: "Investigation layout", detail: "Evidence, Watch and activity together" },
+  { id: "investigate", title: "Investigation layout", detail: "Evidence and Watch side by side" },
   { id: "cleanup", title: "Cleanup layout", detail: "Batches beside a dry run; no actions run" },
 ] as const;
 
 export function App({ demo = false }: { demo?: boolean }) {
-  const [state, dispatch] = useReducer(dockReducer, null, () => workspaceState(readLayout()));
+  const [state, dispatch] = useReducer(dockReducer, null, () => workspaceState(readLayout(demo), demo));
   const { layout } = state;
   const current = layout.groups[layout.focus].active;
   const [compact, setCompact] = useState(false);
@@ -25,6 +26,27 @@ export function App({ demo = false }: { demo?: boolean }) {
   const [watching, setWatching] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ id?: PanelId } | null>(null);
   const log = useActivityLog();
+  const [attachedLog, setAttachedLog] = useState(false);
+  const [logError, setLogError] = useState("");
+  useEffect(() => {
+    if (demo) return;
+    let live = true;
+    let updated = false;
+    const listener = logApi.onOpen((open) => {
+      updated = true;
+      if (live) setAttachedLog(open);
+    });
+    void listener.then(async () => {
+      const open = await logApi.isOpen();
+      if (live && !updated) setAttachedLog(open);
+    }).catch((e: unknown) => { if (live) setLogError(`Activity log unavailable: ${String(e)}`); });
+    return () => { live = false; void listener.then((stop) => stop()).catch(() => {}); };
+  }, [demo]);
+
+  const toggleAttachment = useCallback(() => {
+    setLogError("");
+    void logApi.setOpen().catch((e: unknown) => setLogError(`Could not toggle the activity log: ${String(e)}`));
+  }, []);
 
   useEffect(() => saveLayout(layout), [layout]);
   useLayoutEffect(() => {
@@ -37,9 +59,10 @@ export function App({ demo = false }: { demo?: boolean }) {
   }, [current, focusRequest]);
 
   const open = useCallback((id: PanelId, focus = true) => {
+    if (id === "activity" && !demo) { toggleAttachment(); return; }
     dispatch({ kind: "open", id });
     if (focus) setFocusRequest({ id });
-  }, []);
+  }, [demo, toggleAttachment]);
   const close = useCallback((id: PanelId) => {
     dispatch({ kind: "close", id }); setFocusRequest({});
   }, []);
@@ -55,8 +78,12 @@ export function App({ demo = false }: { demo?: boolean }) {
   };
 
   const logArea = locationOf(layout, "activity");
-  const logVisible = !!logArea && layout.groups[logArea].active === "activity" && (!compact || layout.focus === logArea);
-  const toggleLog = useCallback(() => { if (logVisible) close("activity"); else open("activity"); }, [close, logVisible, open]);
+  const logVisible = demo
+    ? !!logArea && layout.groups[logArea].active === "activity" && (!compact || layout.focus === logArea)
+    : attachedLog;
+  const toggleLog = useCallback(() => {
+    if (demo && logVisible) close("activity"); else open("activity");
+  }, [close, demo, logVisible, open]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (document.querySelector("dialog[open]")) return;
@@ -78,7 +105,11 @@ export function App({ demo = false }: { demo?: boolean }) {
     const n = tools.length;
     const next = e.key === "ArrowDown" || e.key === "ArrowRight" ? (i + 1) % n : e.key === "ArrowUp" || e.key === "ArrowLeft" ? (i + n - 1) % n : e.key === "Home" ? 0 : e.key === "End" ? n - 1 : -1;
     const id = tools[next];
-    if (id) { e.preventDefault(); open(id, false); document.getElementById(`tool-${id}`)?.focus(); }
+    if (id) {
+      e.preventDefault();
+      if (demo || id !== "activity") open(id, false);
+      document.getElementById(`tool-${id}`)?.focus();
+    }
   };
 
   // Tauri's file drop handler is off for the main WebView to let HTML tab drags through.
@@ -97,8 +128,9 @@ export function App({ demo = false }: { demo?: boolean }) {
             const area = locationOf(layout, id);
             const index = quickTools.indexOf(id);
             const description = [area && `Open in ${dockName[area]}`, id === "watch" && watching && "Watch in progress"].filter(Boolean).join(". ");
-            return <button key={id} id={`tool-${id}`} data-tool={id} data-open={!!area} type="button" className="nav-tab"
-              aria-current={current === id ? "page" : undefined} aria-keyshortcuts={index >= 0 ? `Alt+${index + 1}` : undefined}
+            const attachment = !demo && id === "activity";
+            return <button key={id} id={`tool-${id}`} data-tool={id} data-open={attachment ? attachedLog : !!area} type="button" className="nav-tab"
+              aria-pressed={attachment ? attachedLog : undefined} aria-current={current === id ? "page" : undefined} aria-keyshortcuts={index >= 0 ? `Alt+${index + 1}` : undefined}
               tabIndex={(current ?? tools[0]) === id ? 0 : -1} title={spec.title} aria-description={description || undefined} onClick={() => open(id, false)}>
               <Icon name={spec.icon} size={17}/><span className="nav-text">{spec.title}</span>
               {id === "watch" && watching && <span className="nav-indicator" aria-hidden="true"/>}
@@ -116,7 +148,7 @@ export function App({ demo = false }: { demo?: boolean }) {
         <Disclosure label="Workspace layout" icon="layout" text="Layout">{(hide) => <>
           <strong>Workspace layout</strong>
           {presets.map(({ id, title, detail }) => <button key={id} type="button" className="layout-preset" onClick={() => { hide(); apply(id); }}>
-            <span className="preset-diagram" data-preset={id} aria-hidden="true"><i/><i/><i/></span>
+            <span className="preset-diagram" data-preset={id} data-bottom={demo} aria-hidden="true"><i/><i/><i/></span>
             <span>{title}<small>{detail}</small></span>
           </button>)}
           <small className="muted">Drag a tab or use its dock button. Layout preferences are saved locally. Reset does not erase evidence or cancel a watch.</small>
@@ -129,6 +161,6 @@ export function App({ demo = false }: { demo?: boolean }) {
         onFocus={(area) => dispatch({ kind: "focus", area })} onResize={(area, value) => dispatch({ kind: "resize", area, value })}
         renderPanel={(id, visible) => <PanelModule id={id} visible={visible} requests={requests} navigation={{ open, request }} log={log} onWatching={setWatching}/>}/>
     </main>
-    <StatusBar last={log.lines.at(-1)?.msg ?? "Ready"} logOpen={logVisible} onLog={toggleLog} onTerminal={() => open("terminal")}/>
+    <StatusBar last={log.lines.at(-1)?.msg ?? "Ready"} logError={logError} logOpen={logVisible} onLog={toggleLog} onTerminal={() => open("terminal")}/>
   </div>;
 }

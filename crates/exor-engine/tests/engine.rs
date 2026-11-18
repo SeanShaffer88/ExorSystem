@@ -630,4 +630,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
         "{all:?}"
     );
     assert!(all.iter().any(|s| s.session_id == sid));
+    for session in all {
+        assert!(st.watch_comparison(session.session_id).unwrap().is_none());
+    }
 }

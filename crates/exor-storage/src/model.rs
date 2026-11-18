@@ -110,6 +110,56 @@ pub struct Session {
     pub status: Option<SessionStatus>,
 }
 
+/// Scope counts for one source. A skipped source is different from an opted-out source.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScopeCoverage {
+    /// Number of folders or subtrees requested, or 0/1 for each system probe.
+    pub requested: usize,
+    /// Usable baselines at start; successfully compared snapshot pairs at finish.
+    pub usable: usize,
+}
+
+/// Baseline or comparison coverage, independent of how many changes were observed.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WatchCoverage {
+    /// Folder scopes.
+    pub folders: ScopeCoverage,
+    /// Registry subtree scopes.
+    pub registry: ScopeCoverage,
+    /// Service listing scope.
+    pub services: ScopeCoverage,
+    /// Scheduled-task scope.
+    pub tasks: ScopeCoverage,
+}
+
+impl WatchCoverage {
+    /// Whether at least one scope has evidence at this stage.
+    pub fn has_usable(&self) -> bool {
+        [self.folders, self.registry, self.services, self.tasks]
+            .iter()
+            .any(|scope| scope.usable > 0)
+    }
+}
+
+/// Saved result of a Watch comparison. Counts are only meaningful for compared scopes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WatchSummary {
+    /// Session that now holds the evidence, or a failed session if there were no comparable scopes.
+    pub session_id: i64,
+    /// Successfully compared scopes out of those requested.
+    pub coverage: WatchCoverage,
+    /// Files added, changed or removed in comparable watched folders.
+    pub files_changed: usize,
+    /// Service changes recorded.
+    pub services_changed: usize,
+    /// Scheduled-task changes recorded.
+    pub tasks_changed: usize,
+    /// Registry key changes recorded.
+    pub registry_keys_changed: usize,
+    /// Reasons for skipped scopes at either end of the watch.
+    pub warnings: Vec<String>,
+}
+
 /// A portable application a user chose to list in the inventory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortableProgram {

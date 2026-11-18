@@ -851,6 +851,24 @@ struct HistoryPage {
     next_before_id: Option<i64>,
 }
 
+/// Read the saved scope coverage for this session without re-reading the system.
+#[tauri::command]
+async fn watch_comparison(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Option<WatchSummary>, String> {
+    let store = Arc::clone(&state.store);
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .lock()
+            .map_err(|_| "internal lock poisoned".to_string())?
+            .watch_comparison(session_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Read one page of evidence by installation and path, including changes without a known node.
 #[tauri::command]
 async fn history(
@@ -1254,12 +1272,26 @@ fn run() -> Result<(), String> {
             _profile_lock: profile_lock,
         })
         .setup(move |app| {
-            let handle = app.handle().clone();
             if let Some(main) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
                 main.on_window_event(move |e| match e {
-                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => dock::follow(&handle),
+                    WindowEvent::Moved(_)
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::Focused(true) => dock::follow(&handle),
                     // the hidden log window must not keep the app alive
                     WindowEvent::CloseRequested { .. } => handle.exit(0),
+                    _ => {}
+                });
+            }
+            if let Some(log) = app.get_webview_window("log") {
+                let handle = app.handle().clone();
+                log.on_window_event(move |e| match e {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        dock::close(&handle);
+                    }
+                    WindowEvent::ScaleFactorChanged { .. } => dock::follow(&handle),
                     _ => {}
                 });
             }
@@ -1298,6 +1330,7 @@ fn run() -> Result<(), String> {
             inventory::register_portable_program,
             inventory::forget_portable_program,
             history,
+            watch_comparison,
             export_report,
             list_templates,
             app_info,

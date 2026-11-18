@@ -221,6 +221,66 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Commit a Watch's evidence, coverage and terminal session status together. `record` makes
+    /// synchronous writes on this store and returns its comparison summary. It must not start a
+    /// nested transaction. An error anywhere leaves the evidence and comparison uncommitted.
+    pub fn record_watch_comparison<E>(
+        &self,
+        record: impl FnOnce(&Self) -> std::result::Result<WatchSummary, E>,
+    ) -> std::result::Result<WatchSummary, E>
+    where
+        E: From<StorageError>,
+    {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(StorageError::from)?;
+        let summary = record(self)?;
+        let status = if summary.coverage.has_usable() {
+            SessionStatus::Completed
+        } else {
+            SessionStatus::Failed
+        };
+        let updated = tx
+            .execute(
+                "UPDATE installation_sessions SET ended_at = CURRENT_TIMESTAMP, status = ?2
+             WHERE session_id = ?1 AND status = 'monitoring'",
+                params![summary.session_id, status.as_str()],
+            )
+            .map_err(StorageError::from)?;
+        if updated == 0 {
+            return Err(StorageError::NotFound(format!(
+                "open Watch session {}",
+                summary.session_id
+            ))
+            .into());
+        }
+        tx.execute(
+            "INSERT INTO watch_comparisons(session_id, summary_json) VALUES (?1, ?2)",
+            params![
+                summary.session_id,
+                serde_json::to_string(&summary).map_err(StorageError::from)?
+            ],
+        )
+        .map_err(StorageError::from)?;
+        tx.commit().map_err(StorageError::from)?;
+        Ok(summary)
+    }
+
+    /// Read the saved comparison; older, cancelled and non-Watch sessions have no row.
+    pub fn watch_comparison(&self, session_id: i64) -> Result<Option<WatchSummary>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT summary_json FROM watch_comparisons WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        json.map(|text| serde_json::from_str(&text).map_err(StorageError::from))
+            .transpose()
+    }
+
     // ---- portable inventory ----
 
     /// Add a portable application or update its display name.

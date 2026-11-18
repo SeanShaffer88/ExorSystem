@@ -13,6 +13,12 @@ ExorSystem records system changes and helps people review the evidence before cl
 - **Dockable workspace** ([PR #26](https://github.com/SeanShaffer88/ExorSystem/pull/26)): move and resize panels, save layouts, use a compact dock switcher, and retain Watch/Scan progress while switching tools. The activity log is separate from the read-only Script preview.
 - **Stable package promotion** ([PR #23](https://github.com/SeanShaffer88/ExorSystem/pull/23), [PR #27](https://github.com/SeanShaffer88/ExorSystem/pull/27)): publish a retained candidate using its original SHA-256-verified packages rather than rebuilding. Passing CI and package verification are required; interactive testing is optional.
 
+## Unreleased development
+
+- **Retain comparison context:** History and installation reports show what a Watch compared, including skipped scopes and comparisons with zero changes. Scope coverage is saved with the observations; old sessions without coverage remain unknown. This is a local profile upgrade, not a change to v0.2.0 packages or a native Windows test result.
+
+- **Workspace refinements:** scrollable Applications details and a separate Activity log attached below the Windows desktop. Closing the log returns its space to the maximized workspace.
+
 ## Watch an install
 
 - Enter full paths to the folders you want to watch. No folders are selected by default. Select Services or Scheduled tasks only if you want their read-only metadata checked.
@@ -24,19 +30,13 @@ ExorSystem records system changes and helps people review the evidence before cl
 
 Pass Linux/Windows CI and the **Windows candidate packages (no publish)** workflow. Use [Release](docs/WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) to verify and promote the retained packages from a commit reachable from `main`, without rebuilding or reusing a tag. Interactive client sign-off is not required.
 
-### v0.2.0 release handoff
+### v0.2.0 release evidence
 
-**Status on 2026-11-18: candidate ready, publication pending.** `v0.1.0` is still the latest stable release.
-
-- [x] Version `0.2.0` is aligned in the workspace and desktop manifests. [Release notes](docs/releases/v0.2.0.md) cover the upgrade backup and per-user profile.
-- [x] [CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786809) and [Windows candidate verification](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786871) passed for `c3aa8c0c0c2d8ac20d107f62b91c38b5eb67b142`, which is reachable from `main`. [Artifact 14413771647](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786871/artifacts/14413771647) contains the NSIS installer, MSI, portable ZIP, `SHA256SUMS.txt`, and `PACKAGE-CHECKS.json`. It expires **2026-12-18 09:12:52 UTC**.
-- [x] The manual workflow on `main` accepts `candidate_run_id` and does not require interactive test results.
-- [ ] Dispatch [Actions → Release → Run workflow](https://github.com/SeanShaffer88/ExorSystem/actions/workflows/release.yml) on `main`, using `44272786871` as `candidate_run_id`. A maintainer with Actions write access must start it: the integration's dispatch attempt was denied and created no run. If the artifact expires, use a new verified candidate run instead.
-- [ ] After the workflow passes, verify that `v0.2.0` is the latest public stable release, its tag points to the selected candidate commit, and the three packages and two verification files are attached.
+[v0.2.0](https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.2.0) was published on **2026-11-18**. The [promotion run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44284479160) tagged `c3aa8c0c0c2d8ac20d107f62b91c38b5eb67b142` and published the retained NSIS installer, MSI, and portable ZIP without rebuilding. The release attaches `SHA256SUMS.txt` and `PACKAGE-CHECKS.json`; [CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786809) and [static package verification](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786871) passed for that source commit. Back up legacy data as described in the [release notes](docs/releases/v0.2.0.md) before upgrading.
 
 ### Optional Windows client testing
 
-The full interactive matrix has **not run** on the v0.2.0 candidate. Use the [Windows runbook](docs/WINDOWS-RELEASE.md), not a live user profile. If you run client tests, record the exact commit, package SHA-256, OS build, results, and logs in the [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md).
+The full interactive matrix has **not run** for the v0.2.0 packages. Use the [Windows runbook](docs/WINDOWS-RELEASE.md), not a live user profile. If you run client tests, record the exact commit, package SHA-256, OS build, results, and logs in the [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md).
 
 - [ ] Verify installation/extraction, normal launch, WebView2, elevation behavior, upgrade/removal and data location on both Windows 10 and 11 x64 for each installer format where applicable.
 - [ ] Verify real Watch → History, inventory and uninstall/review, quarantine/restore/purge, and Windows-specific failure drills with disposable fixture data.
@@ -44,4 +44,4 @@ The full interactive matrix has **not run** on the v0.2.0 candidate. Use the [Wi
 
 ## Driver work is separate
 
-The normal desktop release does not require a driver. Keep the [live-source lab gates](docs/LIVE-COLLECTION.md#distribution-gates-open) separate from desktop publishing. Real USN and registry callback capture, WDK build/load, Microsoft altitude assignment, and signing remain open. Neither live source is enabled in the v0.2.0 desktop candidate.
+The normal desktop release does not require a driver. Keep the [live-source lab gates](docs/LIVE-COLLECTION.md#distribution-gates-open) separate from desktop publishing. Real USN and registry callback capture, WDK build/load, Microsoft altitude assignment, and signing remain open. Neither live source is enabled in the v0.2.0 desktop release.

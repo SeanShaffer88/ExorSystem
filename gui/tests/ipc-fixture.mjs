@@ -20,6 +20,12 @@ export async function mockDesktop(page) {
     const userApp = { ...app, id: 'HKCU\\Fixture', name: 'Per-user Fixture', scope: 'user' };
     const msix = { ...standard, name: 'Alpha Package', source: 'msix', id: 'msix:AlphaPackage' };
     const moveable = 'C:\\Program Files\\Zed Widget';
+    const stressInventory = new URLSearchParams(location.search).has('inventory-stress');
+    const stressRows = stressInventory ? Array.from({ length: 32 }, (_, i) => ({
+      program: { ...standard, source: 'registry', id: `stress-${i + 1}`, name: `Inventory Fixture ${i + 1}`,
+        install_location: 'C:\\' + 'UnbrokenDirectoryName'.repeat(i === 23 ? 20 : 1) },
+      removed: false, session_ids: i === 23 ? [9] : [],
+    })) : [];
     let portable = [];
     let removed = false;
     let invocationChanged = true;
@@ -31,7 +37,8 @@ export async function mockDesktop(page) {
     ];
     let watch = null;
     let nextWatchId = 40;
-    let watchRecorded = false;
+    const comparisons = new Map();
+    let coverageFailed = false;
     let historyFailed = false;
     const historyRows = [
       { id: 44, session_id: null, path: String.raw`C:\Unassigned.dat`, what: 'quarantined', source: 'policy' },
@@ -52,6 +59,7 @@ export async function mockDesktop(page) {
     const initial = { seq: 1, t: 1_750_000_000_000, level: 'info', msg: 'Fixture started' };
     const entries = [initial];
     let logOpen = false;
+    window.setExorLogOpen = (open) => { logOpen = open; emit('log-open', open); };
     let clearedThrough = 0;
     window.appendExorLog = (line) => { entries.push(line); emit('log', line); };
     const delayedLog = new URLSearchParams(window.location.search).has('deferred-log');
@@ -85,7 +93,7 @@ export async function mockDesktop(page) {
             return clearedThrough;
           }
           case 'log_is_open': return logOpen;
-          case 'set_log_open': logOpen = args.open; emit('log-open', logOpen); return null;
+          case 'set_log_open': window.setExorLogOpen(args.open ?? !logOpen); return null;
           case 'scan': {
             const send = callbacks.get(args.onEvent.id);
             send({ index: 0, message: { event: 'progress', data: { phase: 'hashing', files_seen: 6, files_hashed: 2, bytes_hashed: 5 } } });
@@ -95,10 +103,24 @@ export async function mockDesktop(page) {
             return null;
           }
           case 'update_risk': return { low: [], medium: [], high: [] };
-          case 'list_sessions': return watchRecorded ? [
-            { session_id: 40, app_name: 'Watch Fixture', status: 'completed' },
+          case 'list_sessions': return [
+            ...[...comparisons.values()].reverse().map(({ session_id, coverage }) => ({
+              session_id, app_name: 'Watch Fixture',
+              status: Object.values(coverage).some((scope) => scope.usable) ? 'completed' : 'failed',
+            })),
             { session_id: 9, app_name: 'Another Fixture', status: 'completed' },
-          ] : [{ session_id: 9, app_name: 'Another Fixture', status: 'completed' }];
+          ];
+          case 'watch_comparison': {
+            if (args.sessionId === 40 && !coverageFailed) {
+              coverageFailed = true;
+              throw new Error('coverage temporarily unavailable');
+            }
+            if (window.deferCoverage === args.sessionId) {
+              window.deferCoverage = null;
+              await new Promise(resolve => { window.releaseCoverage = resolve; });
+            }
+            return comparisons.get(args.sessionId) ?? null;
+          }
           case 'history': {
             if (![5, 6, 100].includes(args.limit)) throw new Error('unexpected history page size');
             if (args.filter === 'Retry fixture' && !historyFailed) {
@@ -140,15 +162,17 @@ export async function mockDesktop(page) {
             const current = watch;
             watch = null;
             const counts = { files_changed: 0, services_changed: 0, tasks_changed: 0, registry_keys_changed: 0 };
-            if (current.session_id === 41) return { ...current, ...counts };
-            if (current.session_id === 43) return {
-              ...current, ...counts, coverage: { ...current.coverage, tasks: { requested: 1, usable: 0 } },
+            let summary = { ...current, ...counts };
+            if (current.session_id === 43) summary = {
+              ...summary, coverage: { ...current.coverage, tasks: { requested: 1, usable: 0 } },
               warnings: ['Scheduled tasks were not checked after changes: access denied.'],
             };
-            if (current.session_id !== 40) throw new Error('file snapshot failed');
-            await new Promise(resolve => { window.finishWatchSnapshot = resolve; });
-            watchRecorded = true;
-            return { ...current, ...counts, files_changed: 2, registry_keys_changed: 2 };
+            else if (current.session_id === 40) {
+              await new Promise(resolve => { window.finishWatchSnapshot = resolve; });
+              summary = { ...summary, files_changed: 2, registry_keys_changed: 2 };
+            } else if (current.session_id !== 41) throw new Error('file snapshot failed');
+            comparisons.set(summary.session_id, summary);
+            return summary;
           }
           case 'cancel_watch':
             if (!watch) throw new Error('no watch to cancel');
@@ -158,8 +182,14 @@ export async function mockDesktop(page) {
             { program: removed ? { ...app, uninstall_command: null } : app, session_ids: [], removed },
             { program: msix, session_ids: [], removed: false },
             { program: userApp, session_ids: [], removed: false },
+            ...stressRows,
             ...portable.map((p) => ({program: {...standard, ...p, source: 'portable', id: 'portable:'+p.executable}, session_ids: [], removed: false})),
           ], warnings: ['One inventory source could not be checked.'] };
+          case 'session_items': return {
+            total: 13, shared: 12,
+            items: Array.from({ length: 12 }, (_, i) => ({ path: 'HKCU\\' + 'VeryLongRegistryKey'.repeat(8) + `\\Evidence-${i + 1}`,
+              node_type: 'registry_key', confidence: .95, shared: true })),
+          };
           case 'preview_uninstaller':
             if (args.programId !== app.id || removed) throw new Error('unsupported registration');
             return argv;

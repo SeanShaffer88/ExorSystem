@@ -28,6 +28,7 @@ export const api = {
     invoke<QuarantineResult>("quarantine_leftovers", { programId, folders, sessionId }),
   history: (filter: string | null, limit: number, sessionId: number | null, beforeId: number | null, domain: ChangeDomain | null = null) =>
     invoke<HistoryPage>("history", { filter, limit, sessionId, beforeId, domain }),
+  watchComparison: (sessionId: number) => invoke<WatchSummary | null>("watch_comparison", { sessionId }),
   exportReport: (sessionId: number, template: string) => invoke<string>("export_report", { sessionId, template }),
   makePortable: (sessionId: number) => invoke<PortableView>("make_portable", { sessionId }),
   updateRisk: () => invoke<RiskView>("update_risk"),

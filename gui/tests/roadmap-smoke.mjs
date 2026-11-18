@@ -181,6 +181,17 @@ try {
   const historySession = page.locator('#panel-history').getByLabel('Installation', {exact: true});
   await historySession.getByRole('option', {name: 'Watch Fixture (#40)', exact: true}).waitFor({state: 'attached'});
   assert.equal(await historySession.inputValue(), '40');
+  const savedCoverage = page.getByRole('region', { name: 'Saved watch coverage' });
+  const savedCards = savedCoverage.getByRole('region', { name: 'Comparison coverage' });
+  await savedCoverage.getByRole('alert').getByText(/coverage temporarily unavailable/).waitFor();
+  await savedCoverage.getByRole('button', { name: 'Retry coverage' }).click();
+  await savedCoverage.getByText('Comparison incomplete', {exact: true}).waitFor();
+  await scope(savedCards, 'Registry').getByText('1 of 2 subtrees compared').waitFor();
+  await scope(savedCards, 'Services').getByText('0 changes recorded', {exact: true}).waitFor();
+  await scope(savedCards, 'Scheduled tasks').getByText('Skipped', {exact: true}).waitFor();
+  assert.equal(await scope(savedCards, 'Scheduled tasks').getByText(/changes recorded/).count(), 0);
+  await savedCoverage.getByText('Skipped scope details (2)', {exact: true}).click();
+  await savedCoverage.getByText('Scheduled tasks were not checked before changes: access denied.').waitFor();
   const registryPane = page.getByRole('region', { name: 'Registry', exact: true });
   const filePane = page.getByRole('region', { name: 'File system', exact: true });
   const diff = page.getByRole('region', { name: 'Before and after evidence', exact: true });
@@ -215,8 +226,24 @@ try {
   await page.getByRole('button', {name: 'Retry', exact: true}).click();
   await page.getByText('No recorded changes match these filters.').waitFor();
   assert.equal(await page.getByRole('alert').count(), 0);
+  await scope(savedCards, 'File system').getByText('2 changes recorded', {exact: true}).waitFor();
   await pathFilter.fill('');
+
+  // Older sessions have unknown coverage; a response for a different selection must not leak in.
+  const noSavedCoverage = savedCoverage.getByText('No saved comparison for this session.', {exact: false});
+  await historySession.selectOption('9');
+  await noSavedCoverage.waitFor();
+  await page.evaluate(() => { window.deferCoverage = 40; });
+  await historySession.selectOption('40');
+  await page.waitForFunction(() => typeof window.releaseCoverage === 'function');
+  await historySession.selectOption('9');
+  await page.evaluate(() => window.releaseCoverage());
+  await noSavedCoverage.waitFor();
+  assert.equal(await savedCards.count(), 0);
+  await historySession.selectOption('40');
+  await savedCoverage.getByText('Comparison incomplete', {exact: true}).waitFor();
   await historySession.selectOption('');
+  assert.equal(await savedCoverage.count(), 0);
   await page.getByRole('cell', {name: 'Unassigned', exact: true}).waitFor();
   await page.getByRole('cell', {name: String.raw`C:\Other session.dat`, exact: true}).waitFor();
   await watchTool.click();
@@ -234,6 +261,10 @@ try {
   await scope(comparison, 'File system').getByText('0 changes recorded', { exact: true }).waitFor();
   assert.equal(await comparison.getByText('Not requested', { exact: true }).count(), 3);
   assert.equal(await comparison.getByText('0 changes recorded', { exact: true }).count(), 1);
+  await button('View recorded changes (session #41)').click();
+  await savedCoverage.getByText('Comparison complete', { exact: true }).waitFor();
+  await scope(savedCards, 'File system').getByText('0 changes recorded', { exact: true }).waitFor();
+  await watchTool.click();
 
   // A failed Finish consumes the watch. Offer a fresh baseline, not a dead Compare button.
   await setup.click();
@@ -250,6 +281,10 @@ try {
   await watchStatus.getByText('No scopes compared', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: /View recorded changes/ }).count(), 0);
   assert.equal(await comparison.getByText(/changes recorded/).count(), 0);
+  await button('View watch coverage (session #43)').click();
+  await savedCoverage.getByText('No scopes compared', { exact: true }).waitFor();
+  assert.equal(await savedCards.getByText(/changes recorded/).count(), 0);
+  await watchTool.click();
   await setup.click();
   await begin.click();
   await finish.waitFor();
