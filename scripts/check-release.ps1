@@ -47,18 +47,49 @@ function Read-PeMachine([string]$Path) {
 
 # The NSIS launcher may be a 32-bit stub even for an x64 application payload.
 $checks[$names[0]].pe_machine = ('0x{0:x4}' -f (Read-PeMachine (Join-Path $dir $names[0])))
-$installer = New-Object -ComObject WindowsInstaller.Installer
-$summary = $null
-try {
-  # Read only the MSI Template summary property (PID_TEMPLATE = 7); do not install it.
-  $summary = $installer.GetType().InvokeMember('SummaryInformation', 'GetProperty', $null, $installer, @((Join-Path $dir $names[1]), 0))
-  $template = $summary.GetType().InvokeMember('Property', 'GetProperty', $null, $summary, @(7))
-  if ($template -notmatch '^x64;') { throw "Expected an x64 MSI, got '$template'" }
-  $checks[$names[1]].msi_template = $template
-} finally {
-  if ($null -ne $summary) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($summary) }
-  [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
+# Read the MSI Template summary property (PID_TEMPLATE = 7) through Windows Installer.
+# Update count zero opens it read-only, without installing the package.
+if (-not ('ExorMsiMetadata' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class ExorMsiMetadata {
+    [DllImport("msi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern uint MsiGetSummaryInformationW(uint database, string path, uint updates, out uint summary);
+
+    [DllImport("msi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern uint MsiSummaryInfoGetPropertyW(uint summary, uint property, out uint kind, out int number,
+        out System.Runtime.InteropServices.ComTypes.FILETIME time, StringBuilder value, ref uint size);
+
+    [DllImport("msi.dll", ExactSpelling = true)]
+    private static extern uint MsiCloseHandle(uint handle);
+
+    public static string ReadTemplate(string path) {
+        uint summary;
+        uint error = MsiGetSummaryInformationW(0, path, 0, out summary);
+        if (error != 0) throw new Win32Exception((int)error);
+        try {
+            var text = new StringBuilder(1024);
+            uint size = (uint)text.Capacity;
+            uint kind;
+            int number;
+            System.Runtime.InteropServices.ComTypes.FILETIME time;
+            error = MsiSummaryInfoGetPropertyW(summary, 7, out kind, out number, out time, text, ref size);
+            if (error != 0) throw new Win32Exception((int)error);
+            return text.ToString();
+        } finally {
+            MsiCloseHandle(summary);
+        }
+    }
 }
+'@
+}
+$template = [ExorMsiMetadata]::ReadTemplate((Join-Path $dir $names[1]))
+if ($template -notmatch '^x64;') { throw "Expected an x64 MSI, got '$template'" }
+$checks[$names[1]].msi_template = $template
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('exor-package-check-' + [guid]::NewGuid().ToString('N'))

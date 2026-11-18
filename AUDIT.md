@@ -18,6 +18,8 @@
 | Live USN/registry port, kernel driver, WDK, signing | Not run | Windows user-mode sources and standalone lab probe are built/type-checked; real capture, driver build/load, assigned altitude and production signing have no evidence. Nothing is enabled or packaged by default. |
 | Windows 10/11 accessibility, DPI and log-window docking | Not run | Empty [client evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md); no Narrator, high-contrast, or multi-monitor sign-off. |
 
+The cleanup, desktop shell and live parser checks passed on [Linux/Windows CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44247178154). Candidate package artifacts and their exact commit/hash evidence are tracked separately in the PR's packaging check.
+
 ## Limits that affect release decisions
 
 - The desktop never requests elevation. Windows Settings handles per-user uninstall and commands that cannot run safely without elevation. Some system files, tasks, services or registry scopes will be inaccessible to a normal account; incomplete probes are not evidence of absence.
