@@ -1,0 +1,113 @@
+<#
+.SYNOPSIS
+  Verify the three Windows artifacts without running an installer. Requires Windows SDK mt.exe.
+.DESCRIPTION
+  Writes PACKAGE-CHECKS.json with the commit, hashes, package metadata, and what was NOT tested.
+  Run from the checkout that built the candidate; this is not the interactive release sign-off.
+#>
+[CmdletBinding()]
+param([string]$ArtifactDir = (Join-Path $PSScriptRoot '..\dist'))
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+if ([Environment]::OSVersion.Platform -ne 'Win32NT') { throw 'Run this check on Windows.' }
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$config = Get-Content -Raw (Join-Path $root 'gui\src-tauri\tauri.conf.json') | ConvertFrom-Json
+$dir = (Resolve-Path -LiteralPath $ArtifactDir).Path
+$prefix = "ExorSystem-v$($config.version)-x64"
+$names = @("$prefix-Setup.exe", "$prefix.msi", "$prefix-Portable.zip")
+$commit = git -C $root rev-parse HEAD
+if ($LASTEXITCODE) { throw 'Could not determine the source commit' }
+
+$checks = @{}
+foreach ($line in Get-Content -LiteralPath (Join-Path $dir 'SHA256SUMS.txt')) {
+  if ($line -notmatch '^([0-9a-f]{64})  ([^/\\]+)$') { throw 'Invalid SHA256SUMS.txt line' }
+  $expectedHash = $Matches[1]
+  $name = $Matches[2]
+  if ($name -cnotin $names -or $checks.ContainsKey($name)) { throw "Unexpected or duplicate artifact: $name" }
+  $file = Get-Item -LiteralPath (Join-Path $dir $name)
+  $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($hash -ne $expectedHash) { throw "SHA-256 mismatch: $name" }
+  $checks[$name] = [ordered]@{ name = $name; sha256 = $hash; bytes = $file.Length }
+}
+if ($checks.Count -ne $names.Count) { throw 'SHA256SUMS.txt must cover all three artifacts' }
+
+function Read-PeMachine([string]$Path) {
+  $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($Path))
+  try {
+    if ($reader.BaseStream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5a4d) { throw "Not a PE file: $Path" }
+    $reader.BaseStream.Position = 0x3c
+    $header = $reader.ReadUInt32()
+    if ($header -lt 64 -or $header -gt ($reader.BaseStream.Length - 6)) { throw "Invalid PE offset: $Path" }
+    $reader.BaseStream.Position = $header
+    if ($reader.ReadUInt32() -ne 0x4550) { throw "Missing PE signature: $Path" }
+    return $reader.ReadUInt16()
+  } finally { $reader.Dispose() }
+}
+
+# The NSIS launcher may be a 32-bit stub even for an x64 application payload.
+$checks[$names[0]].pe_machine = ('0x{0:x4}' -f (Read-PeMachine (Join-Path $dir $names[0])))
+$installer = New-Object -ComObject WindowsInstaller.Installer
+$summary = $null
+try {
+  # Read only the MSI Template summary property (PID_TEMPLATE = 7); do not install it.
+  $summary = $installer.GetType().InvokeMember('SummaryInformation', 'GetProperty', $null, $installer, @((Join-Path $dir $names[1]), 0))
+  $template = $summary.GetType().InvokeMember('Property', 'GetProperty', $null, $summary, @(7))
+  if ($template -notmatch '^x64;') { throw "Expected an x64 MSI, got '$template'" }
+  $checks[$names[1]].msi_template = $template
+} finally {
+  if ($null -ne $summary) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($summary) }
+  [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
+}
+
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$stage = Join-Path ([IO.Path]::GetTempPath()) ('exor-package-check-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $stage)
+try {
+  $expected = @('ExorSystem.exe', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CREDITS.md')
+  $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $dir $names[2]))
+  try {
+    $entries = @($zip.Entries | ForEach-Object FullName)
+    if ($entries.Count -ne $expected.Count -or @(Compare-Object $expected $entries -CaseSensitive).Count) {
+      throw 'The portable archive does not have the expected files at its root'
+    }
+    $exe = Join-Path $stage 'ExorSystem.exe'
+    [IO.Compression.ZipFileExtensions]::ExtractToFile($zip.GetEntry('ExorSystem.exe'), $exe)
+  } finally { $zip.Dispose() }
+  if ((Read-PeMachine $exe) -ne 0x8664) { throw 'The portable program is not x64' }
+
+  $mt = Get-Command mt.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+  if (-not $mt) {
+    $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    $mt = Get-ChildItem -Directory -Path $sdk | Sort-Object Name -Descending | ForEach-Object {
+      Join-Path $_.FullName 'x64\mt.exe'
+    } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  }
+  if (-not $mt) { throw 'Windows SDK mt.exe is needed to inspect the actual embedded manifest' }
+  $manifestPath = Join-Path $stage 'ExorSystem.manifest'
+  & $mt -nologo "-inputresource:$exe;#1" "-out:$manifestPath"
+  if ($LASTEXITCODE) { throw 'Could not extract the executable manifest' }
+  [xml]$manifest = Get-Content -Raw -LiteralPath $manifestPath
+  $level = $manifest.SelectSingleNode("//*[local-name()='requestedExecutionLevel']")
+  if (-not $level -or $level.GetAttribute('level') -cne 'asInvoker' -or $level.GetAttribute('uiAccess') -cne 'false') {
+    throw 'The desktop executable must run asInvoker with uiAccess=false'
+  }
+  $dpi = $manifest.SelectSingleNode("//*[local-name()='dpiAwareness']")
+  if (-not $dpi -or $dpi.InnerText -cne 'PerMonitorV2') { throw 'Expected PerMonitorV2 DPI awareness' }
+  $checks[$names[2]].pe_machine = '0x8664'
+  $checks[$names[2]].execution_level = 'asInvoker'
+  $checks[$names[2]].dpi_awareness = $dpi.InnerText
+  $checks[$names[2]].entries = $entries
+} finally { Remove-Item -LiteralPath $stage -Force -Recurse }
+
+[ordered]@{
+  kind = 'static-package-checks-only'
+  commit = $commit
+  app_version = $config.version
+  checked_at_utc = [datetime]::UtcNow.ToString('o')
+  runner_os = [Environment]::OSVersion.VersionString
+  workflow_run = $env:GITHUB_RUN_ID
+  artifacts = @($names | ForEach-Object { $checks[$_] })
+  not_tested = @('Installation, upgrade and uninstall', 'Desktop, UAC and WebView2', 'Interactive Watch, History and cleanup', 'Accessibility and multi-monitor behavior')
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $dir 'PACKAGE-CHECKS.json') -Encoding utf8
+Write-Host 'Static package checks passed. Native Windows 10/11 sign-off is still required.'

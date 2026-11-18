@@ -64,5 +64,16 @@ jobs:
       - name: Tauri shell
         working-directory: gui/src-tauri
         run: |
-          cargo fmt --check
-          cargo clippy --locked -- -D warnings
+          $PSNativeCommandUseErrorActionPreference = $false
+          foreach ($check in @(@{ args = @('fmt','--check') }, @{ args = @('clippy','--locked','--','-D','warnings') })) {
+            $cargoArgs = $check.args
+            $output = & cargo @cargoArgs 2>&1
+            $status = $LASTEXITCODE
+            $output | ForEach-Object { Write-Host $_ }
+            if ($status -ne 0) {
+              $details = (($output | Select-Object -Last 38) -join "`n") -replace '\x1b\[[0-?]*[ -/]*[@-~]', ''
+              $details = $details.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+              Write-Host "::error title=Tauri shell check::$details"
+              exit $status
+            }
+          }
