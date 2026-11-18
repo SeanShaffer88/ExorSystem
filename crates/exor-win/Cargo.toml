@@ -15,6 +15,8 @@ thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
+    "ApplicationModel",
+    "Management_Deployment",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
@@ -23,6 +25,7 @@ windows = { workspace = true, features = [
     "Win32_System_Ioctl",
     "Win32_System_Registry",
     "Win32_System_Services",
+    "Win32_System_WinRT",
 ] }
 
 # Unsafe is required for Win32 FFI here (and only here); every unsafe block carries a SAFETY note.

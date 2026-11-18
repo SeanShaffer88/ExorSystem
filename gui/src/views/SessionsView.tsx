@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { getPolicy } from "../settings";
-import type { InstalledProgram, Leftover, ProgramRow, Session, SessionItems } from "../types";
+import type { InstalledProgram, ProgramInventory, Session, SessionItems } from "../types";
+import { ProgramActions } from "./ProgramActions";
 
 /** One row in the left pane: an installed program, or a recorded install Windows does not list. */
 interface Entry {
@@ -10,8 +10,10 @@ interface Entry {
   sub: string;
   program: InstalledProgram | null;
   sessionIds: number[];
+  removed: boolean;
 }
 
+const sourceText = { registry: "Classic Windows program", msix: "MSIX / Store app", portable: "Portable app" } as const;
 const scopeText = { machine: "All users", machine32: "All users (32-bit)", user: "Current user" } as const;
 
 function sizeText(kb: number | null) {
@@ -24,7 +26,8 @@ function sure(c: number) {
 }
 
 export function SessionsView() {
-  const [rows, setRows] = useState<ProgramRow[] | null>(null);
+  const [inventory, setInventory] = useState<ProgramInventory | null>(null);
+  const [revision, setRevision] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -32,40 +35,38 @@ export function SessionsView() {
   const [selected, setSelected] = useState<string | null>(null);
   const [items, setItems] = useState<SessionItems | null>(null);
   const [detailError, setDetailError] = useState("");
-  const [confirm, setConfirm] = useState(false);
-  const [done, setDone] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [leftovers, setLeftovers] = useState<Leftover[] | null>(null);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [confirmUn, setConfirmUn] = useState(false);
-  const [note, setNote] = useState("");
   const listRef = useRef<HTMLUListElement>(null);
 
   useEffect(() => {
-    setRows(null);
+    let live = true;
+    setError("");
     Promise.all([api.listPrograms(showSystem), api.listSessions()])
-      .then(([r, s]) => {
-        setRows(r);
-        setSessions(s);
+      .then(([result, sessions]) => {
+        if (!live) return;
+        setInventory(result);
+        setSessions(sessions);
       })
-      .catch((e: unknown) => setError(String(e)));
-  }, [showSystem]);
+      .catch((e: unknown) => live && setError(String(e)));
+    return () => { live = false; };
+  }, [showSystem, revision]);
 
   const entries = useMemo<Entry[]>(() => {
-    if (!rows) return [];
+    if (!inventory) return [];
+    const rows = inventory.programs;
     const matched = new Set(rows.flatMap((r) => r.session_ids));
     const fromPrograms = rows.map((r) => ({
       key: `p:${r.program.id}`,
       name: r.program.name,
-      sub: [r.program.version, r.program.publisher].filter(Boolean).join(" · "),
+      sub: [r.removed ? "Recently removed" : sourceText[r.program.source], r.program.version, r.program.publisher].filter(Boolean).join(" · "),
       program: r.program,
       sessionIds: r.session_ids,
+      removed: r.removed,
     }));
     const recordedOnly = sessions
       .filter((s) => !matched.has(s.session_id))
-      .map((s) => ({ key: `s:${s.session_id}`, name: s.app_name, sub: "Recorded install", program: null, sessionIds: [s.session_id] }));
+      .map((s) => ({ key: `s:${s.session_id}`, name: s.app_name, sub: "Recorded install", program: null, sessionIds: [s.session_id], removed: false }));
     return [...fromPrograms, ...recordedOnly].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-  }, [rows, sessions]);
+  }, [inventory, sessions]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -78,12 +79,6 @@ export function SessionsView() {
   useEffect(() => {
     setItems(null);
     setDetailError("");
-    setConfirm(false);
-    setDone("");
-    setLeftovers(null);
-    setPicked(new Set());
-    setConfirmUn(false);
-    setNote("");
     if (sessionId === null) return;
     let live = true;
     api.sessionItems(sessionId).then((i) => live && setItems(i)).catch((e: unknown) => live && setDetailError(String(e)));
@@ -110,26 +105,26 @@ export function SessionsView() {
     }
   };
 
-  if (error) return <p role="alert" className="error">Could not load installed programs: {error}</p>;
-
   const p = current?.program ?? null;
   return (
     <section className="panes" aria-labelledby="h-inst">
       <div className="pane pane-list">
         <h2 id="h-inst">Installed programs</h2>
         <label htmlFor="prog-search" className="sr-only">Search programs</label>
-        <input id="prog-search" type="search" placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} title="Filter by name, version or publisher" />
+        <input id="prog-search" type="search" placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} title="Filter by name, source, version or publisher" />
         <label className="check">
           <input type="checkbox" checked={showSystem} onChange={(e) => setShowSystem(e.target.checked)} /> Show system components
         </label>
-        {rows === null ? (
-          <p>Loading…</p>
+        {error && <p role="alert" className="error">Could not load programs: {error}</p>}
+        {inventory?.warnings.map((w) => <p key={w} role="status">{w}</p>)}
+        {inventory === null ? (
+          !error && <p>Loading…</p>
         ) : shown.length === 0 ? (
           <p>{entries.length === 0 ? "Nothing to list. The program list comes from Windows; installs you record also appear here." : "No program matches your search."}</p>
         ) : (
           <>
             <p className="count" aria-live="polite">{shown.length} item{shown.length === 1 ? "" : "s"}</p>
-            <ul ref={listRef} role="listbox" tabIndex={0} aria-label="Installed programs" aria-activedescendant={selected ? `opt-${selected}` : undefined} onKeyDown={onKey} onFocus={() => !selected && move("first")} className="listbox">
+            <ul ref={listRef} role="listbox" tabIndex={0} aria-label="Installed programs" aria-activedescendant={current ? `opt-${current.key}` : undefined} onKeyDown={onKey} onFocus={() => setSelected((previous) => shown.some((entry) => entry.key === previous) ? previous : shown[0]?.key ?? null)} className="listbox">
               {shown.map((e) => (
                 <li key={e.key} id={`opt-${e.key}`} role="option" aria-selected={e.key === selected} onClick={() => { setSelected(e.key); listRef.current?.focus(); }}>
                   <span className="name">{e.name}</span>
@@ -150,13 +145,14 @@ export function SessionsView() {
             <h2>{current.name}</h2>
             {p ? (
               <dl className="facts">
+                <dt>Source</dt><dd>{sourceText[p.source]}</dd>
                 <dt>Version</dt><dd>{p.version ?? "Unknown"}</dd>
                 <dt>Publisher</dt><dd>{p.publisher ?? "Unknown"}</dd>
                 <dt>Installed</dt><dd>{p.install_date ?? "Unknown"}</dd>
                 <dt>Size</dt><dd>{sizeText(p.size_kb)}</dd>
                 <dt>Location</dt><dd>{p.install_location ?? "Unknown"}</dd>
                 <dt>For</dt><dd>{scopeText[p.scope]}</dd>
-                <dt>Uninstall command</dt><dd><code>{p.uninstall_command ?? "None registered"}</code></dd>
+                {p.source === "registry" && <><dt>Uninstall command</dt><dd><code>{current.removed ? "Entry no longer listed by Windows" : p.uninstall_command ?? "None registered"}</code></dd></>}
               </dl>
             ) : (
               <p>This install was recorded by ExorSystem but is not in Windows' list of programs. It may be portable, or already uninstalled.</p>
@@ -164,7 +160,7 @@ export function SessionsView() {
 
             <h3>What this installation left behind</h3>
             {sessionId === null ? (
-              <p>Not recorded. Use Watch an install before installing next time to trace everything an installer adds.</p>
+              <p>No recorded installation is linked to this entry.</p>
             ) : detailError ? (
               <p role="alert" className="error">{detailError}</p>
             ) : items === null ? (
@@ -193,71 +189,12 @@ export function SessionsView() {
           </>
         )}
       </div>
-      <div className="pane pane-actions">
-        <h2>Actions</h2>
-        {!current ? (
-          <p>Select a program.</p>
-        ) : (
-          <>
-            {p && p.uninstall_command && (
-              <>
-                <h3>Uninstall</h3>
-                <label className="check">
-                  <input type="checkbox" checked={confirmUn} onChange={(e) => setConfirmUn(e.target.checked)} /> Run this program's own uninstaller
-                </label>
-                <button type="button" disabled={!confirmUn || busy} title="Starts the uninstaller Windows has on file. You may see its own prompts." onClick={() => { setBusy(true); setNote(""); api.runUninstaller(p.id, false).then((r) => setNote(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => { setBusy(false); setConfirmUn(false); }); }}>
-                  Uninstall
-                </button>
-                <button type="button" disabled={busy} title="Look for folders the uninstaller left behind. Nothing is changed." onClick={() => { setBusy(true); api.findLeftovers(p.id).then((l) => { setLeftovers(l); setPicked(new Set(l.filter((x) => x.confidence >= 0.7).map((x) => x.path))); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
-                  Find leftovers
-                </button>
-              </>
-            )}
-            {note && <p role="status">{note}</p>}
-            {leftovers && (
-              <fieldset className="themes">
-                <legend>Leftover folders</legend>
-                {leftovers.length === 0 && <p>No leftovers found.</p>}
-                {leftovers.map((l) => (
-                  <label key={l.path} className="check">
-                    <input type="checkbox" checked={picked.has(l.path)} onChange={(e) => setPicked((s0) => { const n = new Set(s0); if (e.target.checked) n.add(l.path); else n.delete(l.path); return n; })} />
-                    <span>{l.path}<small> {l.reason} {sure(l.confidence)}.</small></span>
-                  </label>
-                ))}
-                {leftovers.length > 0 && (
-                  <button type="button" disabled={picked.size === 0 || busy} title="Moves the files in the chosen folders to quarantine. You can restore them." onClick={() => { if (!p) return; setBusy(true); api.quarantineLeftovers(p.id, [...picked], sessionId).then((r) => { setNote(r.summary); setLeftovers(null); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
-                    Quarantine chosen folders
-                  </button>
-                )}
-              </fieldset>
-            )}
-            {sessionId !== null && (
-              <>
-                <h3>Recorded install</h3>
-                <button type="button" disabled={busy} title="Dry run. Nothing is changed." onClick={() => { setBusy(true); setDone(""); api.simulate(sessionId, getPolicy()).then((r) => setDone(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
-                  Preview cleanup
-                </button>
-                {items && items.shared > 0 && <p>{items.shared} item(s) may be shared. They are kept unless you choose otherwise.</p>}
-                <label className="check">
-                  <input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} /> I understand items are moved to quarantine
-                </label>
-                <button type="button" disabled={!confirm || busy} title="Move this installation's items to quarantine. You can restore them." onClick={() => { setBusy(true); setDone(""); api.quarantineSession(sessionId, getPolicy()).then((r) => { setDone(r.summary); setConfirm(false); }).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
-                  Quarantine items
-                </button>
-                <button type="button" disabled={busy} title="Save a plain-language report of this installation to your Documents folder." onClick={() => { setBusy(true); api.exportReport(sessionId, getPolicy()).then((f) => setDone(`Report saved to ${f}`)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
-                  Save report
-                </button>
-                <button type="button" disabled={busy} title="Copy this installation's files into a new folder in Documents. The installed program is not changed." onClick={() => { setBusy(true); api.makePortable(sessionId).then((r) => setDone(r.summary)).catch((e: unknown) => setDetailError(String(e))).finally(() => setBusy(false)); }}>
-                  Make portable copy
-                </button>
-                {done && <p role="status">{done}</p>}
-              </>
-            )}
-            {!p && sessionId === null && <p>No actions are available for this entry.</p>}
-            {detailError && sessionId === null && <p role="alert" className="error">{detailError}</p>}
-          </>
-        )}
-      </div>
+      {current ? (
+        <ProgramActions key={`${current.key}:${sessionId}`} program={p} removed={current.removed} sessionId={sessionId} shared={items?.shared ?? 0}
+          onUninstallComplete={() => setRevision((r) => r + 1)} />
+      ) : (
+        <div className="pane pane-actions"><h2>Actions</h2><p>Select a program.</p></div>
+      )}
     </section>
   );
 }

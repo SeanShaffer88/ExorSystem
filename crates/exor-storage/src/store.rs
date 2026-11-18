@@ -197,6 +197,41 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    // ---- portable inventory ----
+
+    /// Add a portable application or update its display name.
+    pub fn save_portable_program(&self, program: &PortableProgram) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO portable_programs(executable, name) VALUES (?1, ?2)
+             ON CONFLICT(executable) DO UPDATE SET name = excluded.name",
+            params![program.executable, program.name],
+        )?;
+        Ok(())
+    }
+
+    /// User-added portable applications, sorted by name.
+    pub fn portable_programs(&self) -> Result<Vec<PortableProgram>> {
+        let mut st = self.conn.prepare(
+            "SELECT name, executable FROM portable_programs ORDER BY name COLLATE NOCASE, executable",
+        )?;
+        Ok(st
+            .query_map([], |r| {
+                Ok(PortableProgram {
+                    name: r.get(0)?,
+                    executable: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Forget an inventory entry. Does not access the file at `executable`.
+    pub fn forget_portable_program(&self, executable: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "DELETE FROM portable_programs WHERE executable = ?1",
+            [executable],
+        )? > 0)
+    }
+
     // ---- nodes ----
 
     fn upsert_node_on(conn: &Connection, n: &NewNode) -> Result<i64> {
@@ -333,9 +368,25 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Read-side lookup: prefer exact spelling; never pick between case-only duplicates.
+    fn node_for_trace(&self, path: &str) -> Result<Option<Node>> {
+        if let Some(exact) = self.node_by_path(path)? {
+            return Ok(Some(exact));
+        }
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM system_nodes WHERE path = ?1 COLLATE NOCASE LIMIT 2"
+        ))?;
+        let mut nodes = st.query_map([path], node_row)?;
+        let node = nodes.next().transpose()?;
+        if nodes.next().transpose()?.is_some() {
+            return Err(StorageError::AmbiguousPath(path.into()));
+        }
+        Ok(node)
+    }
+
     /// Trace an artifact back to its installation session, with edges and ledger.
     pub fn provenance_for_path(&self, path: &str) -> Result<Option<Provenance>> {
-        let Some(node) = self.node_by_path(path)? else {
+        let Some(node) = self.node_for_trace(path)? else {
             return Ok(None);
         };
         let session = match node.first_detected_in {
@@ -344,7 +395,20 @@ impl Store {
         };
         let origins = self.edges_as_child(node.node_id)?;
         let dependents = self.edges_as_parent(node.node_id)?;
-        let ledger = self.ledger_for_path(path)?;
+        // Ledger evidence attached to a different case-only sibling belongs to that node. For
+        // observations without a node ID, keep exact spelling or use the fold if it's unambiguous.
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {LEDGER_COLS} FROM change_ledger
+             WHERE path = ?1 COLLATE NOCASE AND (node_id = ?2 OR (node_id IS NULL AND (
+                 path = ?1 OR NOT EXISTS (
+                     SELECT 1 FROM system_nodes n
+                     WHERE n.path = ?1 COLLATE NOCASE AND n.node_id <> ?2
+                 )
+             ))) ORDER BY entry_id"
+        ))?;
+        let ledger = st
+            .query_map(params![node.path, node.node_id], ledger_row)?
+            .collect::<rusqlite::Result<_>>()?;
         let confidence = origins
             .iter()
             .filter(|e| e.relationship_type == RelationshipType::CreatedBy)

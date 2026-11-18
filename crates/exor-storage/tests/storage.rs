@@ -15,7 +15,7 @@ fn node(path: &str, t: NodeType, s: Option<i64>) -> NewNode {
 #[test]
 fn migrations_apply_once_and_are_idempotent() {
     let mut c = rusqlite::Connection::open_in_memory().unwrap();
-    assert_eq!(migrate(&mut c).unwrap(), vec![1, 2]);
+    assert_eq!(migrate(&mut c).unwrap(), vec![1, 2, 3]);
     assert!(migrate(&mut c).unwrap().is_empty());
     assert_eq!(current_version(&c).unwrap(), latest_version());
 }
@@ -61,8 +61,45 @@ fn upgrade_of_existing_db_keeps_backup() {
         migrate_to(&mut c, 1).unwrap();
     }
     let s = Store::open(&db).unwrap();
-    assert_eq!(s.schema_version().unwrap(), 2);
+    assert_eq!(s.schema_version().unwrap(), latest_version());
     assert!(dir.path().join("exor.pre-v1.bak").exists());
+}
+
+#[test]
+fn inventory_migration_preserves_v2_nodes_ledger_and_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("exor.db");
+    {
+        let mut c = rusqlite::Connection::open(&db).unwrap();
+        migrate_to(&mut c, 2).unwrap();
+        c.execute(
+            "INSERT INTO system_nodes(node_type, path) VALUES ('file', ?1)",
+            [r"C:\Tools\Widget.exe"],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO change_ledger(node_id, path, change_kind, source) VALUES (1, ?1, 'created', 'snapshot_diff')",
+            [r"C:\Tools\Widget.exe"],
+        ).unwrap();
+    }
+    let store = Store::open(&db).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 3);
+    assert!(store.portable_programs().unwrap().is_empty());
+    let provenance = store
+        .provenance_for_path(r"c:\tools\widget.EXE")
+        .unwrap()
+        .unwrap();
+    assert_eq!(provenance.node.path, r"C:\Tools\Widget.exe");
+    assert_eq!(provenance.ledger.len(), 1);
+    let backup = rusqlite::Connection::open(dir.path().join("exor.pre-v2.bak")).unwrap();
+    assert_eq!(current_version(&backup).unwrap(), 2);
+    assert_eq!(
+        backup
+            .query_row("SELECT path FROM change_ledger", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        r"C:\Tools\Widget.exe"
+    );
 }
 
 #[test]
@@ -189,9 +226,9 @@ fn provenance_traces_to_session_with_ledger() {
         source: ChangeSource::UsnJournal,
     })
     .unwrap();
-    // case-insensitive path lookup in ledger
+    // case-insensitive path lookup for both the node and ledger
     let p = s
-        .provenance_for_path("C:\\Program Files\\Foo\\foo.exe")
+        .provenance_for_path("c:\\PROGRAM FILES\\foo\\FOO.EXE")
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -202,6 +239,73 @@ fn provenance_traces_to_session_with_ledger() {
     assert_eq!(p.confidence, 0.7);
     assert!(s.provenance_for_path("nope").unwrap().is_none());
     assert_eq!(s.ledger_for_session(sess).unwrap().len(), 1);
+}
+
+#[test]
+fn provenance_does_not_merge_legacy_case_only_siblings() {
+    let store = Store::open_in_memory().unwrap();
+    for path in [r"HKCU\Software\Widget", r"HKCU\Software\widget"] {
+        let id = store
+            .upsert_node(&node(path, NodeType::RegistryKey, None))
+            .unwrap();
+        store
+            .append_ledger(&NewLedgerEntry {
+                session_id: None,
+                node_id: Some(id),
+                path: path.into(),
+                change_kind: ChangeKind::Created,
+                old_hash: None,
+                new_hash: None,
+                source: ChangeSource::RegistryCallback,
+            })
+            .unwrap();
+    }
+    let exact = store
+        .provenance_for_path(r"HKCU\Software\Widget")
+        .unwrap()
+        .unwrap();
+    assert_eq!(exact.ledger.len(), 1);
+    assert_eq!(exact.ledger[0].entry.node_id, Some(exact.node.node_id));
+    assert!(matches!(
+        store.provenance_for_path(r"HKCU\Software\WIDGET"),
+        Err(StorageError::AmbiguousPath(_))
+    ));
+}
+
+#[test]
+fn portable_entries_survive_reopen_without_touching_executables() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("exor.db");
+    let exe = dir.path().join("Widget.exe");
+    std::fs::write(&exe, b"test data").unwrap();
+    let path = exe.to_str().unwrap().to_string();
+    let store = Store::open(&db).unwrap();
+    store
+        .save_portable_program(&PortableProgram {
+            name: "Widget".into(),
+            executable: path.clone(),
+        })
+        .unwrap();
+    let alias = path.to_ascii_lowercase();
+    store
+        .save_portable_program(&PortableProgram {
+            name: "My Widget".into(),
+            executable: alias.clone(),
+        })
+        .unwrap();
+    drop(store);
+    let store = Store::open(&db).unwrap();
+    assert_eq!(
+        store.portable_programs().unwrap(),
+        [PortableProgram {
+            name: "My Widget".into(),
+            executable: path
+        }]
+    );
+    assert!(store.forget_portable_program(&alias).unwrap());
+    assert!(!store.forget_portable_program(&alias).unwrap());
+    assert!(store.portable_programs().unwrap().is_empty());
+    assert_eq!(std::fs::read(exe).unwrap(), b"test data");
 }
 
 #[test]

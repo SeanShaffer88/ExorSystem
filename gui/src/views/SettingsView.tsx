@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { getPolicy, setPolicy } from "../settings";
 import type { AppInfo, TemplateInfo } from "../types";
+import { PortablePrograms } from "./PortablePrograms";
 
 export function SettingsView() {
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
@@ -35,6 +36,7 @@ export function SettingsView() {
           <dt>Quarantine folder</dt><dd>{info.quarantine_folder}</dd>
         </dl>
       )}
+      <PortablePrograms />
     </section>
   );
 }

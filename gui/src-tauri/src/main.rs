@@ -1,15 +1,17 @@
 //! ExorSystem desktop shell: thin Tauri commands over `exor-storage` and `exor-engine`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use exor_engine::leftovers::{self, Leftover};
-use exor_engine::programs::{self, InstalledProgram};
+use exor_engine::leftovers::{self, Leftover, ReviewLeftover};
+use exor_engine::programs::InstalledProgram;
 use exor_engine::snapshot::{CaptureOptions, Progress, capture_with_progress};
 use exor_engine::watch::{InstallWatch, SystemProbe, WatchSummary};
 use exor_engine::{Cancel, EngineError, execute, policy, report, templates};
 use exor_storage::{Edge, LedgerEntry, Session, Store};
 use serde::Serialize;
 mod dock;
+mod inventory;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
@@ -19,6 +21,7 @@ struct AppState {
     store: Arc<Mutex<Store>>,
     watch: Mutex<Option<InstallWatch>>,
     scan_cancel: Mutex<Option<Cancel>>,
+    recent_uninstalls: Mutex<BTreeMap<String, InstalledProgram>>,
     quarantine_root: PathBuf,
 }
 
@@ -232,67 +235,19 @@ fn purge_quarantine(
     r
 }
 
-#[derive(Serialize)]
-struct ProgramRow {
-    program: InstalledProgram,
-    /// Recorded installation sessions that belong to this program.
-    session_ids: Vec<i64>,
-}
-
-/// Programs Windows lists as installed, tidied, each linked to any recorded sessions.
-/// Empty off Windows (the list comes from the registry).
-#[tauri::command]
-async fn list_programs(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    include_system: bool,
-) -> Result<Vec<ProgramRow>, String> {
-    #[cfg(windows)]
-    let raw = tauri::async_runtime::spawn_blocking(exor_win::enumerate_programs)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    #[cfg(not(windows))]
-    let raw: Vec<InstalledProgram> = Vec::new();
-    let sessions = lock(&state)?.sessions().map_err(|e| e.to_string())?;
-    let listed = programs::visible(raw, include_system);
-    dock::log(
-        &app,
-        "info",
-        format!("Listed {} installed program(s).", listed.len()),
-    );
-    Ok(listed
-        .into_iter()
-        .map(|program| {
-            let session_ids = programs::match_sessions(&program, &sessions)
-                .iter()
-                .map(|s| s.session_id)
-                .collect();
-            ProgramRow {
-                program,
-                session_ids,
-            }
-        })
-        .collect())
-}
-
-/// Look a program up by its registry id. Windows only: the list comes from the registry.
-async fn program_by_id(id: String) -> Result<InstalledProgram, String> {
-    #[cfg(windows)]
-    {
-        let raw = tauri::async_runtime::spawn_blocking(exor_win::enumerate_programs)
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-        raw.into_iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| "that program is no longer in Windows' list".to_string())
+/// Prefer Windows' current data. If its entry vanished after our uninstaller run, retain just
+/// enough metadata to review leftovers during this app session; this is not a command source.
+async fn review_program(state: &AppState, program_id: String) -> Result<InstalledProgram, String> {
+    if let Some(p) = inventory::registry_program(program_id.clone()).await? {
+        return Ok(p);
     }
-    #[cfg(not(windows))]
-    {
-        let _ = id;
-        Err("uninstalling needs Windows".to_string())
-    }
+    state
+        .recent_uninstalls
+        .lock()
+        .map_err(|_| "internal lock poisoned".to_string())?
+        .get(&program_id)
+        .cloned()
+        .ok_or_else(|| "no install information is available for this program".to_string())
 }
 
 /// Folders where programs usually leave files.
@@ -322,10 +277,13 @@ struct UninstallRun {
 #[tauri::command]
 async fn run_uninstaller(
     app: tauri::AppHandle,
+    state: State<'_, AppState>,
     program_id: String,
     quiet: bool,
 ) -> Result<UninstallRun, String> {
-    let p = program_by_id(program_id).await?;
+    let mut p = inventory::registry_program(program_id)
+        .await?
+        .ok_or_else(|| "that program is no longer in Windows' uninstall list".to_string())?;
     let cmd = if quiet {
         p.quiet_uninstall_command
             .as_ref()
@@ -356,6 +314,8 @@ async fn run_uninstaller(
         format!("could not start the uninstaller: {e}")
     })?;
     let code = status.code();
+    p.uninstall_command = None;
+    p.quiet_uninstall_command = None;
     let summary = if status.success() {
         format!(
             "The uninstaller for {} finished. Next, look for leftovers.",
@@ -373,29 +333,69 @@ async fn run_uninstaller(
         if status.success() { "info" } else { "warn" },
         summary.clone(),
     );
+    state
+        .recent_uninstalls
+        .lock()
+        .map_err(|_| "internal lock poisoned".to_string())?
+        .insert(p.id.clone(), p);
     Ok(UninstallRun {
         exit_code: code,
         summary,
     })
 }
 
-/// Folders that may be left after uninstalling the program. Nothing is changed.
+#[derive(Serialize)]
+struct LeftoverReview {
+    folders: Vec<Leftover>,
+    system_entries: Vec<ReviewLeftover>,
+    warnings: Vec<String>,
+}
+
+/// Read-only review of folders and system entries that might still be present.
 #[tauri::command]
 async fn find_leftovers(
     app: tauri::AppHandle,
+    state: State<'_, AppState>,
     program_id: String,
-) -> Result<Vec<Leftover>, String> {
-    let p = program_by_id(program_id).await?;
-    let roots = leftover_roots();
-    let found = tauri::async_runtime::spawn_blocking(move || leftovers::find_leftovers(&p, &roots))
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<LeftoverReview, String> {
+    let p = review_program(&state, program_id).await?;
+    let review = tauri::async_runtime::spawn_blocking(move || {
+        let folders = leftovers::find_leftovers(&p, &leftover_roots());
+        #[cfg(windows)]
+        let (registry, mut warnings) = exor_win::enumerate_software_keys(p.publisher.as_deref());
+        #[cfg(not(windows))]
+        let (registry, mut warnings) = (
+            Vec::new(),
+            vec!["Registry keys can only be checked on Windows.".into()],
+        );
+        let probe = probe();
+        let services = probe.services().unwrap_or_else(|e| {
+            warnings.push(format!("Services were not checked: {e}"));
+            Vec::new()
+        });
+        let tasks = probe.tasks().unwrap_or_else(|e| {
+            warnings.push(format!("Scheduled tasks were not checked: {e}"));
+            Vec::new()
+        });
+        let system_entries = leftovers::review_system_leftovers(&p, &registry, &services, &tasks);
+        LeftoverReview {
+            folders,
+            system_entries,
+            warnings,
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     dock::log(
         &app,
         "info",
-        format!("Found {} possible leftover folder(s).", found.len()),
+        format!(
+            "Found {} possible leftover folder(s) and {} system entry/entries for review.",
+            review.folders.len(),
+            review.system_entries.len()
+        ),
     );
-    Ok(found)
+    Ok(review)
 }
 
 /// Quarantine the chosen leftover folders. Only folders `find_leftovers` suggests are accepted.
@@ -407,20 +407,20 @@ async fn quarantine_leftovers(
     folders: Vec<String>,
     session_id: Option<i64>,
 ) -> Result<QuarantineResult, String> {
-    let p = program_by_id(program_id).await?;
-    let roots = leftover_roots();
-    let allowed =
-        tauri::async_runtime::spawn_blocking(move || leftovers::find_leftovers(&p, &roots))
-            .await
-            .map_err(|e| e.to_string())?;
-    let chosen: Vec<PathBuf> = folders
-        .iter()
-        .filter(|f| allowed.iter().any(|l| l.path.eq_ignore_ascii_case(f)))
-        .map(PathBuf::from)
-        .collect();
-    if chosen.is_empty() {
-        return Err("none of those folders is a suggested leftover".into());
+    let p = review_program(&state, program_id).await?;
+    let allowed = tauri::async_runtime::spawn_blocking(move || {
+        leftovers::find_leftovers(&p, &leftover_roots())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if folders.is_empty()
+        || folders
+            .iter()
+            .any(|f| !allowed.iter().any(|l| l.can_quarantine && &l.path == f))
+    {
+        return Err("only the suggested folders inside application roots can be quarantined; run Find leftovers again".into());
     }
+    let chosen: Vec<PathBuf> = folders.into_iter().map(PathBuf::from).collect();
     let store = lock(&state)?;
     let (id, moved) =
         leftovers::quarantine_leftovers(&store, &state.quarantine_root, session_id, &chosen)
@@ -945,6 +945,7 @@ fn run() -> Result<(), String> {
             store: Arc::new(Mutex::new(store)),
             watch: Mutex::new(None),
             scan_cancel: Mutex::new(None),
+            recent_uninstalls: Mutex::new(BTreeMap::new()),
             quarantine_root,
         })
         .setup(|app| {
@@ -974,7 +975,10 @@ fn run() -> Result<(), String> {
             list_quarantines,
             restore_quarantine,
             purge_quarantine,
-            list_programs,
+            inventory::list_programs,
+            inventory::list_portable_programs,
+            inventory::register_portable_program,
+            inventory::forget_portable_program,
             history,
             export_report,
             list_templates,
