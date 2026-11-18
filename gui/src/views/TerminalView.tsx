@@ -50,7 +50,7 @@ export function TerminalView({ initialProgramId, onInventory }: { initialProgram
     </div>
     {current?.error && <p role="alert" className="notice review-notice">{current.error} Use Windows Settings → Apps if the registration is unsupported.</p>}
     <TerminalPanel preview={current?.plan ?? null} message={loading ? "Checking the live registration…" : current?.error ? "No validated invocation to show." : undefined}/>
-    <div className="notice"><Icon name="lock"/><div><strong>Read-only terminal.</strong> There is no command input. To launch a supported vendor uninstaller, open its wizard from Applications and confirm the reviewed invocation.</div>
+    <div className="notice terminal-notice"><Icon name="lock"/><div><strong>Read-only terminal.</strong> There is no command input. To launch a supported vendor uninstaller, open its wizard from Applications and confirm the reviewed invocation.</div>
       <button type="button" className="text-button" onClick={onInventory}>Applications <Icon name="arrow" size={15}/></button></div>
   </section>;
 }

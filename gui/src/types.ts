@@ -92,8 +92,22 @@ export interface QuarantineResult {
   summary: string;
 }
 
+export interface WatchSystem {
+  services: boolean;
+  tasks: boolean;
+}
+
+export interface ScopeCoverage {
+  requested: number;
+  /** Usable baselines at start, successfully compared pairs at finish. */
+  usable: number;
+}
+
+export type WatchCoverage = Record<"folders" | "registry" | "services" | "tasks", ScopeCoverage>;
+
 export interface WatchStart {
   session_id: number;
+  coverage: WatchCoverage;
   warnings: string[];
 }
 
@@ -102,8 +116,6 @@ export interface WatchSummary extends WatchStart {
   services_changed: number;
   tasks_changed: number;
   registry_keys_changed: number;
-  registry_scopes_compared: number;
-  summary: string;
 }
 
 export interface InstalledProgram {

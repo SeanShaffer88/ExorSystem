@@ -5,12 +5,21 @@ ExorSystem is a local evidence and cleanup workspace. The sidebar groups the too
 | View | What it shows | Where the data comes from |
 |---|---|---|
 | **Applications** | Search by name, publisher, or version. Filter classic, MSIX, portable, and recorded entries. Select an app to see its registration, linked sessions, and supported actions. | Windows uninstall registrations, current-user packages, opted-in portable entries, and local session records. Installation sizes are Windows estimates when present. |
-| **Registry monitor** | Set up a before/after watch and follow baseline, installer, and comparison steps. Browse recently observed registry keys. | Explicit Software subtrees and file folders; there is no live process attribution or registry value capture in this desktop. |
+| **Registry monitor** | Choose snapshot scopes, check the baseline, and see which sources were compared or skipped. Browse recently observed registry keys. | Explicit file folders and Software subtrees; services and scheduled-task metadata are separately opt-in. No live process attribution or registry value capture. |
 | **Change inspector** | Side-by-side registry and file lists with session and literal path filters. Select a change for before/after details, or use **Timeline** for all observations including services and tasks. | Paged SQLite ledger. File details show recorded fingerprints, not contents. Registry snapshots show key presence or a last-write change, not the raw timestamp or the values. A missing fingerprint is not proof of absence. |
 | **Relationships** | Trace a recorded path and follow links to its origins, dependencies, and dependents or shared nodes. Select a node to trace it in turn. | A bounded, one-hop view of recorded relationships with evidence sources and confidence, not an exhaustive Windows dependency analysis. |
 | **Script preview** | Inspect the executable path and arguments of a supported, currently registered vendor uninstaller. | The same live command resolution the wizard uses. This is a read-only terminal-style panel, not a shell or script runner. |
 | **Cleanup summary** | Compare the recorded sizes of purged, held, and restored files. Review batches, restore held files, or explicitly confirm permanent deletion. | Logical file lengths from quarantine manifests. These are not measured disk allocation or free-space gains; held files still take space. |
 | **Policy simulator** | Dry-run the policy against a recorded installation. Green identifies candidates for reversible quarantine, red identifies protected items to keep, and amber identifies review-only items. | Engine decisions for the chosen policy. No badge authorizes deletion; change badges in the inspector describe observations, not risk. |
+
+## Watch an install
+
+1. In **Registry monitor**, enter an application or test name. Add full folder paths, specific registry subtrees, or both. No folders are selected for you. Leave the optional installer path blank for a test; ExorSystem never launches an installer from Watch.
+2. Leave **Services** and **Scheduled tasks** unchecked for file- or registry-only work. If you opt in, these are read-only checks. Windows can deny access; do not run ExorSystem as Administrator to retry.
+3. Choose **Take baseline**. The coverage cards identify captured baselines and excluded scopes. If some were skipped, expand **Skipped scope details**; continue with the usable baselines, or cancel and choose narrower scopes. Then make your test changes or run your installer yourself.
+4. Choose **Compare snapshots**. **Not requested** and **Skipped** have no change count. A scope that was actually compared can report zero. **Partial** means only some of the selected folders or subtrees were comparable. **View recorded changes** opens that session in Change inspector. Use **Set up another watch** to reuse or edit your input.
+
+A missing folder or registry subtree can appear or disappear between snapshots. A folder with reported read or hash failures, an unreadable task definition, or an incomplete registry subtree is excluded rather than diffed against an incomplete listing. The coverage report is part of this Watch result; the ledger stores observations, not complete scope coverage. **Compared** means a usable snapshot pair for the selected source, not proof that nothing else changed on Windows.
 
 ## Uninstall wizard
 

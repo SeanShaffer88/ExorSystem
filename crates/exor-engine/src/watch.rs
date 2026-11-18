@@ -1,28 +1,28 @@
 //! Install watch: baseline before an installer runs, diff after, and record the evidence.
 //!
-//! Files come from folder snapshots. Services, scheduled tasks, and explicitly chosen registry
-//! subtrees come from a [`SystemProbe`]. A failed probe on either side skips that comparison;
-//! comparing a failed snapshot against an empty one would make up additions or removals.
+//! Files and selected registry, service, and scheduled-task metadata are observed independently.
+//! Unreadable scopes on either side are skipped, not mistaken for empty snapshots.
 
 use crate::cancel::Cancel;
 use crate::collectors::{ServiceInfo, TaskInfo, diff_services, diff_tasks};
-use crate::error::Result;
+use crate::error::{EngineError, Result, io_err};
 use crate::monitor::SessionMonitor;
 use crate::registry::{RegistryKeyState, RegistryScope, RegistryScopes, diff_registry_keys};
 use crate::snapshot::{CaptureOptions, capture};
 use crate::trie::{PathTrie, diff};
 use exor_storage::{SessionStatus, Store};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 type ProbeResult<T> = std::result::Result<Vec<T>, String>;
 
 /// Source of system state that is not a file.
 pub trait SystemProbe: Send + Sync {
-    /// All services and driver services.
+    /// Service listings and available configuration metadata.
     fn services(&self) -> ProbeResult<ServiceInfo>;
-    /// All scheduled tasks.
+    /// Scheduled-task metadata from readable definitions, or an error for an incomplete scope.
     fn tasks(&self) -> ProbeResult<TaskInfo>;
     /// Complete set of key metadata for one scope. A missing subtree is empty; an incomplete
     /// snapshot is an error, never a partial set.
@@ -43,12 +43,57 @@ impl SystemProbe for NullProbe {
     }
 }
 
-/// Result of [`InstallWatch::finish`].
+/// Explicit, read-only scopes for both ends of a watch.
+pub struct WatchPlan<'a> {
+    /// Absolute folder paths. A missing folder can be watched for later creation.
+    pub folders: &'a [PathBuf],
+    /// Validated registry subtrees.
+    pub registry: &'a RegistryScopes,
+    /// Include service metadata.
+    pub services: bool,
+    /// Include scheduled-task metadata.
+    pub tasks: bool,
+}
+
+/// Scope counts for one source. A skipped source is different from an opted-out source.
+#[derive(Debug, Default, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct ScopeCoverage {
+    /// Number of folders or subtrees requested, or 0/1 for each system probe.
+    pub requested: usize,
+    /// Usable baselines at start; successfully compared snapshot pairs at finish.
+    pub usable: usize,
+}
+
+/// Baseline or comparison coverage, independent of how many changes were observed.
+#[derive(Debug, Default, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct WatchCoverage {
+    /// Folder scopes.
+    pub folders: ScopeCoverage,
+    /// Registry subtree scopes.
+    pub registry: ScopeCoverage,
+    /// Service listing scope.
+    pub services: ScopeCoverage,
+    /// Scheduled-task scope.
+    pub tasks: ScopeCoverage,
+}
+
+impl WatchCoverage {
+    /// Whether at least one scope has evidence at this stage.
+    pub fn has_usable(&self) -> bool {
+        [self.folders, self.registry, self.services, self.tasks]
+            .iter()
+            .any(|scope| scope.usable > 0)
+    }
+}
+
+/// Result of [`InstallWatch::finish`]. Counts are only meaningful for compared scopes.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct WatchSummary {
-    /// Session that now holds the evidence.
+    /// Session that now holds the evidence, or a failed session if there were no comparable scopes.
     pub session_id: i64,
-    /// Files added, changed or removed in the watched folders.
+    /// Successfully compared scopes out of those requested.
+    pub coverage: WatchCoverage,
+    /// Files added, changed or removed in comparable watched folders.
     pub files_changed: usize,
     /// Service changes recorded.
     pub services_changed: usize,
@@ -56,23 +101,19 @@ pub struct WatchSummary {
     pub tasks_changed: usize,
     /// Registry key changes recorded.
     pub registry_keys_changed: usize,
-    /// Registry subtrees successfully captured both times, including empty subtrees.
-    pub registry_scopes_compared: usize,
-    /// Things that could not be checked.
+    /// Reasons for skipped scopes at either end of the watch.
     pub warnings: Vec<String>,
-    /// Plain-language result for files, services and tasks.
-    pub summary: String,
 }
 
 /// An installation being watched.
 pub struct InstallWatch {
     monitor: SessionMonitor,
-    app_name: String,
     roots: Vec<(PathBuf, PathTrie)>,
     services: Option<Vec<ServiceInfo>>,
     tasks: Option<Vec<TaskInfo>>,
     registry: Vec<(RegistryScope, Vec<RegistryKeyState>)>,
     probe: Arc<dyn SystemProbe>,
+    coverage: WatchCoverage,
     warnings: Vec<String>,
 }
 
@@ -101,73 +142,171 @@ async fn probe_registry(
         .map_err(|e| e.to_string())?
 }
 
+fn plain_folder(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT: do not interpret a redirected root as the watched folder.
+        if meta.file_attributes() & 0x400 != 0 {
+            return false;
+        }
+    }
+    meta.is_dir() && !meta.is_symlink()
+}
+
+async fn folder_snapshot(
+    root: &Path,
+    previous: Option<&PathTrie>,
+    cancel: &Cancel,
+) -> Result<PathTrie> {
+    cancel.check()?;
+    match tokio::fs::symlink_metadata(root).await {
+        Ok(meta) if plain_folder(&meta) => {}
+        Ok(_) => {
+            return Err(EngineError::Watch(
+                "expected a folder, not a file or link".into(),
+            ));
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            // A genuinely absent folder can be created/removed between snapshots. An I/O error
+            // during enumeration below is not equivalent to absence, even if it says NotFound.
+            let mut empty = PathTrie::new();
+            empty.finalize();
+            return Ok(empty);
+        }
+        Err(e) => return Err(io_err(root)(e)),
+    }
+    let snapshot = capture(root, &CaptureOptions::default(), previous, cancel).await?;
+    if let Some((path, reason)) = snapshot.skipped.first() {
+        return Err(EngineError::Watch(format!(
+            "{} path(s) could not be read; for example {path}: {reason}",
+            snapshot.skipped.len()
+        )));
+    }
+    Ok(snapshot.trie)
+}
+
 impl InstallWatch {
     /// Start a session and take the baseline. On failure the session is closed as failed.
     pub async fn begin(
         store: Arc<Mutex<Store>>,
         app_name: &str,
         installer_path: Option<&str>,
-        roots: &[PathBuf],
-        registry_scopes: &RegistryScopes,
+        plan: WatchPlan<'_>,
         probe: Arc<dyn SystemProbe>,
         cancel: &Cancel,
     ) -> Result<Self> {
+        if plan.folders.is_empty()
+            && plan.registry.as_slice().is_empty()
+            && !plan.services
+            && !plan.tasks
+        {
+            return Err(EngineError::Watch(
+                "Choose at least one folder, registry subtree, or system check.".into(),
+            ));
+        }
+        if plan.folders.iter().any(|root| !root.is_absolute()) {
+            return Err(EngineError::Watch(
+                "Enter a full path for every watched folder.".into(),
+            ));
+        }
+        let coverage = WatchCoverage {
+            folders: ScopeCoverage {
+                requested: plan.folders.len(),
+                usable: 0,
+            },
+            registry: ScopeCoverage {
+                requested: plan.registry.as_slice().len(),
+                usable: 0,
+            },
+            services: ScopeCoverage {
+                requested: usize::from(plan.services),
+                usable: 0,
+            },
+            tasks: ScopeCoverage {
+                requested: usize::from(plan.tasks),
+                usable: 0,
+            },
+        };
         let monitor = SessionMonitor::start(store, app_name, installer_path, None)?;
         let mut watch = Self {
             monitor,
-            app_name: app_name.to_string(),
             roots: Vec::new(),
             services: None,
             tasks: None,
             registry: Vec::new(),
             probe,
+            coverage,
             warnings: Vec::new(),
         };
-        if let Err(e) = watch.baseline(roots, registry_scopes, cancel).await {
+        if let Err(e) = watch.baseline(plan, cancel).await {
             let _ = watch.abandon();
             return Err(e);
         }
         Ok(watch)
     }
 
-    async fn baseline(
-        &mut self,
-        roots: &[PathBuf],
-        scopes: &RegistryScopes,
-        cancel: &Cancel,
-    ) -> Result<()> {
+    async fn baseline(&mut self, plan: WatchPlan<'_>, cancel: &Cancel) -> Result<()> {
         cancel.check()?;
-        for root in roots {
-            let snapshot = capture(root, &CaptureOptions::default(), None, cancel).await?;
-            self.roots.push((root.clone(), snapshot.trie));
+        for root in plan.folders {
+            match folder_snapshot(root, None, cancel).await {
+                Ok(snapshot) => self.roots.push((root.clone(), snapshot)),
+                Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                Err(e) => self.warnings.push(format!(
+                    "Folder {} was not captured before changes: {e}",
+                    root.display()
+                )),
+            }
         }
-        match probe_services(&self.probe).await {
-            Ok(v) => self.services = Some(v),
-            Err(e) => self
-                .warnings
-                .push(format!("Services were not checked before the install: {e}")),
+        if plan.services {
+            cancel.check()?;
+            match probe_services(&self.probe).await {
+                Ok(v) => self.services = Some(v),
+                Err(e) => self
+                    .warnings
+                    .push(format!("Services were not checked before changes: {e}")),
+            }
         }
-        match probe_tasks(&self.probe).await {
-            Ok(v) => self.tasks = Some(v),
-            Err(e) => self.warnings.push(format!(
-                "Scheduled tasks were not checked before the install: {e}"
-            )),
+        if plan.tasks {
+            cancel.check()?;
+            match probe_tasks(&self.probe).await {
+                Ok(v) => self.tasks = Some(v),
+                Err(e) => self.warnings.push(format!(
+                    "Scheduled tasks were not checked before changes: {e}"
+                )),
+            }
         }
-        for scope in scopes.as_slice() {
+        for scope in plan.registry.as_slice() {
             cancel.check()?;
             match probe_registry(&self.probe, scope).await {
                 Ok(keys) => self.registry.push((scope.clone(), keys)),
                 Err(e) => self.warnings.push(format!(
-                    "Registry subtree {scope} was not checked before the install: {e}"
+                    "Registry subtree {scope} was not checked before changes: {e}"
                 )),
             }
         }
-        cancel.check()
+        cancel.check()?;
+        self.coverage.folders.usable = self.roots.len();
+        self.coverage.registry.usable = self.registry.len();
+        self.coverage.services.usable = usize::from(self.services.is_some());
+        self.coverage.tasks.usable = usize::from(self.tasks.is_some());
+        if !self.coverage.has_usable() {
+            let reason = self.warnings.first().map_or("", String::as_str);
+            return Err(EngineError::Watch(format!(
+                "No requested scopes could be captured. {reason}"
+            )));
+        }
+        Ok(())
     }
 
     /// Session id.
     pub fn session_id(&self) -> i64 {
         self.monitor.session_id()
+    }
+
+    /// Requested scopes and usable baselines before the changes.
+    pub fn coverage(&self) -> WatchCoverage {
+        self.coverage
     }
 
     /// Baseline exclusions, available before the user runs an installer.
@@ -180,11 +319,16 @@ impl InstallWatch {
         self.monitor.finish(SessionStatus::Failed)
     }
 
-    /// Re-capture everything, record the differences, and close the session.
+    /// Re-capture the usable baselines, record evidence, and close the session.
     pub async fn finish(mut self, cancel: &Cancel) -> Result<WatchSummary> {
         match self.record(cancel).await {
             Ok(summary) => {
-                self.monitor.finish(SessionStatus::Completed)?;
+                let status = if summary.coverage.has_usable() {
+                    SessionStatus::Completed
+                } else {
+                    SessionStatus::Failed
+                };
+                self.monitor.finish(status)?;
                 Ok(summary)
             }
             Err(e) => {
@@ -195,64 +339,76 @@ impl InstallWatch {
     }
 
     async fn record(&mut self, cancel: &Cancel) -> Result<WatchSummary> {
-        cancel.check()?;
-        let mut files = 0;
+        let mut summary = WatchSummary {
+            session_id: self.session_id(),
+            coverage: self.coverage,
+            files_changed: 0,
+            services_changed: 0,
+            tasks_changed: 0,
+            registry_keys_changed: 0,
+            warnings: std::mem::take(&mut self.warnings),
+        };
+        summary.coverage.folders.usable = 0;
+        summary.coverage.services.usable = 0;
+        summary.coverage.tasks.usable = 0;
+        summary.coverage.registry.usable = 0;
         for (root, before) in &self.roots {
-            let after = capture(root, &CaptureOptions::default(), Some(before), cancel).await?;
-            files += self.monitor.attribute_diff(&diff(before, &after.trie))?;
-        }
-        let mut svc = 0;
-        if let Some(old) = self.services.take() {
-            match probe_services(&self.probe).await {
-                Ok(new) => {
-                    svc = self
-                        .monitor
-                        .attribute_services(&diff_services(&old, &new))?
+            match folder_snapshot(root, Some(before), cancel).await {
+                Ok(after) => {
+                    summary.files_changed += self.monitor.attribute_diff(&diff(before, &after))?;
+                    summary.coverage.folders.usable += 1;
                 }
-                Err(e) => self
-                    .warnings
-                    .push(format!("Services were not checked after the install: {e}")),
-            }
-        }
-        let mut tsk = 0;
-        if let Some(old) = self.tasks.take() {
-            match probe_tasks(&self.probe).await {
-                Ok(new) => tsk = self.monitor.attribute_tasks(&diff_tasks(&old, &new))?,
-                Err(e) => self.warnings.push(format!(
-                    "Scheduled tasks were not checked after the install: {e}"
+                Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                Err(e) => summary.warnings.push(format!(
+                    "Folder {} was not captured after changes: {e}",
+                    root.display()
                 )),
             }
         }
-        let mut registry_keys_changed = 0;
-        let mut registry_scopes_compared = 0;
+        if let Some(old) = self.services.take() {
+            cancel.check()?;
+            match probe_services(&self.probe).await {
+                Ok(new) => {
+                    summary.services_changed = self
+                        .monitor
+                        .attribute_services(&diff_services(&old, &new))?;
+                    summary.coverage.services.usable = 1;
+                }
+                Err(e) => summary
+                    .warnings
+                    .push(format!("Services were not checked after changes: {e}")),
+            }
+        }
+        if let Some(old) = self.tasks.take() {
+            cancel.check()?;
+            match probe_tasks(&self.probe).await {
+                Ok(new) => {
+                    summary.tasks_changed =
+                        self.monitor.attribute_tasks(&diff_tasks(&old, &new))?;
+                    summary.coverage.tasks.usable = 1;
+                }
+                Err(e) => summary.warnings.push(format!(
+                    "Scheduled tasks were not checked after changes: {e}"
+                )),
+            }
+        }
         for (scope, before) in std::mem::take(&mut self.registry) {
             cancel.check()?;
             let after = probe_registry(&self.probe, &scope).await;
             cancel.check()?;
             match after {
                 Ok(after) => {
-                    registry_keys_changed += self
+                    summary.registry_keys_changed += self
                         .monitor
                         .attribute_registry_keys(&diff_registry_keys(&before, &after))?;
-                    registry_scopes_compared += 1;
+                    summary.coverage.registry.usable += 1;
                 }
-                Err(e) => self.warnings.push(format!(
-                    "Registry subtree {scope} was not checked after the install: {e}"
+                Err(e) => summary.warnings.push(format!(
+                    "Registry subtree {scope} was not checked after changes: {e}"
                 )),
             }
         }
-        let app = &self.app_name;
-        Ok(WatchSummary {
-            session_id: self.session_id(),
-            files_changed: files,
-            services_changed: svc,
-            tasks_changed: tsk,
-            registry_keys_changed,
-            registry_scopes_compared,
-            warnings: std::mem::take(&mut self.warnings),
-            summary: format!(
-                "Recorded {files} file change(s), {svc} service change(s) and {tsk} scheduled-task change(s) for {app}."
-            ),
-        })
+        cancel.check()?;
+        Ok(summary)
     }
 }

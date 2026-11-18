@@ -30,7 +30,7 @@ See the [dashboard guide](docs/DASHBOARD.md), [architecture](docs/ARCHITECTURE.m
 - **BOM & inference graph**: confidence `1.0` manifest-confirmed, `0.7` inferred from timing, `0.3` heuristic/unknown. Edges are cycle-checked.
 - **Noise filtering**: background telemetry, browser caches, indexer and Defender writes dropped in real time, with burst de-duplication.
 - **Differential engine**: async parallel directory walk, Merkle path-trie diff (identical subtrees skipped), BLAKE3 hashing with incremental reuse.
-- **Install watch**: take a before picture, run the installer, then take an after picture. Record changes to files, services, scheduled tasks and optionally [specific registry subtrees](ROADMAP.md#watch-an-install). Registry snapshots are read-only and need no driver.
+- **Install watch**: take a before picture, run the installer, then take an after picture. Compare selected folders and [specific registry subtrees](ROADMAP.md#watch-an-install), with separately opt-in service and scheduled-task checks. See which scopes were compared, skipped, or not requested. Registry snapshots are read-only and need no driver.
 - **Optional themes**: 36 dark and light palettes with live preview and a temporary Undo; all pass WCAG AA contrast.
 - **Cleanup policy simulator**: JSONLogic rules, pure dry run; most protective rule wins (keep, then review, then quarantine). Templates: conservative, standard, thorough.
 - **Evidence-preserving quarantine**: BLAKE3-verified file batches, no-overwrite restore, explicit permanent delete, and manifests kept as evidence. Interrupted batches are recovered when safe; conflicts retain the held files. No VSS snapshots.

@@ -3,7 +3,7 @@
 //! Enumerating live services needs the SCM (`exor-win`); everything else — snapshot diffing and
 //! reading task definitions from `%SystemRoot%\System32\Tasks` — is plain, testable Rust.
 
-use crate::error::{EngineError, Result, io_err};
+use crate::error::{Result, io_err};
 use crate::trie::ChangeType;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -147,7 +147,8 @@ fn decode(bytes: &[u8]) -> String {
     }
 }
 
-/// Read every task definition under a Tasks folder (blocking; unreadable files are skipped).
+/// Read task definitions under a Tasks folder (blocking). An unreadable definition fails the
+/// snapshot so it cannot look like a removed task when the snapshots are compared.
 pub fn read_tasks_dir(root: &Path) -> Result<Vec<TaskInfo>> {
     fn rec(base: &Path, dir: &Path, out: &mut Vec<TaskInfo>) -> Result<()> {
         for entry in std::fs::read_dir(dir).map_err(io_err(dir))? {
@@ -157,19 +158,16 @@ pub fn read_tasks_dir(root: &Path) -> Result<Vec<TaskInfo>> {
             if ft.is_dir() {
                 rec(base, &p, out)?;
             } else if ft.is_file()
-                && let Ok(bytes) = std::fs::read(&p)
                 && let Ok(rel) = p.strip_prefix(base)
             {
+                let bytes = std::fs::read(&p).map_err(io_err(&p))?;
                 out.push(parse_task_xml(&rel.to_string_lossy(), &decode(&bytes)));
             }
         }
         Ok(())
     }
     let mut out = Vec::new();
-    rec(root, root, &mut out).map_err(|e| match e {
-        EngineError::Io { .. } => e,
-        other => other,
-    })?;
+    rec(root, root, &mut out)?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
@@ -231,6 +229,25 @@ mod tests {
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].path, "\\Foo\\Updater");
         assert_eq!(tasks[0].command.as_deref(), Some("\"C:\\Foo\\up.exe\""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_task_definition_does_not_return_a_partial_snapshot() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("Locked");
+        std::fs::write(&locked, "<Task/>").unwrap();
+        std::fs::write(dir.path().join("Readable"), "<Task/>").unwrap();
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(locked)
+            .unwrap();
+        assert!(read_tasks_dir(dir.path()).is_err());
+        drop(handle);
+        assert_eq!(read_tasks_dir(dir.path()).unwrap().len(), 2);
     }
 
     #[test]

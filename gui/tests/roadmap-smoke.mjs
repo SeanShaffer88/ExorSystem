@@ -80,25 +80,39 @@ try {
             const rows = matches.slice(0, limit);
             return { rows, next_before_id: matches.length > limit ? rows.at(-1).id : null };
           }
-          case 'begin_watch':
+          case 'begin_watch': {
             if (watch) throw new Error('already watching');
+            const registry = args.registrySubtrees ? { requested: 2, usable: 1 } : { requested: 0, usable: 0 };
+            const services = Number(args.system.services);
+            const tasks = Number(args.system.tasks);
+            const session_id = nextWatchId++;
             watch = {
-              session_id: nextWatchId++,
-              warnings: args.registrySubtrees ? ['A registry subtree was not checked before the install.'] : [],
+              session_id,
+              coverage: {
+                folders: { requested: args.folders.length, usable: args.folders.length }, registry,
+                services: { requested: services, usable: services }, tasks: { requested: tasks, usable: session_id === 40 ? 0 : tasks },
+              },
+              warnings: [
+                ...(args.registrySubtrees ? ['A registry subtree was not checked before changes.'] : []),
+                ...(tasks && session_id === 40 ? ['Scheduled tasks were not checked before changes: access denied.'] : []),
+              ],
             };
             return watch;
+          }
           case 'finish_watch': {
             if (!watch) throw new Error('no watch to finish');
             const current = watch;
             watch = null;
+            const counts = { files_changed: 0, services_changed: 0, tasks_changed: 0, registry_keys_changed: 0 };
+            if (current.session_id === 41) return { ...current, ...counts };
+            if (current.session_id === 43) return {
+              ...current, ...counts, coverage: { ...current.coverage, tasks: { requested: 1, usable: 0 } },
+              warnings: ['Scheduled tasks were not checked after changes: access denied.'],
+            };
             if (current.session_id !== 40) throw new Error('file snapshot failed');
             await new Promise(resolve => { window.finishWatchSnapshot = resolve; });
             watchRecorded = true;
-            return {
-              ...current, files_changed: 1, services_changed: 0, tasks_changed: 0,
-              registry_keys_changed: 2, registry_scopes_compared: 1,
-              summary: 'Recorded 1 file change for Watch Fixture.',
-            };
+            return { ...current, ...counts, files_changed: 2, registry_keys_changed: 2 };
           }
           case 'cancel_watch':
             if (!watch) throw new Error('no watch to cancel');
@@ -295,27 +309,49 @@ try {
   const watchTab = tab('Registry monitor');
   const provenanceTab = tab('Relationships');
   await watchTab.click();
-  const begin = page.getByRole('button', {name:'Take the first picture', exact:true});
-  const finish = page.getByRole('button', {name:'Finish: take the second picture'});
+  const begin = button('Take baseline');
+  const finish = button('Compare snapshots');
+  const setup = button('Set up another watch');
   const registry = page.getByLabel('Registry subtrees to watch (optional)');
+  const folders = page.getByLabel('Folders to watch (optional)');
+  const services = page.getByRole('checkbox', { name: 'Services', exact: true });
+  const tasks = page.getByRole('checkbox', { name: 'Scheduled tasks', exact: true });
   const subtrees = String.raw`HKCU\Software\Watch Fixture` + '\n' + String.raw`HKLM32\Software\Watch Fixture`;
+  const watchFolder = String.raw`C:\Watch Fixture`;
+  const scope = (region, label) => region.locator('dl > div').filter({ has: page.getByText(label, { exact: true }) });
+  const baseline = page.getByRole('region', { name: 'Baseline coverage' });
+  const comparison = page.getByRole('region', { name: 'Comparison coverage' });
+  const watchStatus = page.getByRole('region', { name: 'Snapshot controls' }).getByRole('status');
   await page.getByLabel('Application name', {exact:true}).fill('Watch Fixture');
+  assert(await begin.isDisabled());
+  assert.equal(await folders.inputValue(), '');
+  assert(!(await tasks.isChecked()));
+  await folders.fill(` ${watchFolder} \n${watchFolder}\n`);
   await registry.fill(subtrees);
+  await services.check();
+  await tasks.check();
   await begin.click();
-  await page.getByText(/Ready to watch Watch Fixture/).waitFor();
-  await page.getByText('A registry subtree was not checked before the install.').waitFor();
+  await watchStatus.getByText(/Ready to watch Watch Fixture/).waitFor();
+  await scope(baseline, 'Registry').getByText('1 of 2 subtrees ready').waitFor();
+  await scope(baseline, 'Scheduled tasks').getByText('Skipped', { exact: true }).waitFor();
+  await page.getByText('Skipped scope details (2)', { exact: true }).click();
+  await page.getByText('Scheduled tasks were not checked before changes: access denied.').waitFor();
   await provenanceTab.click();
   assert(!(await finish.isVisible()));
   await watchTab.click();
   assert(await finish.isEnabled());
   await finish.click();
-  await page.getByText('Taking the after picture…').waitFor();
+  await watchStatus.getByText('Comparing snapshots…').waitFor();
   await provenanceTab.click();
   await page.evaluate(() => window.finishWatchSnapshot());
   await watchTab.click();
-  await page.getByText(/Registry key changes: 2 across 1/).waitFor();
-  await page.getByText('A registry subtree was not checked before the install.').waitFor();
-  assert.equal(await registry.inputValue(), subtrees);
+  await watchStatus.getByText('Comparison incomplete', { exact: true }).waitFor();
+  await scope(comparison, 'File system').getByText('2 changes recorded', { exact: true }).waitFor();
+  await scope(comparison, 'Registry').getByText('1 of 2 subtrees compared').waitFor();
+  await scope(comparison, 'Services').getByText('0 changes recorded', { exact: true }).waitFor();
+  await scope(comparison, 'Scheduled tasks').getByText('Skipped', { exact: true }).waitFor();
+  assert.equal(await scope(comparison, 'Scheduled tasks').getByText('0 changes recorded').count(), 0);
+  assert(!(await registry.isVisible()));
 
   // Open the recorded evidence for the completed watch, not the newest global changes.
   await page.getByRole('button', {name: 'View recorded changes (session #40)', exact: true}).click();
@@ -365,27 +401,55 @@ try {
   await page.getByRole('cell', {name: String.raw`C:\Other session.dat`, exact: true}).waitFor();
   await watchTab.click();
 
-  // A failed Finish consumes the watch. Offer a fresh baseline, not a dead Finish button.
+  // A file-only watch explicitly opts out of the other sources; unchanged files are zero,
+  // while checks that were never requested have no changed-items count.
+  await setup.click();
+  assert.equal(await registry.inputValue(), subtrees);
   await registry.fill('');
+  await services.uncheck();
+  await tasks.uncheck();
+  await begin.click();
+  await finish.click();
+  await watchStatus.getByText('Comparison complete', { exact: true }).waitFor();
+  await scope(comparison, 'File system').getByText('0 changes recorded', { exact: true }).waitFor();
+  assert.equal(await comparison.getByText('Not requested', { exact: true }).count(), 3);
+  assert.equal(await comparison.getByText('0 changes recorded', { exact: true }).count(), 1);
+
+  // A failed Finish consumes the watch. Offer a fresh baseline, not a dead Compare button.
+  await setup.click();
   await begin.click();
   await finish.click();
   await page.getByRole('alert').filter({hasText: 'Start a new watch to try again.'}).waitFor();
   assert(await begin.isEnabled());
   assert.equal(await finish.count(), 0);
 
+  await folders.fill('');
+  await tasks.check();
+  await begin.click();
+  await finish.click();
+  await watchStatus.getByText('No scopes compared', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: /View recorded changes/ }).count(), 0);
+  assert.equal(await comparison.getByText(/changes recorded/).count(), 0);
+  await setup.click();
   await begin.click();
   await finish.waitFor();
   await provenanceTab.click();
   await watchTab.click();
-  await page.getByRole('button', {name:'Cancel', exact:true}).click();
+  await button('Cancel watch').click();
   await begin.waitFor();
   assert.deepEqual(errors, []);
   const calls = await page.evaluate(() => window.exorCalls);
   assert.equal(calls.filter(([c]) => c === 'run_uninstaller').length, 3);
   assert.equal(calls.filter(([c]) => c === 'purge_quarantine').length, 1);
   assert.equal(calls.filter(([c]) => c === 'quarantine_leftovers').length, 1);
-  assert.deepEqual(calls.filter(([c]) => c === 'begin_watch').map(([, args]) => args.registrySubtrees), [subtrees, '', '']);
-  assert.equal(calls.filter(([c]) => c === 'finish_watch').length, 2);
+  const begun = calls.filter(([c]) => c === 'begin_watch').map(([, args]) => args);
+  assert.deepEqual(begun.map((args) => args.registrySubtrees), [subtrees, '', '', '', '']);
+  assert.deepEqual(begun.map((args) => args.folders), [[watchFolder], [watchFolder], [watchFolder], [], []]);
+  assert.deepEqual(begun.map((args) => args.system), [
+    { services: true, tasks: true }, { services: false, tasks: false }, { services: false, tasks: false },
+    { services: false, tasks: true }, { services: false, tasks: true },
+  ]);
+  assert.equal(calls.filter(([c]) => c === 'finish_watch').length, 4);
   assert.equal(calls.filter(([c]) => c === 'cancel_watch').length, 1);
   const historyCalls = calls.filter(([c]) => c === 'history').map(([, args]) => args);
   assert(historyCalls.some(args => args.sessionId === 40 && args.domain === 'registry' && args.limit === 6));
@@ -393,13 +457,29 @@ try {
   assert(historyCalls.some(args => args.sessionId === 40 && args.domain === null && args.limit === 100));
   assert(historyCalls.some(args => args.sessionId === 40 && args.beforeId === 41));
   assert(historyCalls.some(args => args.sessionId === 40 && args.filter === 'gone' && args.beforeId === null));
+  // Keep the labels found wrapping in the Windows screenshots on one readable line.
+  const checkPreviewLayout = async () => {
+    const inventoryShortcut = page.locator('.terminal-notice').getByRole('button', { name: 'Applications', exact: true });
+    await inventoryShortcut.waitFor();
+    assert(await inventoryShortcut.evaluate((el) => getComputedStyle(el).whiteSpace === 'nowrap' && el.scrollWidth <= el.clientWidth));
+    assert(await page.locator('#main').evaluate((el) => el.scrollWidth <= el.clientWidth));
+  };
+  await page.setViewportSize({width: 1100, height: 560});
+  await tab('Script preview').click();
+  await checkPreviewLayout();
+  assert(await tab('Cleanup summary').locator('.nav-text').evaluate((label) => {
+    const range = document.createRange();
+    range.selectNodeContents(label);
+    return range.getClientRects().length === 1 && label.scrollWidth <= label.clientWidth;
+  }));
   await page.setViewportSize({width: 390, height: 844});
+  await checkPreviewLayout();
   await tab('Overview').click();
   await page.getByRole('region', { name: 'Installed applications' }).getByRole('button', { name: /Alpha Package/ }).waitFor();
   assert(await page.locator('#main').evaluate((el) => el.scrollWidth <= el.clientWidth));
   await page.keyboard.press('ArrowDown');
   assert.equal(await tab('Applications').getAttribute('aria-selected'), 'true');
-  console.log('Browser smoke passed: dashboard metrics, read-only preview, confirmed wizard, cleanup totals, inventory, graph traversal, registry watch, split diff, and history pagination.');
+  console.log('Browser smoke passed: dashboard metrics, read-only preview, confirmed wizard, cleanup totals, inventory, graph traversal, scoped watch coverage, split diff, history pagination, and responsive labels.');
 } finally {
   await browser.close();
 }

@@ -22,6 +22,9 @@ pub enum EngineError {
     /// Worker task panicked or was aborted.
     #[error("task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
+    /// No usable scopes were specified or available for the install watch.
+    #[error("{0}")]
+    Watch(String),
     /// Policy expression is invalid.
     #[error("policy: {0}")]
     Policy(String),

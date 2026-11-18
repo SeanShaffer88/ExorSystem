@@ -1,6 +1,6 @@
 import { Channel } from "@tauri-apps/api/core";
 import { invoke, isDemo } from "./bridge";
-import type { AppInfo, ChangeDomain, TemplateInfo, HistoryPage, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallPreview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchStart, WatchSummary } from "./types";
+import type { AppInfo, ChangeDomain, TemplateInfo, HistoryPage, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallPreview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchStart, WatchSummary, WatchSystem } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -34,8 +34,8 @@ export const api = {
   listTemplates: () => invoke<TemplateInfo[]>("list_templates"),
   appInfo: () => invoke<AppInfo>("app_info"),
   sessionItems: (sessionId: number) => invoke<SessionItems>("session_items", { sessionId }),
-  beginWatch: (appName: string, installerPath: string | null, folders: string[], registrySubtrees: string) =>
-    invoke<WatchStart>("begin_watch", { appName, installerPath, folders, registrySubtrees }),
+  beginWatch: (appName: string, installerPath: string | null, folders: string[], registrySubtrees: string, system: WatchSystem) =>
+    invoke<WatchStart>("begin_watch", { appName, installerPath, folders, registrySubtrees, system }),
   finishWatch: () => invoke<WatchSummary>("finish_watch"),
   cancelWatch: () => invoke<void>("cancel_watch"),
   cancelScan: () => invoke<void>("cancel_scan"),

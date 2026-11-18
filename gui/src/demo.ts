@@ -1,7 +1,7 @@
 // Vite development only. Synthetic in-memory responses; no native command, registry or file access.
 import { installFixture } from "./bridge";
 import type { LogLine } from "./logApi";
-import type { AppInfo, Decision, GraphNode, HistoryRow, InstalledProgram, LeftoverReview, ProgramRow, QuarantineRow, RelationshipGraph, Session, SessionItems, UninstallPreview, WatchStart } from "./types";
+import type { AppInfo, Decision, GraphNode, HistoryRow, InstalledProgram, LeftoverReview, ProgramRow, QuarantineRow, RelationshipGraph, Session, SessionItems, UninstallPreview, WatchStart, WatchSummary, WatchSystem } from "./types";
 
 const MiB = 1024 ** 2;
 const KiB = 1024;
@@ -80,7 +80,7 @@ export function startDemo() {
   const portable = new Map([[String.raw`C:\Apps\KeePass\KeePass.exe`, "KeePass Portable"]]);
   const logs: LogLine[] = [];
   const subscriptions = new Map<string, Set<(payload: unknown) => void>>();
-  let active: WatchStart | null = null;
+  let active: { baseline: WatchStart; folder?: string; registry?: string } | null = null;
   let logOpen = false;
   let logWindow: Window | null = null;
   const updateLog = (msg: string) => {
@@ -196,24 +196,31 @@ export function startDemo() {
         }
         case "begin_watch": {
           if (active) throw new Error("A watch is already open.");
+          const folders = args.folders as string[];
+          const registry = String(args.registrySubtrees).split("\n").map((p) => p.trim()).filter(Boolean);
+          const system = args.system as WatchSystem;
+          const scope = (requested: number, usable = requested) => ({ requested, usable });
+          const warnings = system.tasks ? ["Demo: scheduled tasks were not checked because access was denied."] : [];
+          const coverage = { folders: scope(folders.length), registry: scope(registry.length), services: scope(Number(system.services)), tasks: scope(Number(system.tasks), 0) };
+          if (!Object.values(coverage).some((entry) => entry.usable)) throw new Error("No requested scopes could be captured in the demo. Choose a folder, registry subtree, or services.");
           await wait(280);
           const id = sessions[0]!.session_id + 1;
           sessions.unshift(session(id, String(args.appName), "monitoring"));
-          active = { session_id: id, warnings: [] };
-          if (String(args.registrySubtrees).trim()) registryWatch = String(args.registrySubtrees).split("\n").find((p) => p.trim()) ?? "";
-          else registryWatch = "";
-          return active;
+          const baseline = { session_id: id, coverage, warnings };
+          active = { baseline, folder: folders[0], registry: registry[0] };
+          return baseline;
         }
         case "finish_watch": {
           if (!active) throw new Error("No active watch.");
-          const saved = active; active = null;
+          const { baseline, folder, registry } = active;
+          active = null;
           await wait(300);
           sessions[0] = { ...sessions[0]!, status: "completed" };
           let id = observations[0]!.id + 1;
-          observations.unshift(observation(id++, String.raw`C:\Demo\artifact.txt`, "file", "modified", saved.session_id, "06:20", beforeHash, afterHash));
-          if (registryWatch) observations.unshift(observation(id, `${registryWatch.trim()}\\DemoKey`, "registry", "created", saved.session_id, "06:20"));
-          updateLog(`Demo: recorded a snapshot comparison (#${saved.session_id}).`);
-          return { ...saved, files_changed: 1, services_changed: 0, tasks_changed: 0, registry_keys_changed: registryWatch ? 1 : 0, registry_scopes_compared: registryWatch ? 1 : 0, summary: "Demo: recorded a file change without accessing the file system." };
+          if (folder) observations.unshift(observation(id++, `${folder.replace(/[\\/]+$/, "")}\\demo-artifact.txt`, "file", "modified", baseline.session_id, "06:20", beforeHash, afterHash));
+          if (registry) observations.unshift(observation(id, `${registry}\\DemoKey`, "registry", "created", baseline.session_id, "06:20"));
+          updateLog(`Demo: recorded a snapshot comparison (#${baseline.session_id}).`);
+          return { ...baseline, files_changed: folder ? 1 : 0, services_changed: 0, tasks_changed: 0, registry_keys_changed: registry ? 1 : 0 } satisfies WatchSummary;
         }
         case "cancel_watch": if (active) sessions[0] = { ...sessions[0]!, status: "failed" }; active = null; return;
         case "list_portable_programs": return [...portable].map(([executable, name]) => ({ executable, name }));
@@ -231,5 +238,4 @@ export function startDemo() {
       }
     },
   });
-  let registryWatch = "";
 }
