@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "exor-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "exor-storage",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "exor-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "exor-win"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "exor-engine",
  "thiserror",

@@ -11,6 +11,7 @@ on:
       - 'gui/**'
       - 'scripts/release.ps1'
       - 'scripts/check-release.ps1'
+      - 'scripts/verify-release-candidate.py'
       - 'scripts/windows-fixture.ps1'
   workflow_dispatch:
 
@@ -58,6 +59,12 @@ jobs:
         run: |
           try { ./scripts/check-release.ps1 }
           catch { Write-Host "::error title=Package check::$($_.Exception.Message)"; throw }
+      - name: Verify the candidate can be promoted without rebuilding
+        shell: pwsh
+        run: |
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE) { throw 'Could not resolve the candidate commit' }
+          python ./scripts/verify-release-candidate.py dist --commit $commit --run-id $env:GITHUB_RUN_ID
       - uses: actions/upload-artifact@v4
         with:
           name: ExorSystem-Windows-x64-candidate
@@ -66,4 +73,4 @@ jobs:
             dist/SHA256SUMS.txt
             dist/PACKAGE-CHECKS.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30

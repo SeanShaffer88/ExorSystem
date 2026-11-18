@@ -18,7 +18,7 @@
 | Live USN/registry port, kernel driver, WDK, signing | Not run | Windows user-mode sources and standalone lab probe are built/type-checked; real capture, driver build/load, assigned altitude and production signing have no evidence. Nothing is enabled or packaged by default. |
 | Windows 10/11 accessibility, DPI and log-window docking | Not run | Empty [client evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md); no Narrator, high-contrast, or multi-monitor sign-off. |
 
-The cleanup, desktop shell and live parser checks passed on [Linux/Windows CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44247178154). Candidate package artifacts and their exact commit/hash evidence are tracked separately in the PR's packaging check.
+[Linux/Windows and GUI/Tauri CI on `main`](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44248895966) passed at `459ed96`. The [Windows Server package run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44247905086) passed on PR head `e44c467`: the fixture, NSIS, MSI and portable ZIP builds, SHA-256 checks, and package metadata inspection. These checks did not install or launch the packages on Windows 10/11 clients.
 
 ## Limits that affect release decisions
 
