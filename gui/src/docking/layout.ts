@@ -20,15 +20,18 @@ export type Layout = {
 export type LayoutPreset = "default" | "investigate" | "cleanup";
 export const layoutKey = "exor.workspace.layout.v1";
 
+const isDockPanel = (id: unknown, demo: boolean): id is PanelId =>
+  isPanel(id) && (demo || id !== "activity");
+
 function group(ids: PanelId[], active = ids[0] ?? null): DockGroup {
   return { ids, active };
 }
 
-export function preset(name: LayoutPreset): Layout {
+export function preset(name: LayoutPreset, demo: boolean): Layout {
   const config: Record<LayoutPreset, Record<DockArea, PanelId[]>> = {
     default: { main: ["overview", "sessions"], right: [], bottom: [] },
-    investigate: { main: ["history", "sessions", "overview"], right: ["watch", "provenance"], bottom: ["activity", "terminal"] },
-    cleanup: { main: ["quarantine", "sessions", "overview"], right: ["simulator"], bottom: ["activity", "terminal"] },
+    investigate: { main: ["history", "sessions", "overview"], right: ["watch", "provenance"], bottom: demo ? ["activity", "terminal"] : [] },
+    cleanup: { main: ["quarantine", "sessions", "overview"], right: ["simulator"], bottom: demo ? ["activity", "terminal"] : [] },
   };
   return {
     version: 1,
@@ -53,17 +56,17 @@ export function clampSize(area: SplitArea, value: unknown) {
 }
 
 /** Treat the saved layout as preferences, not as trusted application state. */
-export function restoreLayout(value: unknown): Layout {
+export function restoreLayout(value: unknown, demo: boolean): Layout {
   const root = object(value);
   const raw = object(root?.groups);
-  if (root?.version !== 1 || !raw) return preset("default");
+  if (root?.version !== 1 || !raw) return preset("default", demo);
   const seen = new Set<PanelId>();
   const read = (area: DockArea): DockGroup => {
     const entry = object(raw[area]);
     const ids: PanelId[] = [];
     if (Array.isArray(entry?.ids)) {
       for (const id of entry.ids) {
-        if (!isPanel(id) || seen.has(id)) continue;
+        if (!isDockPanel(id, demo) || seen.has(id)) continue;
         seen.add(id); ids.push(id);
       }
     }
@@ -75,23 +78,23 @@ export function restoreLayout(value: unknown): Layout {
     const entry = object(raw[area]);
     return Array.isArray(entry?.ids) && entry.ids.length === 0;
   });
-  if (!seen.size && !intentionallyEmpty) return preset("default");
+  if (!seen.size && !intentionallyEmpty) return preset("default", demo);
   const focus = dockAreas.find((a) => a === root.focus && (a === "main" || groups[a].active)) ?? "main";
   const sizes = object(root.sizes);
   const reopen: Layout["reopen"] = {};
   for (const [id, value] of Object.entries(object(root.reopen) ?? {})) {
     const area = dockAreas.find((a) => a === value);
-    if (area && isPanel(id) && !seen.has(id)) reopen[id] = area;
+    if (area && isDockPanel(id, demo) && !seen.has(id)) reopen[id] = area;
   }
   return { version: 1, groups, focus, reopen, sizes: { right: clampSize("right", sizes?.right), bottom: clampSize("bottom", sizes?.bottom) } };
 }
 
-export function readLayout(): Layout {
+export function readLayout(demo: boolean): Layout {
   try {
     const raw = window.localStorage.getItem(layoutKey);
-    if (raw && raw.length <= 8192) return restoreLayout(JSON.parse(raw));
+    if (raw && raw.length <= 8192) return restoreLayout(JSON.parse(raw), demo);
   } catch { /* An unavailable or damaged preference must not prevent startup. */ }
-  return preset("default");
+  return preset("default", demo);
 }
 
 export function saveLayout(layout: Layout) {
@@ -117,7 +120,7 @@ export type DockAction =
   | { kind: "resize"; area: SplitArea; value: number }
   | { kind: "preset"; preset: LayoutPreset };
 
-function update(layout: Layout, action: DockAction): Layout {
+function update(layout: Layout, action: DockAction, demo: boolean): Layout {
   switch (action.kind) {
     case "focus":
       return action.area === layout.focus ? layout : { ...layout, focus: action.area };
@@ -125,7 +128,7 @@ function update(layout: Layout, action: DockAction): Layout {
       const value = clampSize(action.area, action.value);
       return layout.sizes[action.area] === value ? layout : { ...layout, sizes: { ...layout.sizes, [action.area]: value } };
     }
-    case "preset": return preset(action.preset);
+    case "preset": return preset(action.preset, demo);
     case "close": {
       const area = locationOf(layout, action.id);
       if (!area) return layout;
@@ -134,19 +137,19 @@ function update(layout: Layout, action: DockAction): Layout {
       return { ...layout, groups, focus, reopen: { ...layout.reopen, [action.id]: area } };
     }
     case "open": {
-      if (!isPanel(action.id)) return layout;
+      if (!isDockPanel(action.id, demo)) return layout;
       const area = locationOf(layout, action.id);
-      if (!area) return update(layout, { kind: "move", id: action.id, area: layout.reopen[action.id] ?? home(action.id) });
+      if (!area) return update(layout, { kind: "move", id: action.id, area: layout.reopen[action.id] ?? home(action.id) }, demo);
       const entry = layout.groups[area];
       if (entry.active === action.id && layout.focus === area) return layout;
       return { ...layout, focus: area, groups: { ...layout.groups, [area]: group(entry.ids, action.id) } };
     }
     case "move": {
-      if (!isPanel(action.id)) return layout;
-      if (action.before === action.id && locationOf(layout, action.id) === action.area) return update(layout, { kind: "open", id: action.id });
+      if (!isDockPanel(action.id, demo)) return layout;
+      if (action.before === action.id && locationOf(layout, action.id) === action.area) return update(layout, { kind: "open", id: action.id }, demo);
       const from = locationOf(layout, action.id);
       if (from === action.area && action.before === undefined && layout.groups[from].ids.at(-1) === action.id) {
-        return update(layout, { kind: "open", id: action.id });
+        return update(layout, { kind: "open", id: action.id }, demo);
       }
       const groups = { ...layout.groups };
       if (from) groups[from] = without(groups[from], action.id);
@@ -161,17 +164,17 @@ function update(layout: Layout, action: DockAction): Layout {
   }
 }
 
-export type WorkspaceState = { layout: Layout; initialized: ReadonlySet<PanelId> };
-export function workspaceState(layout: Layout, previous: ReadonlySet<PanelId> = new Set()): WorkspaceState {
+export type WorkspaceState = { layout: Layout; demo: boolean; initialized: ReadonlySet<PanelId> };
+export function workspaceState(layout: Layout, demo: boolean, previous: ReadonlySet<PanelId> = new Set()): WorkspaceState {
   const initialized = new Set(previous);
   for (const area of dockAreas) {
     const id = layout.groups[area].active;
     if (id) initialized.add(id);
   }
-  return { layout, initialized };
+  return { layout, demo, initialized };
 }
 
 export function dockReducer(state: WorkspaceState, action: DockAction): WorkspaceState {
-  const next = update(state.layout, action);
-  return next === state.layout ? state : workspaceState(next, state.initialized);
+  const next = update(state.layout, action, state.demo);
+  return next === state.layout ? state : workspaceState(next, state.demo, state.initialized);
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../components/Icon";
 import { AppMark, Badge, CardHeading, Empty, Intro, TileIcon, nodeText, programSize, scopeText, sourceText } from "../components/Workspace";
@@ -25,6 +25,11 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
   const [showSystem, setShowSystem] = useState(false);
   const [selected, setSelected] = useState(initialProgramId ? `p:${initialProgramId}` : null);
   const [page, setPage] = useState<number | null>(null);
+  const details = useRef<HTMLElement>(null);
+  const back = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLElement>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const returnToList = useRef(false);
 
   useEffect(() => {
     if (!visible) return;
@@ -55,12 +60,31 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
   const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
   const number = Math.min(page ?? base, pages - 1);
 
+  const currentKey = current?.key;
+  useLayoutEffect(() => {
+    if (!visible) return;
+    if (returnToList.current) {
+      returnToList.current = false;
+      (trigger.current?.isConnected ? trigger.current : list.current?.querySelector("input"))?.focus();
+      trigger.current = null;
+    }
+    if (!currentKey || !details.current) return;
+    if (back.current?.getClientRects().length) {
+      // A narrow dock shows a detail page instead of placing it under all sixteen rows.
+      // Keep focus in the newly visible content, not on the now-hidden row.
+      if (trigger.current) back.current.focus({ preventScroll: true });
+      details.current.scrollIntoView({ block: "start", inline: "nearest" });
+    } else {
+      details.current.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [currentKey, visible]);
+
   return <section className="workspace-page" aria-labelledby="apps-title">
     <Intro id="apps-title" kicker="INVENTORY" title="Installed applications" description="Browse classic programs, current-user packages, portable entries, and recorded installs." actions={<button type="button" className="quiet-button" disabled={pending} onClick={() => setRevision((n) => n + 1)}><Icon name="refresh"/> Refresh inventory</button>}/>
     {error && <p role="alert" className="notice review-notice">Could not load programs: {error}</p>}
     {inventory?.warnings.map((w) => <div className="notice review-notice" key={w}><Icon name="alert"/><span>{w}</span></div>)}
-    <div className="inventory-layout">
-      <section className="card card-overflow" aria-label="Application inventory">
+    <div className="inventory-layout" data-selection={!!current}>
+      <section className="card card-overflow inventory-list" ref={list} aria-label="Application inventory">
         <CardHeading title="Application inventory" action={<Badge>{shown.length} result{shown.length === 1 ? "" : "s"}</Badge>}/>
         <div className="inventory-filters">
           <label className="search-box"><Icon name="search"/><span className="sr-only">Search programs</span><input type="search" placeholder="Search name, publisher or version" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }}/></label>
@@ -69,7 +93,10 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
         </div>
         {shown.length > 0 ? <div className="dashboard-scroll"><table className="dashboard-table inventory-table">
           <thead><tr><th scope="col">Application</th><th scope="col">Source</th><th scope="col" className="numeric">Size</th></tr></thead>
-          <tbody>{shown.slice(number * PAGE_SIZE, (number + 1) * PAGE_SIZE).map((e) => <tr key={e.key} className={`interactive-row ${e.key === current?.key ? "selected-row" : ""}`} onClick={() => { setSelected(e.key); setPage(number); }}>
+          <tbody>{shown.slice(number * PAGE_SIZE, (number + 1) * PAGE_SIZE).map((e) => <tr key={e.key} className={`interactive-row ${e.key === current?.key ? "selected-row" : ""}`} onClick={(event) => {
+            trigger.current = event.currentTarget.querySelector("button");
+            setSelected(e.key); setPage(number);
+          }}>
             <td><button type="button" className="app-cell row-button" aria-pressed={e.key === current?.key}>
               {e.program ? <AppMark program={e.program}/> : <TileIcon icon="clock" tone="violet"/>}
               <span><strong>{e.name}</strong><small>{e.removed ? "Recently removed" : e.program ? [e.program.publisher, e.program.version].filter(Boolean).join(" · ") || "Version not reported" : "Recorded installation"}</small></span>
@@ -80,15 +107,19 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
         </table></div> : <Empty icon="apps" title={pending ? "Loading inventory…" : "No matching applications"} detail="Try another search or include a different source."/>}
         {pages > 1 && <div className="pager"><button type="button" disabled={number === 0} onClick={() => setPage(number - 1)}>Previous</button><span>Page {number + 1} of {pages}</span><button type="button" disabled={number + 1 >= pages} onClick={() => setPage(number + 1)}>Next</button></div>}
       </section>
-      {current ? <ApplicationDetail key={current.key} entry={current} sessions={sessions} onTrace={onTrace} onHistory={onHistory} onSimulate={onSimulate} onCleanup={onCleanup} onTerminal={onTerminal} onUninstallComplete={() => setRevision((n) => n + 1)}/>
-        : <aside className="card"><Empty icon="apps" title="Select an application" detail="See its Windows registration, recorded evidence, and supported actions."/></aside>}
+      {current ? <ApplicationDetail key={current.key} entry={current} sessions={sessions} onTrace={onTrace} onHistory={onHistory} onSimulate={onSimulate} onCleanup={onCleanup} onTerminal={onTerminal} onUninstallComplete={() => setRevision((n) => n + 1)} details={details} back={back} onBack={() => {
+          returnToList.current = true;
+          setSelected(null);
+        }}/>
+        : <aside className="card inventory-empty-detail"><Empty icon="apps" title="Select an application" detail="See its Windows registration, recorded evidence, and supported actions."/></aside>}
     </div>
   </section>;
 }
 
-function ApplicationDetail({ entry, sessions, onTrace, onHistory, onSimulate, onCleanup, onTerminal, onUninstallComplete }: {
+function ApplicationDetail({ entry, sessions, onTrace, onHistory, onSimulate, onCleanup, onTerminal, onUninstallComplete, details, back, onBack }: {
   entry: Entry; sessions: Session[]; onTrace: (path: string) => void; onHistory: (id: number) => void;
   onSimulate: (id: number) => void; onCleanup: () => void; onTerminal: (id: string) => void; onUninstallComplete: () => void;
+  details: React.Ref<HTMLElement>; back: React.Ref<HTMLButtonElement>; onBack: () => void;
 }) {
   const [selected, setSelected] = useState<number | null>(null);
   const sessionId = selected !== null && entry.sessionIds.includes(selected) ? selected : entry.sessionIds[0] ?? null;
@@ -102,7 +133,8 @@ function ApplicationDetail({ entry, sessions, onTrace, onHistory, onSimulate, on
   }, [sessionId]);
   const info = result?.id === sessionId ? result : null;
   const p = entry.program;
-  return <aside className="card app-detail" aria-label="Application details">
+  return <aside className="card app-detail" aria-label="Application details" ref={details} tabIndex={0}>
+    <button className="quiet-button inventory-back" type="button" ref={back} onClick={onBack}>Back to applications</button>
     <div className="selected-app">{p ? <AppMark program={p}/> : <TileIcon icon="clock" tone="violet"/>}<div><div className="eyebrow">Selected application</div><h2>{entry.name}</h2></div></div>
     {p && <dl className="facts"><dt>Publisher</dt><dd>{p.publisher ?? "Unknown"}</dd><dt>Version</dt><dd>{p.version ?? "Unknown"}</dd><dt>Scope</dt><dd>{scopeText[p.scope]}</dd><dt>Location</dt><dd>{p.install_location ?? "Not reported"}</dd><dt>Reported size</dt><dd>{programSize(p.size_kb)}</dd></dl>}
     <ProgramActions key={sessionId ?? "no-session"} program={p} removed={entry.removed} sessionId={sessionId} onUninstallComplete={onUninstallComplete} onSimulate={onSimulate} onCleanup={onCleanup} onTerminal={onTerminal}/>

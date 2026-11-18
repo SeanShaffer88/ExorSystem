@@ -81,6 +81,8 @@
 .preset-diagram > i { background: var(--border); border-radius: 1px; }
 .preset-diagram > i:first-child { background: var(--accent); grid-area: 1 / 1; }
 .preset-diagram > i:last-child { grid-column: 1 / -1; }
+.preset-diagram[data-bottom="false"] { grid-template-rows: 1fr; }
+.preset-diagram[data-bottom="false"] > i:last-child { display: none; }
 .preset-diagram[data-preset="default"] > i:first-child { grid-area: 1 / 1 / -1 / -1; }
 .preset-diagram[data-preset="default"] > i:not(:first-child) { display: none; }
 
@@ -90,6 +92,8 @@
   scrollbar-color: var(--border) transparent; scrollbar-gutter: stable;
   padding: 20px clamp(12px, 1.68vw, 26px);
 }
+/* Definite grid tracks give the detail card its own height budget, even in a short dock. */
+.dock-panel[data-panel="sessions"] { container-type: size; }
 .dock-panel:focus-visible { outline-offset: -3px; }
 .dock-panel > section:not(.workspace-page):not(.activity-panel) { max-width: 1520px; margin: 0 auto; overflow-wrap: anywhere; }
 .dock-panel > section:not(.workspace-page):not(.activity-panel) > h2 { font-size: 26px; margin: 3px 0 10px; letter-spacing: -.028em; }

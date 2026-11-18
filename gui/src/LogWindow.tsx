@@ -3,7 +3,7 @@ import { LogLines, useActivityLog } from "./components/ActivityLog";
 import { logApi } from "./logApi";
 import { initTheme } from "./theme";
 
-/** The optional native window that follows the desktop at its right edge. */
+/** The owned native window attached below the desktop workspace. */
 export function LogWindow() {
   const log = useActivityLog();
   const [error, setError] = useState("");
@@ -12,12 +12,21 @@ export function LogWindow() {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
-  return <div className="logwin">
+  const close = () => {
+    setError("");
+    void logApi.setOpen(false).catch((e: unknown) => setError(`Could not close the activity log: ${String(e)}`));
+  };
+  return <div className="logwin" onKeyDown={(e) => {
+    if (e.key === "Escape" || (e.ctrlKey && !e.altKey && e.key === "`")) {
+      e.preventDefault();
+      if (!e.repeat) close();
+    }
+  }}>
     <div className="logbar">
       <strong>Activity log</strong>
       <span>
         <button type="button" onClick={() => void log.clear()} disabled={!log.lines.length || log.clearing}>Clear</button>{" "}
-        <button type="button" onClick={() => void logApi.setOpen(false).catch((e: unknown) => setError(String(e)))}>Hide</button>
+        <button type="button" onClick={close}>Close</button>
       </span>
     </div>
     {(log.error || error) && <p role="alert" className="error activity-error">{log.error || error}</p>}

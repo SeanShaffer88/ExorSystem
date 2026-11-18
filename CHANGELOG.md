@@ -8,9 +8,11 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 - Change inspector and installation reports show saved Watch coverage, including scopes compared with zero changes and scopes skipped or not requested. Older sessions do not gain assumed coverage.
 
 ### Changed
+- Activity log opens as a separate window below the Windows workspace. Closing it returns the reserved space to a maximized main window.
 - The local profile upgrades to schema v4, backing up the existing v3 database before upgrading. Watch saves coverage and observations without storing full snapshots or registry values.
 
 ### Fixed
+- Selected application details stay reachable in short and narrow docks, including long registration paths and recorded evidence.
 - Watch commits comparison evidence, coverage, and session status together. If capture is cancelled or recording fails, earlier comparisons do not appear as a partially committed result.
 
 ## [0.2.0] - 2026-11-18

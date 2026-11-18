@@ -1272,12 +1272,26 @@ fn run() -> Result<(), String> {
             _profile_lock: profile_lock,
         })
         .setup(move |app| {
-            let handle = app.handle().clone();
             if let Some(main) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
                 main.on_window_event(move |e| match e {
-                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => dock::follow(&handle),
+                    WindowEvent::Moved(_)
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::Focused(true) => dock::follow(&handle),
                     // the hidden log window must not keep the app alive
                     WindowEvent::CloseRequested { .. } => handle.exit(0),
+                    _ => {}
+                });
+            }
+            if let Some(log) = app.get_webview_window("log") {
+                let handle = app.handle().clone();
+                log.on_window_event(move |e| match e {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        dock::close(&handle);
+                    }
+                    WindowEvent::ScaleFactorChanged { .. } => dock::follow(&handle),
                     _ => {}
                 });
             }

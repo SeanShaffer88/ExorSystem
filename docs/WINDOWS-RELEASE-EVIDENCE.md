@@ -35,7 +35,8 @@ Record the format used for each functional run. Repeat it for another format if 
 | Docking: drag and keyboard move/reorder, close/reopen, focus recovery, both splitters | Not run | Not run |
 | Compact dock switcher, restart persistence, layout presets/reset and theme preview/Undo | Not run | Not run |
 | Active Watch/Scan retained; context links update existing inspector and Script preview; modal shortcuts blocked | Not run | Not run |
-| Activity log: shortcut, shared messages/clear, attached log follow, minimize and reduced motion | Not run | Not run |
+| Applications: long selected details, short and narrow docks, Back preserves row and focus | Not run | Not run |
+| Activity log: owned bottom attachment, shortcuts, clear, move/resize/monitor, minimize/restore, reclaim work area while maximized | Not run | Not run |
 | Keyboard, Narrator, high contrast and 100%/150% DPI (including second monitor) | Not run | Not run |
 
 - Failed/skipped cases, issue links, decisions and re-test evidence:

@@ -17,6 +17,8 @@ ExorSystem records system changes and helps people review the evidence before cl
 
 - **Retain comparison context:** History and installation reports show what a Watch compared, including skipped scopes and comparisons with zero changes. Scope coverage is saved with the observations; old sessions without coverage remain unknown. This is a local profile upgrade, not a change to v0.2.0 packages or a native Windows test result.
 
+- **Workspace refinements:** scrollable Applications details and a separate Activity log attached below the Windows desktop. Closing the log returns its space to the maximized workspace.
+
 ## Watch an install
 
 - Enter full paths to the folders you want to watch. No folders are selected by default. Select Services or Scheduled tasks only if you want their read-only metadata checked.

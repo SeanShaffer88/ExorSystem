@@ -20,6 +20,12 @@ export async function mockDesktop(page) {
     const userApp = { ...app, id: 'HKCU\\Fixture', name: 'Per-user Fixture', scope: 'user' };
     const msix = { ...standard, name: 'Alpha Package', source: 'msix', id: 'msix:AlphaPackage' };
     const moveable = 'C:\\Program Files\\Zed Widget';
+    const stressInventory = new URLSearchParams(location.search).has('inventory-stress');
+    const stressRows = stressInventory ? Array.from({ length: 32 }, (_, i) => ({
+      program: { ...standard, source: 'registry', id: `stress-${i + 1}`, name: `Inventory Fixture ${i + 1}`,
+        install_location: 'C:\\' + 'UnbrokenDirectoryName'.repeat(i === 23 ? 20 : 1) },
+      removed: false, session_ids: i === 23 ? [9] : [],
+    })) : [];
     let portable = [];
     let removed = false;
     let invocationChanged = true;
@@ -53,6 +59,7 @@ export async function mockDesktop(page) {
     const initial = { seq: 1, t: 1_750_000_000_000, level: 'info', msg: 'Fixture started' };
     const entries = [initial];
     let logOpen = false;
+    window.setExorLogOpen = (open) => { logOpen = open; emit('log-open', open); };
     let clearedThrough = 0;
     window.appendExorLog = (line) => { entries.push(line); emit('log', line); };
     const delayedLog = new URLSearchParams(window.location.search).has('deferred-log');
@@ -86,7 +93,7 @@ export async function mockDesktop(page) {
             return clearedThrough;
           }
           case 'log_is_open': return logOpen;
-          case 'set_log_open': logOpen = args.open; emit('log-open', logOpen); return null;
+          case 'set_log_open': window.setExorLogOpen(args.open ?? !logOpen); return null;
           case 'scan': {
             const send = callbacks.get(args.onEvent.id);
             send({ index: 0, message: { event: 'progress', data: { phase: 'hashing', files_seen: 6, files_hashed: 2, bytes_hashed: 5 } } });
@@ -175,8 +182,14 @@ export async function mockDesktop(page) {
             { program: removed ? { ...app, uninstall_command: null } : app, session_ids: [], removed },
             { program: msix, session_ids: [], removed: false },
             { program: userApp, session_ids: [], removed: false },
+            ...stressRows,
             ...portable.map((p) => ({program: {...standard, ...p, source: 'portable', id: 'portable:'+p.executable}, session_ids: [], removed: false})),
           ], warnings: ['One inventory source could not be checked.'] };
+          case 'session_items': return {
+            total: 13, shared: 12,
+            items: Array.from({ length: 12 }, (_, i) => ({ path: 'HKCU\\' + 'VeryLongRegistryKey'.repeat(8) + `\\Evidence-${i + 1}`,
+              node_type: 'registry_key', confidence: .95, shared: true })),
+          };
           case 'preview_uninstaller':
             if (args.programId !== app.id || removed) throw new Error('unsupported registration');
             return argv;
