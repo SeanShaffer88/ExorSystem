@@ -15,7 +15,7 @@ fn node(path: &str, t: NodeType, s: Option<i64>) -> NewNode {
 #[test]
 fn migrations_apply_once_and_are_idempotent() {
     let mut c = rusqlite::Connection::open_in_memory().unwrap();
-    assert_eq!(migrate(&mut c).unwrap(), vec![1, 2, 3]);
+    assert_eq!(migrate(&mut c).unwrap(), vec![1, 2, 3, 4]);
     assert!(migrate(&mut c).unwrap().is_empty());
     assert_eq!(current_version(&c).unwrap(), latest_version());
 }
@@ -83,7 +83,7 @@ fn inventory_migration_preserves_v2_nodes_ledger_and_backup() {
         ).unwrap();
     }
     let store = Store::open(&db).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 3);
+    assert_eq!(store.schema_version().unwrap(), latest_version());
     assert!(store.portable_programs().unwrap().is_empty());
     let provenance = store
         .provenance_for_path(r"c:\tools\widget.EXE")
@@ -99,6 +99,38 @@ fn inventory_migration_preserves_v2_nodes_ledger_and_backup() {
                 .get::<_, String>(0))
             .unwrap(),
         r"C:\Tools\Widget.exe"
+    );
+}
+
+#[test]
+fn comparison_migration_keeps_existing_evidence_without_inventing_coverage() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("exor.db");
+    {
+        let mut c = rusqlite::Connection::open(&db).unwrap();
+        migrate_to(&mut c, 3).unwrap();
+        c.execute_batch(
+            "INSERT INTO installation_sessions(app_name, status) VALUES ('Older watch', 'completed');
+             INSERT INTO change_ledger(session_id, path, change_kind, source)
+             VALUES (1, 'old-file.txt', 'deleted', 'snapshot_diff');",
+        ).unwrap();
+    }
+    let store = Store::open(&db).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 4);
+    assert_eq!(store.session(1).unwrap().unwrap().app_name, "Older watch");
+    assert_eq!(
+        store.ledger_for_session(1).unwrap()[0].entry.path,
+        "old-file.txt"
+    );
+    assert_eq!(store.watch_comparison(1).unwrap(), None);
+    let backup = rusqlite::Connection::open(dir.path().join("exor.pre-v3.bak")).unwrap();
+    assert_eq!(current_version(&backup).unwrap(), 3);
+    assert_eq!(
+        backup
+            .query_row("SELECT COUNT(*) FROM change_ledger", [], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        1
     );
 }
 

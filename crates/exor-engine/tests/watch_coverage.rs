@@ -107,6 +107,10 @@ async fn file_only_watch_skips_incomplete_scopes_but_compares_missing_folders() 
     assert!(summary.warnings[1].contains("bad-after"));
     assert_eq!(summary.files_changed, 3);
     let store = store.lock().unwrap();
+    assert_eq!(
+        store.watch_comparison(summary.session_id).unwrap(),
+        Some(summary.clone())
+    );
     let ledger = store.ledger_for_session(summary.session_id).unwrap();
     assert_eq!(ledger.len(), 3);
     for (path, kind) in [
@@ -166,6 +170,10 @@ async fn follow_up_denial_never_records_empty_tasks_as_removals() {
     assert!(summary.warnings[0].contains("after changes: access denied"));
     assert_eq!(probe.0.load(Ordering::Relaxed), 2);
     let store = store.lock().unwrap();
+    assert_eq!(
+        store.watch_comparison(summary.session_id).unwrap(),
+        Some(summary.clone())
+    );
     assert_eq!(
         store.session(summary.session_id).unwrap().unwrap().status,
         Some(SessionStatus::Failed)
@@ -267,5 +275,171 @@ async fn a_sharing_violation_prevents_a_partial_file_comparison() {
             .ledger_for_session(summary.session_id)
             .unwrap()
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn unchanged_and_skipped_scopes_survive_reopening_the_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("watch.db");
+    let store = Arc::new(Mutex::new(Store::open(&db).unwrap()));
+    let root = dir.path().join("watched");
+    write(&root.join("unchanged.txt"), b"same contents");
+    let cancel = Cancel::new();
+    let watch = InstallWatch::begin(
+        Arc::clone(&store),
+        "Repeatable evidence",
+        None,
+        WatchPlan {
+            folders: &[root],
+            registry: &RegistryScopes::default(),
+            services: false,
+            tasks: true,
+        },
+        Arc::new(Probe::default()),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let session_id = watch.session_id();
+    assert!(
+        store
+            .lock()
+            .unwrap()
+            .watch_comparison(session_id)
+            .unwrap()
+            .is_none()
+    );
+    let summary = watch.finish(&cancel).await.unwrap();
+    assert_eq!(summary.files_changed, 0);
+    assert_eq!(summary.coverage.folders.usable, 1);
+    assert_eq!(summary.coverage.tasks.usable, 0);
+    drop(store);
+
+    let store = Store::open(&db).unwrap();
+    assert_eq!(
+        store.watch_comparison(session_id).unwrap().as_ref(),
+        Some(&summary)
+    );
+    assert!(store.ledger_for_session(session_id).unwrap().is_empty());
+    assert_eq!(
+        store.session(session_id).unwrap().unwrap().status,
+        Some(SessionStatus::Completed)
+    );
+    let text = exor_engine::report::session_report(&store, session_id, "standard").unwrap();
+    assert!(text.contains("File system: 1 of 1 scopes compared; 0 change(s) recorded"));
+    assert!(text.contains("Registry: Not requested"));
+    assert!(text.contains("Scheduled tasks: Skipped (0 of 1 scopes compared)"));
+    assert!(!text.contains("access denied"));
+}
+
+#[tokio::test]
+async fn later_database_failure_leaves_no_partial_comparison_or_nodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("watch.db");
+    let store = Arc::new(Mutex::new(Store::open(&db).unwrap()));
+    let fault = rusqlite::Connection::open(&db).unwrap();
+    let cancel = Cancel::new();
+    for (table, condition) in [
+        ("change_ledger", "new.path LIKE '%b.txt'"),
+        ("watch_comparisons", "1"),
+    ] {
+        let fixture = dir.path().join(table);
+        let first = fixture.join("first");
+        let second = fixture.join("second");
+        let a = first.join("a.txt");
+        let b = second.join("b.txt");
+        let watch = InstallWatch::begin(
+            Arc::clone(&store),
+            "Write failure",
+            None,
+            WatchPlan {
+                folders: &[first, second],
+                registry: &RegistryScopes::default(),
+                services: false,
+                tasks: false,
+            },
+            Arc::new(Probe::default()),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        write(&a, b"first change");
+        write(&b, b"second change");
+        fault
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_watch_write BEFORE INSERT ON {table}
+             WHEN {condition} BEGIN SELECT RAISE(ABORT, 'injected comparison write failure'); END;"
+            ))
+            .unwrap();
+        let session_id = watch.session_id();
+        let error = watch.finish(&cancel).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected comparison write failure")
+        );
+        {
+            let db = store.lock().unwrap();
+            assert!(db.ledger_for_session(session_id).unwrap().is_empty());
+            assert!(db.nodes_for_session(session_id).unwrap().is_empty());
+            assert!(db.watch_comparison(session_id).unwrap().is_none());
+            assert_eq!(
+                db.session(session_id).unwrap().unwrap().status,
+                Some(SessionStatus::Failed)
+            );
+        }
+        assert_eq!(fs::read(&a).unwrap(), b"first change");
+        assert_eq!(fs::read(&b).unwrap(), b"second change");
+        fault
+            .execute_batch("DROP TRIGGER reject_watch_write")
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn cancellation_during_a_later_probe_does_not_commit_earlier_file_changes() {
+    struct StopOnFollowUp(Cancel, AtomicUsize);
+    impl SystemProbe for StopOnFollowUp {
+        fn services(&self) -> Result<Vec<ServiceInfo>, String> {
+            if self.1.fetch_add(1, Ordering::Relaxed) == 1 {
+                self.0.cancel();
+            }
+            Ok(Vec::new())
+        }
+        fn tasks(&self) -> Result<Vec<TaskInfo>, String> {
+            Ok(Vec::new())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let cancel = Cancel::new();
+    let watch = InstallWatch::begin(
+        Arc::clone(&store),
+        "Stopped after file capture",
+        None,
+        WatchPlan {
+            folders: &[dir.path().to_path_buf()],
+            registry: &RegistryScopes::default(),
+            services: true,
+            tasks: false,
+        },
+        Arc::new(StopOnFollowUp(cancel.clone(), AtomicUsize::new(0))),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let session_id = watch.session_id();
+    write(&dir.path().join("new.txt"), b"not committed");
+    assert!(matches!(
+        watch.finish(&cancel).await,
+        Err(EngineError::Cancelled)
+    ));
+    let db = store.lock().unwrap();
+    assert!(db.ledger_for_session(session_id).unwrap().is_empty());
+    assert!(db.watch_comparison(session_id).unwrap().is_none());
+    assert_eq!(
+        db.session(session_id).unwrap().unwrap().status,
+        Some(SessionStatus::Failed)
     );
 }

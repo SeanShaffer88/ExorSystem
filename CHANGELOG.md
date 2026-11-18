@@ -5,24 +5,24 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 ## [Unreleased]
 
 ### Added
+- Change inspector and installation reports show saved Watch coverage, including scopes compared with zero changes and scopes skipped or not requested. Older sessions do not gain assumed coverage.
+
+### Changed
+- The local profile upgrades to schema v4, backing up the existing v3 database before upgrading. Watch saves coverage and observations without storing full snapshots or registry values.
+
+### Fixed
+- Watch commits comparison evidence, coverage, and session status together. If capture is cancelled or recording fails, earlier comparisons do not appear as a partially committed result.
+
+## [0.2.0] - 2026-11-18
+
+See the [0.2.0 release notes](docs/releases/v0.2.0.md), including the required upgrade backup.
+
+### Added
 - Dockable workspace panels with keyboard and drag-and-drop placement, resize, saved layouts, compact navigation, and presets. Watch and Scan keep running when moved or hidden.
 - Activity log panel with common scrollback and clear behavior across the workspace and optional attached window.
 - Local workspace dashboard with filterable applications, a registry snapshot monitor, and an evidence inspector with independent registry/file pages and before/after details.
 - Guided uninstall with a read-only terminal preview, explicit vendor launch and quarantine confirmations, and a cleanup summary. The engine re-reads the live registration before starting the reviewed invocation.
 - One-hop relationship graph with evidence and confidence for each recorded link; storage charts of logical file lengths by quarantine outcome.
-
-### Changed
-- Watch starts with explicit scopes. Services and scheduled tasks are independent opt-ins; baseline and comparison cards distinguish skipped checks, checks not requested, and successful comparisons with zero changes.
-
-### Fixed
-- Unreadable folder snapshots and incomplete task snapshots no longer produce misleading additions, changes, or removals. Registry coverage remains per selected subtree.
-- Keep the sidebar labels and the Script preview inventory shortcut on one line at smaller window sizes.
-
-## [0.2.0]
-
-See the [0.2.0 release notes](docs/releases/v0.2.0.md), including the required upgrade backup.
-
-### Added
 - A build-only Windows candidate workflow verifies hashes and actual NSIS/MSI/portable package metadata. A disposable file/HKCU fixture, native Windows 10/11 runbook, and evidence template document the separate interactive checks.
 - An isolated, read-only lab probe and promotion criteria for experimental USN and driver sources; the driverless desktop is unchanged by these probes.
 - Watch an install can compare explicitly selected `HKCU`, `HKLM` and `HKLM32` Software subtrees without the registry driver. It records key-level changes as read-only snapshot evidence and warns when a subtree could not be compared.
@@ -42,11 +42,14 @@ See the [0.2.0 release notes](docs/releases/v0.2.0.md), including the required u
 - Failure drills as tests: database record/ledger writes, no-overwrite, cross-filesystem quarantine, vanished file, reappeared file, deleted parent folder, interrupted restore, corrupt database, concurrent writers, upgrade backup usable as a rollback.
 
 ### Changed
+- Watch starts with explicit scopes. Services and scheduled tasks are independent opt-ins; baseline and comparison cards distinguish skipped checks, checks not requested, and successful comparisons with zero changes.
 - The Windows desktop now runs without elevation and refuses an already-elevated token. All formats use the current user's `%LOCALAPPDATA%\ExorSystem` profile. Old executable-adjacent data and quarantine are left unchanged, not migrated automatically.
 - Only supported live machine-wide classic registrations can launch uninstall commands; per-user installs use Windows Settings. Restore never overwrites an existing file.
 - The stable Release workflow promotes the exact candidate packages after CI and hash verification, without rebuilding or replacing a tag. Interactive Windows 10/11 testing is optional.
 
 ### Fixed
+- Unreadable folder snapshots and incomplete task snapshots no longer produce misleading additions, changes, or removals. Registry coverage remains per selected subtree.
+- Keep the sidebar labels and the Script preview inventory shortcut on one line at smaller window sizes.
 - Both cleanup entry points persist the quarantine record and ledger atomically, roll back a failed write, and reconcile interrupted batches. Restore/purge derive storage paths by validated ID and refuse redirected directories. Conflicts retain held files with a warning.
 - Switching tabs no longer loses the active Watch controls or its result. Failed Finish returns to a fresh baseline. System items stay out of file quarantine even under the Thorough policy.
 - Provenance resolves unambiguous ASCII case variants without merging older case-only records. The v3 migration adds lookup indexes and preserves existing evidence.
@@ -80,4 +83,6 @@ Initial Windows x64 release: NSIS, MSI, and portable ZIP.
 - GUI (`gui/`): Tauri v2 + React shell with Installations, Provenance and Cleanup simulator views; quarantine view behind a feature flag; window size/position persistence.
 - Docs: README, ARCHITECTURE, AUDIT, CREDITS, DESCRIPTION, SCREENSHOTS capture list.
 
+[Unreleased]: https://github.com/SeanShaffer88/ExorSystem/compare/v0.2.0...main
+[0.2.0]: https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.2.0
 [0.1.0]: https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.1.0

@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { ChangeBadge, EvidenceDiff, domainIcon, domainText } from "../components/ChangeEvidence";
 import { Icon } from "../components/Icon";
+import { comparisonLabel, hasSkipped, WatchCoverageCards, WatchWarnings } from "../components/WatchCoverage";
 import { Badge, CardHeading, Empty, Intro, evidenceText, leafName, timeText } from "../components/Workspace";
-import type { ChangeDomain, HistoryPage, HistoryRow, Session } from "../types";
+import type { ChangeDomain, HistoryPage, HistoryRow, Session, WatchSummary } from "../types";
 
 type Result = { key: string; page?: HistoryPage; error?: string };
 function useHistoryPage(visible: boolean, path: string | null, sessionId: number | null, domain: ChangeDomain | null, limit: number) {
@@ -69,7 +70,35 @@ export function HistoryView({ visible, initialSessionId, initialRow, onTrace, on
       </div>
     </div>
     {sessionError && <p role="alert" className="error">Could not load installation names: {sessionError}</p>}
+    {sessionId !== null && <SavedWatchCoverage key={`${sessionId}:${refresh}`} visible={visible} sessionId={sessionId}/>}
     {timeline ? <Timeline visible={visible} key={key} sessionId={sessionId} path={path} initialRow={openingRow} onTrace={onTrace}/> : <SplitInspector visible={visible} key={key} sessionId={sessionId} path={path} initialRow={openingRow} onTrace={onTrace}/>}
+  </section>;
+}
+
+type SavedCoverageResult = { summary: WatchSummary | null } | { error: string };
+
+function SavedWatchCoverage({ visible, sessionId }: { visible: boolean; sessionId: number }) {
+  const [result, setResult] = useState<SavedCoverageResult | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!visible) return;
+    let live = true;
+    api.watchComparison(sessionId).then((summary) => { if (live) setResult({ summary }); })
+      .catch((e: unknown) => { if (live) setResult({ error: String(e) }); });
+    return () => { live = false; };
+  }, [attempt, sessionId, visible]);
+  const summary = result && "summary" in result ? result.summary : null;
+  return <section className="card tool-card" aria-label="Saved watch coverage">
+    <CardHeading title="Watch coverage" icon="registry" tone="violet" subtitle={`Session #${sessionId} · Saved snapshot comparison`}
+      action={summary && <Badge tone={hasSkipped(summary.coverage) ? "review" : "safe"} dot>{comparisonLabel(summary.coverage)}</Badge>}/>
+    {!result ? <p role="status" className="muted">Loading watch coverage…</p> : "error" in result
+      ? <div className="watch-result"><p className="error" role="alert">Could not load watch coverage: {result.error}</p>
+        <div><button type="button" onClick={() => { setResult(null); setAttempt((n) => n + 1); }}>Retry coverage</button></div></div>
+      : summary ? <div className="watch-result">
+        <WatchCoverageCards coverage={summary.coverage} summary={summary}/>
+        <WatchWarnings warnings={summary.warnings}/>
+        <small className="muted">Counts are from the saved comparison, not the path filter or later cleanup.</small>
+      </div> : <p className="muted">No saved comparison for this session. Coverage cannot be inferred from the change list.</p>}
   </section>;
 }
 

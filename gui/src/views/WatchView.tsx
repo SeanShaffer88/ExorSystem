@@ -2,44 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ChangeBadge } from "../components/ChangeEvidence";
 import { Icon } from "../components/Icon";
-import { Badge, CardHeading, countText, Empty, Intro, leafName } from "../components/Workspace";
-import type { HistoryRow, WatchCoverage, WatchStart, WatchSummary, WatchSystem } from "../types";
+import { comparisonLabel, hasSkipped, hasUsable, WatchCoverageCards, WatchWarnings } from "../components/WatchCoverage";
+import { Badge, CardHeading, Empty, Intro, leafName } from "../components/Workspace";
+import type { HistoryRow, WatchStart, WatchSummary, WatchSystem } from "../types";
 
 type Operation = "begin" | "finish" | "cancel";
-
-const sources = [
-  { key: "folders", title: "File system", unit: "folder", changes: "files_changed" },
-  { key: "registry", title: "Registry", unit: "subtree", changes: "registry_keys_changed" },
-  { key: "services", title: "Services", unit: null, changes: "services_changed" },
-  { key: "tasks", title: "Scheduled tasks", unit: null, changes: "tasks_changed" },
-] as const;
-
-const hasSkipped = (coverage: WatchCoverage) => Object.values(coverage).some((s) => s.usable < s.requested);
-const hasUsable = (coverage: WatchCoverage) => Object.values(coverage).some((s) => s.usable > 0);
-
-function Coverage({ coverage, summary }: { coverage: WatchCoverage; summary?: WatchSummary }) {
-  return <section className="watch-coverage-panel" aria-label={summary ? "Comparison coverage" : "Baseline coverage"}>
-    <dl className="watch-coverage">{sources.map(({ key, title, unit, changes }) => {
-      const { requested, usable } = coverage[key];
-      const incomplete = usable < requested;
-      const status = !requested ? "Not requested" : !usable ? "Skipped" : incomplete ? "Partial" : summary ? "Compared" : "Baseline ready";
-      return <div key={key}>
-        <dt>{title}</dt>
-        <dd><Badge tone={!requested ? "neutral" : incomplete ? "review" : "safe"} dot>{status}</Badge>
-          {!!requested && unit && <small>{countText(usable)} of {countText(requested)} {unit}{requested === 1 ? "" : "s"} {summary ? "compared" : "ready"}</small>}
-          {!!usable && summary && <small>{countText(summary[changes])} {summary[changes] === 1 ? "change" : "changes"} recorded</small>}
-        </dd>
-      </div>;
-    })}</dl>
-  </section>;
-}
-
-function WatchWarnings({ warnings }: { warnings: string[] }) {
-  return warnings.length ? <details className="notice review-notice watch-warnings">
-    <summary>Skipped scope details ({warnings.length})</summary>
-    <ul>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
-  </details> : null;
-}
 
 export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boolean; onOpenHistory: (id: number | null, row?: HistoryRow) => void; onWatching: (active: boolean) => void }) {
   const [appName, setAppName] = useState("");
@@ -86,7 +53,7 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
   const canStart = !!appName.trim() && (!!folders.trim() || !!registrySubtrees.trim() || system.services || system.tasks);
   const compared = !!summary && hasUsable(summary.coverage);
   const partial = summary ? hasSkipped(summary.coverage) : !!active && hasSkipped(active.coverage);
-  const comparisonStatus = compared ? (partial ? "Comparison incomplete" : "Comparison complete") : "No scopes compared";
+  const comparisonStatus = summary ? comparisonLabel(summary.coverage) : "";
   const phase = summary ? (compared ? 3 : 2) : pending === "finish" ? 2 : active ? 1 : 0;
   const badge = pending ? "Working" : summary ? comparisonStatus : active ? (partial ? "Partial baseline" : "Baseline ready") : "Snapshot mode";
 
@@ -136,7 +103,7 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
               {!busy && <p>{partial && "Some selected scopes could not be read. "}Make your test changes or run the installer yourself, then return to compare snapshots.</p>}
             </div>
           </div>
-          <Coverage coverage={active.coverage}/>
+          <WatchCoverageCards coverage={active.coverage}/>
           <WatchWarnings warnings={active.warnings}/>
           <div className="button-row"><button className="primary" type="button" disabled={busy} onClick={() => void run("finish", async () => { setSummary(await api.finishWatch()); })}>Compare snapshots</button><button className="quiet-button" type="button" disabled={busy} onClick={() => void run("cancel", api.cancelWatch)}>Cancel watch</button></div>
         </div>}
@@ -148,10 +115,10 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
               <p>{compared ? `Session #${summary.session_id} · ${appName.trim()}. ${partial ? "The counts below cover only the scopes that could be compared." : "The counts below cover your selected scopes."}` : "No matching pairs of usable snapshots were available. Review the skipped scopes and try a new watch."}</p>
             </div>
           </div>
-          <Coverage coverage={summary.coverage} summary={summary}/>
+          <WatchCoverageCards coverage={summary.coverage} summary={summary}/>
           <WatchWarnings warnings={summary.warnings}/>
           <div className="button-row">
-            {compared && <button type="button" className="primary" onClick={() => onOpenHistory(summary.session_id)}>View recorded changes (session #{summary.session_id}) <Icon name="arrow" size={15}/></button>}
+            <button type="button" className="primary" onClick={() => onOpenHistory(summary.session_id)}>{compared ? "View recorded changes" : "View watch coverage"} (session #{summary.session_id}) <Icon name="arrow" size={15}/></button>
             <button className="quiet-button" type="button" onClick={() => setSummary(null)}>Set up another watch</button>
           </div>
         </div>}
@@ -161,7 +128,7 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
           {recentError ? <p className="error tool-card" role="alert">Could not load registry observations: {recentError}</p> : recent?.length ? <ul className="diff-list">{recent.map((r) => <li key={r.id}><button className="row-button evidence-row" type="button" title={r.path} onClick={() => onOpenHistory(r.session_id, r)}><ChangeBadge what={r.what} signed/><span><strong>{leafName(r.path)}</strong><code>{r.path}</code></span><Icon name="chevron" size={15}/></button></li>)}</ul>
             : <Empty icon="registry" title={recent ? "No key changes recorded" : "Loading observations…"} detail={recent ? "Add a registry subtree to a watch, then compare the snapshots." : undefined}/>}
         </section>
-        <div className="notice monitor-tip"><Icon name="lock"/><div><strong>Snapshot evidence only</strong><p>Snapshots show what changed, not which process changed it. No registry values are read. Unreadable scopes are skipped, not treated as empty.</p></div></div>
+        <div className="notice monitor-tip"><Icon name="lock"/><div><strong>Snapshot evidence only</strong><p>Snapshots show what changed, not which process changed it. No registry values are read. Unreadable scopes are skipped, not treated as empty. Coverage counts and skipped scope details are saved locally with the comparison.</p></div></div>
       </div>
     </div>
   </section>;

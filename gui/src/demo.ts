@@ -71,6 +71,13 @@ export function startDemo() {
   const rows = demoPrograms();
   const sessions = [session(18, "Visual Studio Code"), session(17, "7-Zip"), session(16, "Microsoft PowerToys"), session(15, "Blender")];
   const observations = [...initialRows];
+  const scope = (requested: number, usable = requested) => ({ requested, usable });
+  const comparisons = new Map<number, WatchSummary>([[18, {
+    session_id: 18,
+    coverage: { folders: scope(2, 1), registry: scope(2), services: scope(1), tasks: scope(1) },
+    files_changed: 3, registry_keys_changed: 3, services_changed: 1, tasks_changed: 1,
+    warnings: ["Demo: one folder was not captured after changes because access was denied."],
+  }]]);
   const batches: QuarantineRow[] = [
     { quarantine_id: "q19ab5-0004", session_id: 18, files: 19, file_bytes: 264 * MiB, status: "quarantined" },
     { quarantine_id: "q19a71-0003", session_id: 15, files: 88, file_bytes: 1311 * MiB, status: "purged" },
@@ -129,6 +136,7 @@ export function startDemo() {
           ...[...portable].map(([executable, name]) => ({ program: { ...rows[0]!.program, source: "portable", id: `portable:${executable}`, scope: "user", name, version: null, publisher: null, size_kb: null, install_location: executable, uninstall_command: null, install_date: null }, removed: false, session_ids: [] })),
         ].map((r) => ({ ...r })), warnings: [] };
         case "list_sessions": return [...sessions];
+        case "watch_comparison": return comparisons.get(Number(args.sessionId)) ?? null;
         case "history": {
           const filter = typeof args.filter === "string" ? args.filter.toLowerCase() : "";
           const matches = observations.filter((r) => (!args.domain || r.domain === args.domain) && (!args.sessionId || r.session_id === args.sessionId)
@@ -197,7 +205,6 @@ export function startDemo() {
           const folders = args.folders as string[];
           const registry = String(args.registrySubtrees).split("\n").map((p) => p.trim()).filter(Boolean);
           const system = args.system as WatchSystem;
-          const scope = (requested: number, usable = requested) => ({ requested, usable });
           const warnings = system.tasks ? ["Demo: scheduled tasks were not checked because access was denied."] : [];
           const coverage = { folders: scope(folders.length), registry: scope(registry.length), services: scope(Number(system.services)), tasks: scope(Number(system.tasks), 0) };
           if (!Object.values(coverage).some((entry) => entry.usable)) throw new Error("No requested scopes could be captured in the demo. Choose a folder, registry subtree, or services.");
@@ -218,7 +225,9 @@ export function startDemo() {
           if (folder) observations.unshift(observation(id++, `${folder.replace(/[\\/]+$/, "")}\\demo-artifact.txt`, "file", "modified", baseline.session_id, "06:20", beforeHash, afterHash));
           if (registry) observations.unshift(observation(id, `${registry}\\DemoKey`, "registry", "created", baseline.session_id, "06:20"));
           updateLog(`Demo: recorded a snapshot comparison (#${baseline.session_id}).`);
-          return { ...baseline, files_changed: folder ? 1 : 0, services_changed: 0, tasks_changed: 0, registry_keys_changed: registry ? 1 : 0 } satisfies WatchSummary;
+          const summary: WatchSummary = { ...baseline, files_changed: folder ? 1 : 0, services_changed: 0, tasks_changed: 0, registry_keys_changed: registry ? 1 : 0 };
+          comparisons.set(summary.session_id, summary);
+          return summary;
         }
         case "cancel_watch": if (active) sessions[0] = { ...sessions[0]!, status: "failed" }; active = null; return;
         case "list_portable_programs": return [...portable].map(([executable, name]) => ({ executable, name }));

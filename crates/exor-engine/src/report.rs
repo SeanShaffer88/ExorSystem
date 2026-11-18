@@ -3,7 +3,7 @@
 use crate::error::{EngineError, Result};
 use crate::policy::{self, SimulationReport};
 use crate::templates;
-use exor_storage::{ChangeSource, NodeType, PolicyAction, Provenance, Store};
+use exor_storage::{ChangeSource, NodeType, PolicyAction, Provenance, Store, WatchSummary};
 
 /// Words for a confidence score.
 pub fn confidence_words(c: f64) -> &'static str {
@@ -71,6 +71,7 @@ pub fn session_report(store: &Store, session_id: i64, template: &str) -> Result<
         items.len(),
         items.iter().filter(|c| shared(c)).count()
     ));
+    append_watch_coverage(&mut out, store.watch_comparison(session_id)?.as_ref());
     out.push_str(&format!(
         "## Cleanup preview ({template})\n\n{}\n\n",
         summarize_simulation(&sim)
@@ -89,6 +90,49 @@ pub fn session_report(store: &Store, session_id: i64, template: &str) -> Result<
         ));
     }
     Ok(out)
+}
+
+fn append_watch_coverage(out: &mut String, summary: Option<&WatchSummary>) {
+    out.push_str("## Watch coverage\n\n");
+    let Some(summary) = summary else {
+        out.push_str("No comparison coverage was saved for this session. Coverage cannot be inferred from the change list.\n\n");
+        return;
+    };
+    for (label, scope, changes) in [
+        (
+            "File system",
+            summary.coverage.folders,
+            summary.files_changed,
+        ),
+        (
+            "Registry",
+            summary.coverage.registry,
+            summary.registry_keys_changed,
+        ),
+        (
+            "Services",
+            summary.coverage.services,
+            summary.services_changed,
+        ),
+        (
+            "Scheduled tasks",
+            summary.coverage.tasks,
+            summary.tasks_changed,
+        ),
+    ] {
+        let result = match (scope.requested, scope.usable) {
+            (0, _) => "Not requested".to_string(),
+            (requested, 0) => format!("Skipped (0 of {requested} scopes compared)"),
+            (requested, usable) => {
+                format!("{usable} of {requested} scopes compared; {changes} change(s) recorded")
+            }
+        };
+        out.push_str(&format!("- {label}: {result}.\n"));
+    }
+    if !summary.warnings.is_empty() {
+        out.push_str("\nSkipped scope details are available in Change inspector.\n");
+    }
+    out.push_str("\nThese counts are for the saved snapshot comparison only. They do not identify which process changed an item.\n\n");
 }
 
 /// Plain-language provenance sentence for one artifact.

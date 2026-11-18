@@ -31,7 +31,8 @@ export async function mockDesktop(page) {
     ];
     let watch = null;
     let nextWatchId = 40;
-    let watchRecorded = false;
+    const comparisons = new Map();
+    let coverageFailed = false;
     let historyFailed = false;
     const historyRows = [
       { id: 44, session_id: null, path: String.raw`C:\Unassigned.dat`, what: 'quarantined', source: 'policy' },
@@ -95,10 +96,24 @@ export async function mockDesktop(page) {
             return null;
           }
           case 'update_risk': return { low: [], medium: [], high: [] };
-          case 'list_sessions': return watchRecorded ? [
-            { session_id: 40, app_name: 'Watch Fixture', status: 'completed' },
+          case 'list_sessions': return [
+            ...[...comparisons.values()].reverse().map(({ session_id, coverage }) => ({
+              session_id, app_name: 'Watch Fixture',
+              status: Object.values(coverage).some((scope) => scope.usable) ? 'completed' : 'failed',
+            })),
             { session_id: 9, app_name: 'Another Fixture', status: 'completed' },
-          ] : [{ session_id: 9, app_name: 'Another Fixture', status: 'completed' }];
+          ];
+          case 'watch_comparison': {
+            if (args.sessionId === 40 && !coverageFailed) {
+              coverageFailed = true;
+              throw new Error('coverage temporarily unavailable');
+            }
+            if (window.deferCoverage === args.sessionId) {
+              window.deferCoverage = null;
+              await new Promise(resolve => { window.releaseCoverage = resolve; });
+            }
+            return comparisons.get(args.sessionId) ?? null;
+          }
           case 'history': {
             if (![5, 6, 100].includes(args.limit)) throw new Error('unexpected history page size');
             if (args.filter === 'Retry fixture' && !historyFailed) {
@@ -140,15 +155,17 @@ export async function mockDesktop(page) {
             const current = watch;
             watch = null;
             const counts = { files_changed: 0, services_changed: 0, tasks_changed: 0, registry_keys_changed: 0 };
-            if (current.session_id === 41) return { ...current, ...counts };
-            if (current.session_id === 43) return {
-              ...current, ...counts, coverage: { ...current.coverage, tasks: { requested: 1, usable: 0 } },
+            let summary = { ...current, ...counts };
+            if (current.session_id === 43) summary = {
+              ...summary, coverage: { ...current.coverage, tasks: { requested: 1, usable: 0 } },
               warnings: ['Scheduled tasks were not checked after changes: access denied.'],
             };
-            if (current.session_id !== 40) throw new Error('file snapshot failed');
-            await new Promise(resolve => { window.finishWatchSnapshot = resolve; });
-            watchRecorded = true;
-            return { ...current, ...counts, files_changed: 2, registry_keys_changed: 2 };
+            else if (current.session_id === 40) {
+              await new Promise(resolve => { window.finishWatchSnapshot = resolve; });
+              summary = { ...summary, files_changed: 2, registry_keys_changed: 2 };
+            } else if (current.session_id !== 41) throw new Error('file snapshot failed');
+            comparisons.set(summary.session_id, summary);
+            return summary;
           }
           case 'cancel_watch':
             if (!watch) throw new Error('no watch to cancel');
