@@ -15,6 +15,7 @@ export function QuarantineView() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [template, setTemplate] = useState(getPolicy());
+  const [recoveryWarnings, setRecoveryWarnings] = useState<string[]>([]);
   const [rows, setRows] = useState<QuarantineRow[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -28,6 +29,7 @@ export function QuarantineView() {
       setSessions(s);
       setSessionId(s[0]?.session_id ?? null);
     }).catch((e: unknown) => setError(String(e)));
+    api.appInfo().then((info) => setRecoveryWarnings(info.recovery_warnings ?? [])).catch((e: unknown) => setError(String(e)));
     void refresh();
   }, [refresh]);
 
@@ -48,6 +50,10 @@ export function QuarantineView() {
       <h2 id="h-q">Quarantine</h2>
       <p>Files are moved aside, not deleted. You can put them back until you delete them permanently.</p>
 
+      {recoveryWarnings.length > 0 && <div role="alert" className="error">
+        <p>Some quarantine batches need attention. ExorSystem left the affected files in place.</p>
+        <ul>{recoveryWarnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+      </div>}
       <form onSubmit={(e) => e.preventDefault()}>
         <label htmlFor="q-session">Installation</label>
         <select id="q-session" value={sessionId ?? ""} onChange={(e) => setSessionId(Number(e.target.value))} title="Installation to clean up">

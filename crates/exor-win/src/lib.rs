@@ -5,6 +5,8 @@ pub mod proto;
 pub mod usn;
 
 #[cfg(windows)]
+mod desktop;
+#[cfg(windows)]
 mod packages_source;
 #[cfg(windows)]
 mod programs_source;
@@ -17,6 +19,10 @@ mod services_source;
 #[cfg(windows)]
 mod usn_source;
 
+#[cfg(windows)]
+pub use desktop::{
+    prepare_user_data_dir, process_is_elevated, show_startup_error, uninstall_executable,
+};
 #[cfg(windows)]
 pub use packages_source::enumerate_packages;
 #[cfg(windows)]

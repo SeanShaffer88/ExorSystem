@@ -45,7 +45,8 @@ export function ProgramActions({ program, removed, sessionId, shared, onUninstal
         <>
           <h3>Uninstall and review</h3>
           {removed && <p>Windows no longer lists this program. You can review its leftovers until ExorSystem closes.</p>}
-          {!removed && program.uninstall_command && (
+          {!removed && program.scope === "user" && <p>Use Windows Settings → Apps to uninstall this per-user program. You can still review its leftovers here.</p>}
+          {!removed && program.scope !== "user" && program.uninstall_command && (
             <>
               <label className="check">
                 <input type="checkbox" checked={confirmUninstall} disabled={busy} onChange={(e) => setConfirmUninstall(e.target.checked)} /> Run this program's own uninstaller

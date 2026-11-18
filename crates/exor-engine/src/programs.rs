@@ -76,6 +76,24 @@ pub fn format_install_date(raw: &str) -> Option<String> {
 }
 
 impl InstalledProgram {
+    /// Only a live machine-wide registry entry can supply an uninstall command. Per-user
+    /// registrations are advisory and should be managed by Windows Settings.
+    pub fn registered_uninstall(&self, quiet: bool) -> Result<&str, &'static str> {
+        if self.source != ProgramSource::Registry || self.scope == Scope::User {
+            return Err(
+                "Use Windows Settings → Apps to uninstall this program. ExorSystem does not launch per-user uninstall commands.",
+            );
+        }
+        let command = if quiet {
+            self.quiet_uninstall_command
+                .as_deref()
+                .or(self.uninstall_command.as_deref())
+        } else {
+            self.uninstall_command.as_deref()
+        };
+        command.ok_or("This program has no uninstaller registered.")
+    }
+
     /// Windows itself hides entries with no name, system components and child updates.
     pub fn is_listed(&self) -> bool {
         !self.name.trim().is_empty() && !self.system_component && self.parent_key.is_none()
@@ -236,6 +254,29 @@ mod tests {
             started_at: None,
             ended_at: None,
             status: None,
+        }
+    }
+
+    #[test]
+    fn only_machine_registry_entries_supply_a_command() {
+        let mut p = prog("Test", "1", Scope::User);
+        p.uninstall_command = Some("MsiExec.exe /X{test}".into());
+        assert!(p.registered_uninstall(false).is_err());
+        assert!(p.registered_uninstall(true).is_err());
+        for scope in [Scope::Machine, Scope::Machine32] {
+            p.scope = scope;
+            assert_eq!(p.registered_uninstall(false), Ok("MsiExec.exe /X{test}"));
+            assert_eq!(p.registered_uninstall(true), p.registered_uninstall(false));
+            p.quiet_uninstall_command = Some("MsiExec.exe /X{test} /quiet".into());
+            assert_eq!(
+                p.registered_uninstall(true),
+                Ok("MsiExec.exe /X{test} /quiet")
+            );
+            p.quiet_uninstall_command = None;
+        }
+        for source in [ProgramSource::Msix, ProgramSource::Portable] {
+            p.source = source;
+            assert!(p.registered_uninstall(false).is_err());
         }
     }
 

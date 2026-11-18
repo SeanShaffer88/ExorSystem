@@ -200,4 +200,6 @@ export interface AppInfo {
   version: string;
   data_folder: string;
   quarantine_folder: string;
+  legacy_data_folder: string | null;
+  recovery_warnings: string[];
 }

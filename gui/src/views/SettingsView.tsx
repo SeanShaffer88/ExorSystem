@@ -36,6 +36,7 @@ export function SettingsView() {
           <dt>Quarantine folder</dt><dd>{info.quarantine_folder}</dd>
         </dl>
       )}
+      {info?.legacy_data_folder && <p className="action-note">Older portable data is unchanged at <code>{info.legacy_data_folder}</code>. It is not imported into this profile, and older quarantine batches are not opened by this version.</p>}
       <PortablePrograms />
     </section>
   );
