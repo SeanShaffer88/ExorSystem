@@ -36,6 +36,11 @@ pub use services_source::enumerate_services;
 #[cfg(windows)]
 pub use usn_source::UsnJournalSource;
 
+/// Convert the Windows epoch (100 ns ticks since 1601) to Unix milliseconds.
+fn filetime_to_unix_ms(ticks: u64) -> u64 {
+    ticks.saturating_sub(116_444_736_000_000_000) / 10_000
+}
+
 /// Errors from the Windows sources.
 #[derive(Debug, thiserror::Error)]
 pub enum WinError {

@@ -24,7 +24,8 @@ Push-Location $gui
 try {
   npm ci
   if ($LASTEXITCODE) { throw 'npm ci failed' }
-  npm run tauri -- build --target x86_64-pc-windows-msvc -- --locked
+  $buildArgs = @('run', 'tauri', '--', 'build', '--target', 'x86_64-pc-windows-msvc', '--', '--locked')
+  & npm @buildArgs
   if ($LASTEXITCODE) { throw 'tauri build failed' }
 } finally { Pop-Location }
 

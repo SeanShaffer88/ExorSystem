@@ -13,7 +13,7 @@ mod dock;
 mod inventory;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::ipc::Channel;
@@ -1025,7 +1025,7 @@ fn run() -> Result<(), String> {
     let (dir, legacy_data) = {
         let legacy = portable_data_dir();
         (
-            exor_win::user_data_dir()?,
+            exor_win::prepare_user_data_dir()?,
             legacy.is_dir().then_some(legacy),
         )
     };

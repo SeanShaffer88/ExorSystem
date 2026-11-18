@@ -24,7 +24,7 @@ foreach ($line in Get-Content -LiteralPath (Join-Path $dir 'SHA256SUMS.txt')) {
   if ($line -notmatch '^([0-9a-f]{64})  ([^/\\]+)$') { throw 'Invalid SHA256SUMS.txt line' }
   $expectedHash = $Matches[1]
   $name = $Matches[2]
-  if ($name -cnotin $names -or $checks.ContainsKey($name)) { throw "Unexpected or duplicate artifact: $name" }
+  if (-not ($names -ccontains $name) -or $checks.ContainsKey($name)) { throw "Unexpected or duplicate artifact: $name" }
   $file = Get-Item -LiteralPath (Join-Path $dir $name)
   $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($hash -ne $expectedHash) { throw "SHA-256 mismatch: $name" }

@@ -1,46 +1,31 @@
 # Audit and verification matrix
 
-Labels: **Verified** (run here), **Partially verified**, **Unverified**.
+**Automated** means a test, build, or static package inspection ran; it does not imply an interactive Windows 10/11 pass. **Partial** means a native or manual gate remains. **Not run** means no evidence is available for that gate.
 
-| Area | Status | Evidence |
+| Area | Status | Evidence and limits |
 |---|---|---|
-| Storage (schema, migrations, DAG, ledger, provenance) | Verified | 18 integration tests, Linux |
-| Engine (walker, trie diff, BLAKE3, noise, policy, quarantine, monitor, collectors, execute) | Verified | 43 tests, Linux, `clippy -D warnings` |
-| Install watch (files, services, tasks, optional registry subtrees) | Partially verified | Engine tests cover missing keys and failed sample pairs with mocks. Browser smoke covers warnings, tab navigation, Finish failure, and Cancel. Windows CI passed a read-only test of an existing subtree and a missing scope; an interactive Windows 10/11 watch remains unverified. |
-| Failure drills on Linux (ENOSPC, cross-filesystem, corrupt DB, concurrent writers, partial restore) | Verified | tests in `quarantine.rs` and `storage.rs` |
-| Quarantine crash recovery | Verified (simulated) | crash state reproduced in a test; real power loss never exercised |
-| Mock event harness | Verified | deterministic replay tests |
-| USN/driver message parsers | Verified | unit tests incl. malformed input |
-| USN journal reader, driver client (Win32 I/O) | Partially verified | type-checked and clippy-clean against the Windows target; never run on Windows |
-| Dependency licenses (Rust + npm, 588) | Verified | all permissive or MPL-2.0; script enforced in CI |
-| Service enumeration (SCM) | Partially verified | type-checked for the Windows target; never run on Windows |
-| Release script, CI and release workflows | Partially verified | [v0.1.0 packaging run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44039918347) published NSIS, MSI, portable ZIP and hashes. [Install Watch CI](https://github.com/SeanShaffer88/ExorSystem/pull/20/checks) covers Linux and Windows; the interactive release checklist remains open. |
-| Quarantine GUI view and Tauri commands | Partially verified | `tsc` + `vite build` pass, shell type-checked; never launched |
-| Themes (36 palettes, preview, apply, undo) | Partially verified | WCAG AA contrast script passes; store logic smoke-tested with stubs; never rendered or screen-reader tested |
-| Kernel driver `driver/exordrv.c`, INF | Unverified | not compiled with the WDK, not loaded |
-| GUI frontend | Partially verified | `tsc`, `vite build` and a Chromium smoke test with mocked IPC pass; not screen-reader tested |
-| GUI Tauri shell | Partially verified | type-checked for the Windows target; never launched |
-| Administrator manifest (`requireAdministrator`, PMv2 DPI) | Partially verified | manifest embedded via tauri-build, type-checked; UAC prompt never observed |
-| IPC streaming (`scan` + `cancel_scan` over Tauri channel) | Partially verified | engine progress API tested (monotonic, ends `done`); channel path type-checked only |
-| Installed programs enumeration (`exor-win`) | Partially verified | Classic entries plus main MSIX packages for the calling user. Browser smoke uses fixtures; new WinRT package enumeration needs a Windows runtime check. |
-| Portable inventory and path lookups (schema v3) | Partially verified | Migration, case-only collisions and portable upsert/removal checked on SQLite. Portable registration and case lookup regression tests added for Cargo CI. |
-| Guided uninstall and leftover review | Partially verified | Browser fixture covers a disappearing uninstall entry, explicit folder selection, and read-only registry/service/task findings. Live review probes and uninstaller behavior still need Windows validation. |
-| Session-scoped History | Partially verified | Storage regression covers interleaved sessions, node-less removals, literal path filtering and paging after appends. Browser smoke covers Watch → History, source labels, paging and error recovery with mocked IPC. Native desktop verification is pending. |
-| Report export, portable copy, update risk, settings | Partially verified | engine and storage parts unit-tested; GUI built and type-checked; never rendered on Windows; Documents-folder output paths untested on real profiles |
-| Log window slide, z-order, docking | Unverified | type-checked only; behavior on real Windows (animation, staying behind main, multi-monitor, DPI) never observed |
-| `driver/scripts/dev-load.ps1` | Unverified | never run |
-| Windows 10 vs 11 behaviour, DPI, high contrast | Unverified | |
+| Storage, schema v3 migration and append-only ledger | Automated | Linux/Windows tests cover migration backups, preservation of prior evidence, DAG constraints, case-aware lookup, transaction rollback and scoped ledger pages. |
+| Engine, policy and collectors | Automated | Workspace fmt, strict Clippy and Rust tests on Linux and Windows CI. Registry/service/task observations cannot authorize file quarantine. |
+| Quarantine record/ledger failures | Automated | `quarantine_transaction.rs` tests both policy and leftover entry points against record and second-ledger-row failures. Originals return and no partial database evidence commits. An interrupted restore can retry its ledger write without moving files twice. |
+| Quarantine containment and recovery | Automated (simulated) | Tests reject invalid IDs, ignored database paths, redirected storage/batches and blob traversal. No-overwrite, corruption, conflicted originals, and both sides of the staged DB commit are exercised. Windows runner cases include real junctions and sharing denial; Linux exercises a cross-filesystem round trip. Real Windows shutdown/disk failure and cross-volume NTFS remain open. |
+| Install Watch and session-scoped History | Partial | Mock snapshots and storage tests cover failures, deletions, cursor stability, and interleaved sessions. Built-bundle Chromium smoke covers Watch→History, filters, paging and retry using mocked IPC. A Windows runner reads existing/missing registry scopes without changing the OS. The real Windows 10/11 desktop flow has not run. |
+| Classic/MSIX/portable inventory and guided uninstall | Partial | Engine and mocked browser checks cover source restrictions, per-user refusal, disappearing registrations, review-only system matches and portable entry lifecycle. Windows token/resolver tests read the current token and locate the system MSI executable without launching it. Actual GUI and uninstaller behavior remain open. |
+| Desktop privilege and storage | Partial | `asInvoker`/PerMonitorV2 manifest and an early elevated-token refusal. Native known-folder profile has a single-instance lock; no old portable database is automatically trusted or imported. Check UAC, profile permissions, lock, migration behavior and launch on both client versions. |
+| Frontend, themes and Tauri IPC | Partial | TypeScript/Vite build, all 36 theme contrast checks, and Chromium smoke with IPC stubs. Native commands, channel streaming, screen-reader behavior and presentation remain end-to-end gates. |
+| Package scripts and publishing | Partial | [v0.1.0 packaging run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44039918347) published historical NSIS, MSI, portable ZIP and hashes. Build-only [candidate workflow](.github/workflows/windows-candidate.yml) verifies current hashes, package metadata and manifest on Windows Server. Interactive package install/upgrade/uninstall/UAC/WebView2 remain open. |
+| Dependency licenses | Automated | Free/open-source license check in CI for the Rust workspaces and npm lockfile. |
+| USN and registry driver parsers | Automated | Parser fixtures, malformed frames, and Windows FILETIME-to-Unix conversion. See [live-source evaluation](docs/LIVE-COLLECTION.md). |
+| Live USN/registry port, kernel driver, WDK, signing | Not run | Windows user-mode sources and standalone lab probe are built/type-checked; real capture, driver build/load, assigned altitude and production signing have no evidence. Nothing is enabled or packaged by default. |
+| Windows 10/11 accessibility, DPI and log-window docking | Not run | Empty [client evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md); no Narrator, high-contrast, or multi-monitor sign-off. |
 
-## Known limitations
-- A release-signed kernel driver needs a code-signing certificate, which is not free. Test-signing works for development; source stays open either way.
-- Theme palettes are inspired by well-known schemes. Colors were nudged where needed to meet WCAG AA, so they are not exact upstream values. Three names were changed to avoid third-party brand names (see CREDITS).
-- The driver reports `RegNtPreDeleteKey` as an attempt.
-- The registry client thread exits at the next message after the consumer drops (blocking `FilterGetMessage`).
-- Dev altitude `385201` is a placeholder; Microsoft must assign a real one.
-- Registry review checks key names under Software and one exact publisher key, not values or the whole registry. Service/task matching needs a command with an absolute local path under the reported install folder. Inaccessible entries and unsupported command formats can be missed. System entries are never changed.
-- MSIX inventory is current-user-only and read-only. Portable entries are opt-in rather than auto-detected.
-- Trace lookup uses SQLite ASCII `NOCASE` as a fallback; node identity and write-side matching remain exact to preserve case-only records.
-- The optional live USN and driver sources are separate library components. Desktop Watch uses file, service, task, and opt-in registry snapshots. Registry snapshots are bounded and non-atomic; only key metadata is compared, not value data or live events. An inaccessible or incomplete scope is not compared.
+## Limits that affect release decisions
 
-## Failure drills not yet run
-See [Windows release checks](ROADMAP.md#before-publishing-a-windows-build). Need Windows or a person: locked files (sharing violations), cross-volume moves on NTFS, antivirus interference, power loss during a real migration or quarantine, Windows long paths and reparse points. Run as root here, so permission-denied cases were not exercised.
+- The desktop never requests elevation. Windows Settings handles per-user uninstall and commands that cannot run safely without elevation. Some system files, tasks, services or registry scopes will be inaccessible to a normal account; incomplete probes are not evidence of absence.
+- Quarantine is recoverable file handling, not a complete backup. No-overwrite applies to restore and rollback. Batch paths are checked again before filesystem work; these path checks and the profile lock do not protect against arbitrary modification by another process running as the same Windows user. Moves require a filesystem with hard links; the cross-volume copy verifies the default data stream. Conflicts and corrupt entries keep their held files for review. Real power loss and Windows cross-volume/long-path behavior are still unverified.
+- The old executable-adjacent `data` directory can contain data from elevated or untrusted locations. It is left untouched. Restoring or importing its quarantine is not part of this version. Schema migrations still apply to databases in the current profile.
+- Registry review is limited to Software key names. Services and tasks need an executable under the reported install folder to match by path. None of those findings authorizes changing the system item. MSIX inventory is current-user-only; portable inventory is explicit. Provenance's ASCII `NOCASE` fallback does not merge case-only paths.
+- Registry snapshots are read-only, bounded, non-atomic and cannot attribute to a process. An inaccessible or incomplete scope is skipped. Optional USN and driver sources are separate, experimental and have stream-loss and shutdown gaps.
+
+## Native sign-off
+
+Use the [Windows runbook](docs/WINDOWS-RELEASE.md) and attach one [evidence record](docs/WINDOWS-RELEASE-EVIDENCE.md) for the exact candidate, naming each OS build and package hash. Verify actual Windows 10/11 startup, installation/upgrade/removal, Watch and History, cleanup drills, and accessibility. Keep [driver WDK/load, altitude and signing](docs/LIVE-COLLECTION.md#distribution-gates-open) separate.
