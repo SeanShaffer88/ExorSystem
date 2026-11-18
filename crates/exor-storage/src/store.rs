@@ -3,7 +3,8 @@
 use crate::error::{Result, StorageError};
 use crate::migrate;
 use crate::model::*;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::types::Value;
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -549,20 +550,66 @@ impl Store {
         limit: usize,
         path_contains: Option<&str>,
     ) -> Result<Vec<LedgerEntry>> {
-        let like = path_contains
-            .map(|f| {
-                let esc = f
-                    .replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_");
-                format!("%{esc}%")
-            })
-            .unwrap_or_else(|| "%".to_string());
-        let mut st = self.conn.prepare(&format!(
-            "SELECT {LEDGER_COLS} FROM change_ledger WHERE path LIKE ?1 ESCAPE '\\' ORDER BY entry_id DESC LIMIT ?2"
-        ))?;
-        Ok(st
-            .query_map(params![like, limit as i64], ledger_row)?
+        self.query_ledger(limit, path_contains, None, None)
+    }
+
+    /// Newest matching entries first. A cursor restricts the query to strictly older entry IDs,
+    /// so appends do not shift later pages. Filters apply before the page limit.
+    ///
+    /// Page sizes are clamped to 1–1000. Without a session filter, unassigned entries are included.
+    pub fn ledger_page(
+        &self,
+        limit: usize,
+        path_contains: Option<&str>,
+        session_id: Option<i64>,
+        before_id: Option<i64>,
+    ) -> Result<LedgerPage> {
+        let limit = limit.clamp(1, 1000);
+        let mut entries = self.query_ledger(limit + 1, path_contains, session_id, before_id)?;
+        let next_before_id = if entries.len() > limit {
+            entries.truncate(limit);
+            entries.last().map(|entry| entry.entry_id)
+        } else {
+            None
+        };
+        Ok(LedgerPage {
+            entries,
+            next_before_id,
+        })
+    }
+
+    fn query_ledger(
+        &self,
+        limit: usize,
+        path_contains: Option<&str>,
+        session_id: Option<i64>,
+        before_id: Option<i64>,
+    ) -> Result<Vec<LedgerEntry>> {
+        // Add only fixed clauses and bind every value. Avoid optional OR predicates here so
+        // SQLite can use idx_ledger_session (with its rowid suffix) and the entry_id range.
+        let mut sql = format!("SELECT {LEDGER_COLS} FROM change_ledger WHERE 1 = 1");
+        let mut args = Vec::with_capacity(4);
+        if let Some(id) = session_id {
+            sql.push_str(" AND session_id = ?");
+            args.push(Value::Integer(id));
+        }
+        if let Some(id) = before_id {
+            sql.push_str(" AND entry_id < ?");
+            args.push(Value::Integer(id));
+        }
+        if let Some(filter) = path_contains {
+            let escaped = filter
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            sql.push_str(" AND path LIKE ? ESCAPE '\\'");
+            args.push(Value::Text(format!("%{escaped}%")));
+        }
+        sql.push_str(" ORDER BY entry_id DESC LIMIT ?");
+        args.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
+        let mut statement = self.conn.prepare(&sql)?;
+        Ok(statement
+            .query_map(params_from_iter(args), ledger_row)?
             .collect::<rusqlite::Result<_>>()?)
     }
 

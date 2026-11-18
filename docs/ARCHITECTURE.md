@@ -39,8 +39,12 @@ The desktop shell merges classic uninstall entries, the current user's WinRT pac
 
 The desktop uses before/after snapshots, not live USN or driver events. On Windows, the registry probe opens only selected Software subtrees with read access, using separate machine views. It records paths and key last-write stamps in memory, never value data. Each subtree is bounded by key count, depth and path storage; unreadable, linked, or over-limit trees are discarded for that sample. The engine compares complete pairs by path (ignoring ASCII case) and stamp. Only differences reach SQLite as `snapshot_diff` with heuristic attribution; removing a key does not create a cleanup candidate. The snapshots are not atomic or process-attributed.
 
+## Change history
+
+History queries the append-only ledger directly, including observations without a known node. Session and literal path filters apply before paging. An exclusive `entry_id` cursor keeps older pages stable when new evidence arrives; the existing session index supports scoped reads without a migration. History exposes the evidence source, not a claim of which process made a change.
+
 ## Known limitations
-See [audit](../AUDIT.md) and the [release checklist](ROADMAP.md).
+See [audit](../AUDIT.md) and the [release checklist](../ROADMAP.md#before-publishing-a-windows-build).
 
 ## Window layout
 Main window: tab bar, view, status bar. A second borderless window (`log`, fixed 420x380 logical px, not resizable, hidden by default) is positioned by `gui/src-tauri/src/dock.rs` against the main window's right edge. Closed, it sits inside the main window's footprint and is hidden. Opening shows it behind the main window, then steps its x position outward (14 steps, eased); closing reverses and hides. Move, resize and minimize events on the main window keep it attached. Log lines live in a 1000-line ring buffer and are pushed to the window by a `log` event.

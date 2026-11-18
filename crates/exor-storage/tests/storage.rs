@@ -583,3 +583,90 @@ fn ledger_recent_is_newest_first_and_filters_by_path() {
     assert_eq!(s.ledger_recent(10, Some("_")).unwrap().len(), 1);
     assert_eq!(s.ledger_recent(10, Some("zzz")).unwrap().len(), 0);
 }
+
+#[test]
+fn ledger_pages_filter_before_limiting_and_keep_their_boundary_after_appends() {
+    let store = Store::open_in_memory().unwrap();
+    let watch = store.begin_session("Watch", None, None).unwrap();
+    let other = store.begin_session("Other", None, None).unwrap();
+    let append = |session_id, path: &str, change_kind| {
+        store
+            .append_ledger(&NewLedgerEntry {
+                session_id,
+                node_id: None,
+                path: path.to_string(),
+                change_kind,
+                old_hash: None,
+                new_hash: None,
+                source: ChangeSource::SnapshotDiff,
+            })
+            .unwrap()
+    };
+    let removed = append(
+        Some(watch),
+        r"HKCU\Software\Example\App_%\Removed",
+        ChangeKind::Deleted,
+    );
+    let changed = append(
+        Some(watch),
+        r"HKCU\Software\Example\App_%\Changed",
+        ChangeKind::Modified,
+    );
+    let new = append(
+        Some(watch),
+        r"HKCU\Software\Example\App_%\New",
+        ChangeKind::Created,
+    );
+    append(
+        Some(watch),
+        r"HKCU\Software\Example\App_123\Nonmatch",
+        ChangeKind::Created,
+    );
+    let other_id = append(
+        Some(other),
+        r"HKCU\Software\Example\App_%\Other",
+        ChangeKind::Created,
+    );
+    let unassigned = append(
+        None,
+        r"HKCU\Software\Example\App_%\Unassigned",
+        ChangeKind::Modified,
+    );
+
+    let filter = Some(r"software\example\app_%");
+    let ids = |page: &LedgerPage| {
+        page.entries
+            .iter()
+            .map(|entry| entry.entry_id)
+            .collect::<Vec<_>>()
+    };
+    let first = store.ledger_page(2, filter, Some(watch), None).unwrap();
+    assert_eq!(ids(&first), [new, changed]);
+    assert_eq!(first.next_before_id, Some(changed));
+    append(
+        Some(watch),
+        r"HKCU\Software\Example\App_%\AppendedLater",
+        ChangeKind::Created,
+    );
+    let older = store
+        .ledger_page(2, filter, Some(watch), first.next_before_id)
+        .unwrap();
+    assert_eq!(ids(&older), [removed]);
+    assert_eq!(older.next_before_id, None);
+    assert_eq!(older.entries[0].entry.change_kind, ChangeKind::Deleted);
+    assert_eq!(older.entries[0].entry.source, ChangeSource::SnapshotDiff);
+    assert!(older.entries[0].entry.node_id.is_none());
+
+    let exact = store.ledger_page(1, filter, Some(other), None).unwrap();
+    assert_eq!(ids(&exact), [other_id]);
+    assert_eq!(exact.next_before_id, None);
+    let all = store.ledger_page(10, filter, None, None).unwrap();
+    assert!(ids(&all).contains(&other_id) && ids(&all).contains(&unassigned));
+    assert!(
+        store
+            .ledger_page(10, Some("absent"), Some(watch), None)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+}

@@ -14,7 +14,7 @@ function WatchWarnings({ warnings }: { warnings: string[] }) {
   );
 }
 
-export function WatchView({ hidden }: { hidden: boolean }) {
+export function WatchView({ hidden, onOpenHistory }: { hidden: boolean; onOpenHistory: (sessionId: number) => void }) {
   const [appName, setAppName] = useState("");
   const [installer, setInstaller] = useState("");
   const [folders, setFolders] = useState("C:\\Program Files\nC:\\Program Files (x86)\nC:\\ProgramData");
@@ -95,13 +95,17 @@ export function WatchView({ hidden }: { hidden: boolean }) {
       {error && <p role="alert" className="error">{error}</p>}
 
       {summary && (
-        <div role="status" aria-live="polite">
-          <p>{summary.summary}</p>
-          <p>{summary.registry_scopes_compared > 0
-            ? `Registry key changes: ${summary.registry_keys_changed} across ${summary.registry_scopes_compared} compared subtree(s). Registry findings are for review only.`
-            : "No registry subtrees were compared."}</p>
-          <WatchWarnings warnings={summary.warnings} />
-          <p>See the observed changes in History (session #{summary.session_id}).</p>
+        <div>
+          <div role="status" aria-live="polite">
+            <p>{summary.summary}</p>
+            <p>{summary.registry_scopes_compared > 0
+              ? `Registry key changes: ${summary.registry_keys_changed} across ${summary.registry_scopes_compared} compared subtree(s). Registry findings are for review only.`
+              : "No registry subtrees were compared."}</p>
+            <WatchWarnings warnings={summary.warnings} />
+          </div>
+          <button type="button" onClick={() => onOpenHistory(summary.session_id)}>
+            View recorded changes (session #{summary.session_id})
+          </button>
         </div>
       )}
     </section>

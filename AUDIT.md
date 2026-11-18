@@ -25,7 +25,8 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 | Installed programs enumeration (`exor-win`) | Partially verified | Classic entries plus main MSIX packages for the calling user. Browser smoke uses fixtures; new WinRT package enumeration needs a Windows runtime check. |
 | Portable inventory and path lookups (schema v3) | Partially verified | Migration, case-only collisions and portable upsert/removal checked on SQLite. Portable registration and case lookup regression tests added for Cargo CI. |
 | Guided uninstall and leftover review | Partially verified | Browser fixture covers a disappearing uninstall entry, explicit folder selection, and read-only registry/service/task findings. Live review probes and uninstaller behavior still need Windows validation. |
-| History, report export, portable copy, update risk, settings | Partially verified | engine and storage parts unit-tested; GUI built and type-checked; never rendered on Windows; Documents-folder output paths untested on real profiles |
+| Session-scoped History | Partially verified | Storage regression covers interleaved sessions, node-less removals, literal path filtering and paging after appends. Browser smoke covers Watch → History, source labels, paging and error recovery with mocked IPC. Native desktop verification is pending. |
+| Report export, portable copy, update risk, settings | Partially verified | engine and storage parts unit-tested; GUI built and type-checked; never rendered on Windows; Documents-folder output paths untested on real profiles |
 | Log window slide, z-order, docking | Unverified | type-checked only; behavior on real Windows (animation, staying behind main, multi-monitor, DPI) never observed |
 | `driver/scripts/dev-load.ps1` | Unverified | never run |
 | Windows 10 vs 11 behaviour, DPI, high contrast | Unverified | |
@@ -42,4 +43,4 @@ Labels: **Verified** (run here), **Partially verified**, **Unverified**.
 - The optional live USN and driver sources are separate library components. Desktop Watch uses file, service, task, and opt-in registry snapshots. Registry snapshots are bounded and non-atomic; only key metadata is compared, not value data or live events. An inaccessible or incomplete scope is not compared.
 
 ## Failure drills not yet run
-See [Windows release checks](docs/ROADMAP.md). Need Windows or a person: locked files (sharing violations), cross-volume moves on NTFS, antivirus interference, power loss during a real migration or quarantine, Windows long paths and reparse points. Run as root here, so permission-denied cases were not exercised.
+See [Windows release checks](ROADMAP.md#before-publishing-a-windows-build). Need Windows or a person: locked files (sharing violations), cross-volume moves on NTFS, antivirus interference, power loss during a real migration or quarantine, Windows long paths and reparse points. Run as root here, so permission-denied cases were not exercised.

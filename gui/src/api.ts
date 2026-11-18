@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AppInfo, TemplateInfo, HistoryRow, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchStart, WatchSummary } from "./types";
+import type { AppInfo, TemplateInfo, HistoryPage, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, QuarantineRow, ScanEvent, Session, SimulationView, WatchStart, WatchSummary } from "./types";
 
 export const api = {
   listSessions: () => invoke<Session[]>("list_sessions"),
@@ -23,7 +23,8 @@ export const api = {
   findLeftovers: (programId: string) => invoke<LeftoverReview>("find_leftovers", { programId }),
   quarantineLeftovers: (programId: string, folders: string[], sessionId: number | null) =>
     invoke<QuarantineResult>("quarantine_leftovers", { programId, folders, sessionId }),
-  history: (filter: string | null, limit: number) => invoke<HistoryRow[]>("history", { filter, limit }),
+  history: (filter: string | null, limit: number, sessionId: number | null, beforeId: number | null) =>
+    invoke<HistoryPage>("history", { filter, limit, sessionId, beforeId }),
   exportReport: (sessionId: number, template: string) => invoke<string>("export_report", { sessionId, template }),
   makePortable: (sessionId: number) => invoke<PortableView>("make_portable", { sessionId }),
   updateRisk: () => invoke<RiskView>("update_risk"),

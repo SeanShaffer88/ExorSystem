@@ -207,6 +207,15 @@ pub struct LedgerEntry {
     pub observed_at: Option<String>,
 }
 
+/// A bounded page of changes in descending entry order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerPage {
+    /// Matching changes, including evidence without a current node.
+    pub entries: Vec<LedgerEntry>,
+    /// Exclusive cursor for the next page, only present if older matches exist.
+    pub next_before_id: Option<i64>,
+}
+
 /// Stored quarantine record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuarantineRecord {

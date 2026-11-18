@@ -30,6 +30,7 @@ const views: { id: ViewId; label: string; enabled: boolean }[] = [
 export function App() {
   const [view, setView] = useState<ViewId>("sessions");
   const [announce, setAnnounce] = useState("");
+  const [historySessionId, setHistorySessionId] = useState<number | null>(null);
   const enabled = views.filter((v) => v.enabled);
 
   const go = useCallback((id: ViewId) => {
@@ -37,6 +38,12 @@ export function App() {
     const label = views.find((v) => v.id === id)?.label ?? id;
     setAnnounce(`${label} view`);
   }, []);
+
+  const openHistory = useCallback((sessionId: number) => {
+    setHistorySessionId(sessionId);
+    go("history");
+    document.getElementById("tab-history")?.focus();
+  }, [go]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -102,13 +109,13 @@ export function App() {
       <main id="main" role="tabpanel" aria-labelledby={`tab-${view}`} tabIndex={-1}>
         {view === "sessions" && <SessionsView />}
         {/* A native watch keeps running when this tab is not selected. Keep its controls mounted. */}
-        {flags.watchView && <WatchView hidden={view !== "watch"} />}
+        {flags.watchView && <WatchView hidden={view !== "watch"} onOpenHistory={openHistory} />}
         {view === "scan" && <ScanView />}
         {view === "provenance" && <ProvenanceView />}
         {view === "simulator" && <SimulatorView />}
         {view === "quarantine" && <QuarantineView />}
         {view === "risk" && <RiskView />}
-        {view === "history" && <HistoryView />}
+        {view === "history" && <HistoryView sessionId={historySessionId} onSessionChange={setHistorySessionId} />}
         {view === "settings" && <SettingsView />}
         {view === "appearance" && <AppearanceView />}
       </main>

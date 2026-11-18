@@ -14,7 +14,7 @@ ExorSystem records observed system changes in a directed graph with confidence s
 | Windows sources | `crates/exor-win` | windows-rs: registry snapshots, inventory, USN journal, driver client | see [verification matrix](AUDIT.md) |
 | Kernel driver | `driver/` | C, minifilter framework, `CmRegisterCallbackEx` | source only, not compiled |
 
-See [architecture](docs/ARCHITECTURE.md), the [roadmap and release checks](docs/ROADMAP.md), the [verification matrix](AUDIT.md), and [changelog](CHANGELOG.md).
+See [architecture](docs/ARCHITECTURE.md), the [roadmap and release checks](ROADMAP.md), the [verification matrix](AUDIT.md), and [changelog](CHANGELOG.md).
 
 ## Features
 
@@ -23,11 +23,11 @@ See [architecture](docs/ARCHITECTURE.md), the [roadmap and release checks](docs/
 - **BOM & inference graph**: confidence `1.0` manifest-confirmed, `0.7` inferred from timing, `0.3` heuristic/unknown. Edges are cycle-checked.
 - **Noise filtering**: background telemetry, browser caches, indexer and Defender writes dropped in real time, with burst de-duplication.
 - **Differential engine**: async parallel directory walk, Merkle path-trie diff (identical subtrees skipped), BLAKE3 hashing with incremental reuse.
-- **Install watch**: take a before picture, run the installer, then take an after picture. Record changes to files, services, scheduled tasks and optionally [specific registry subtrees](docs/ROADMAP.md#watch-an-install). Registry snapshots are read-only and need no driver.
+- **Install watch**: take a before picture, run the installer, then take an after picture. Record changes to files, services, scheduled tasks and optionally [specific registry subtrees](ROADMAP.md#watch-an-install). Registry snapshots are read-only and need no driver.
 - **Optional themes**: 36 dark and light palettes with live preview and a temporary Undo; all pass WCAG AA contrast.
 - **Cleanup policy simulator**: JSONLogic rules, pure dry run; most protective rule wins (keep, then review, then quarantine). Templates: conservative, standard, thorough.
 - **Evidence-preserving quarantine**: compact JSON manifests with BLAKE3 verification, all-or-nothing moves, restore and purge, manifests kept as evidence. No VSS snapshots.
-- **Provenance timeline & change ledger**: append-only ledger (enforced by triggers); trace any artifact to its session, installer family and timestamp.
+- **Provenance & change history**: trace recorded artifacts and review an installation's observations in the append-only ledger. History supports path and session filters, older pages, and evidence source labels.
 - **Governance extras**: shared-component impact maps, orphaned-dependency review, installer family fingerprinting (silent switches), update batching by risk, portable-app transition plan, accessibility-first summaries.
 - **Mock harnesses**: seeded USN/registry event generators so the whole pipeline runs under `cargo test` without a driver.
 
