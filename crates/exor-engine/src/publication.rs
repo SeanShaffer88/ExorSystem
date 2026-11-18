@@ -1,7 +1,7 @@
 //! Publication of complete exports. Temporary work is isolated in a directory we created.
 
 use crate::error::{EngineError, Result, io_err};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +11,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn sync_dir(dir: &Path) -> Result<()> {
     #[cfg(unix)]
-    File::open(dir)
+    fs::File::open(dir)
         .and_then(|f| f.sync_all())
         .map_err(io_err(dir))?;
     // The Windows desktop uses the same local filesystem for a quarantine move. Rust's
