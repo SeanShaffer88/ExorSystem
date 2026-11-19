@@ -150,8 +150,44 @@ try {
   await inventory.getByRole('button', { name: /Queue Lab 01/ }).waitFor();
   assert.equal(await queue.count(), 0, 'the queue is never restored after reload');
   assert.deepEqual(await calls('run_uninstaller'), []);
+
+  // Signature review applies to every queued item: unverified needs a second confirmation,
+  // blocked never runs.
+  await page.evaluate(() => { window.queueSignature = { 'queue-3': 'unsigned', 'queue-4': 'rejected' }; });
+  const trust = dialog.getByRole('checkbox', { name: 'I trust this uninstaller even though its signature is not verified' });
+  await ready();
+  await start.click();
+  await pick(3).check();
+  await pick(4).check();
+  await start.click();
+  await next.click();
+  await preview(3, 1);
+  await dialog.getByText('Unsigned', { exact: true }).waitFor();
+  await review.click();
+  await approve.check();
+  assert(await run.isDisabled(), 'an unsigned uninstaller needs the extra confirmation');
+  await trust.check();
+  await run.click();
+  await exit(0);
+  await backToQueue.click();
+  await row(3).getByText('Exit code 0', { exact: true }).waitFor();
+  const unsigned = await calls('run_uninstaller');
+  assert.equal(unsigned.length, 1);
+  assert.equal(unsigned[0].confirmUnverified, true);
+  assert.equal(unsigned[0].expected.signature.status, 'unsigned');
+  await next.click();
+  await preview(4, 1);
+  await dialog.getByText('Blocked', { exact: true }).waitFor();
+  await review.click();
+  await dialog.getByText('ExorSystem will not run this uninstaller', { exact: true }).waitFor();
+  assert(await approve.isDisabled(), 'a blocked uninstaller cannot be approved');
+  assert(await run.isDisabled());
+  assert.equal(await trust.count(), 0, 'no trust override for a blocked uninstaller');
+  await dialog.getByRole('button', { name: 'Close wizard' }).click();
+  await row(4).getByText('Waiting for review', { exact: true }).waitFor();
+  assert.equal((await calls('run_uninstaller')).length, 1, 'the blocked item was never run');
   assert.deepEqual(errors, []);
-  console.log('Uninstall queue passed: multi-page picks, per-item review, running lockout, blocked/stale outcomes, fresh retry, skip, capacity, keyboard focus and no automatic cleanup.');
+  console.log('Uninstall queue passed: multi-page picks, per-item review, signature review, running lockout, blocked/stale outcomes, fresh retry, skip, capacity, keyboard focus and no automatic cleanup.');
 } finally {
   await browser.close();
 }

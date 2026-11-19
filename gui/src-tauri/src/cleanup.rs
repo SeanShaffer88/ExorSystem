@@ -173,6 +173,23 @@ pub(crate) fn discard_cleanup_plan(state: State<'_, AppState>, id: u64) {
     state.cleanup_plans.discard(id);
 }
 
+/// A plain refusal naming the programs that hold any of `paths` open, if there are any.
+/// Lock detection is advisory: when Restart Manager itself fails, the moves still fail closed.
+async fn locking_refusal(paths: Vec<PathBuf>) -> Option<String> {
+    #[cfg(windows)]
+    {
+        match tauri::async_runtime::spawn_blocking(move || exor_win::locking_apps(&paths)).await {
+            Ok(Ok(apps)) => exor_engine::safety::lock_refusal(&apps),
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = paths;
+        None
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn apply_cleanup(
     app: AppHandle,
@@ -181,6 +198,16 @@ pub(crate) async fn apply_cleanup(
     approved_files: usize,
 ) -> Result<QuarantineResult, String> {
     let job = state.jobs.work(&app, "Applying reviewed cleanup", None)?;
+    // Programs holding these files open would make the moves fail part-way. Check first and stop
+    // without consuming the approval, so the person can close them and choose Apply again.
+    let paths = state
+        .cleanup_plans
+        .included_paths(id)
+        .map_err(|e| e.to_string())?;
+    if let Some(refusal) = locking_refusal(paths).await {
+        dock::log(&app, "warn", &refusal);
+        return Err(refusal);
+    }
     let ((request, reviewed), plan) = state
         .cleanup_plans
         .take_approved(id, approved_files)

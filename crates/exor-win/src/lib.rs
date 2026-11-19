@@ -13,6 +13,8 @@ mod desktop;
 #[cfg(windows)]
 mod environment_source;
 #[cfg(windows)]
+mod locks;
+#[cfg(windows)]
 mod packages_source;
 #[cfg(windows)]
 mod programs_source;
@@ -22,6 +24,8 @@ mod registry_snapshot;
 mod registry_source;
 #[cfg(windows)]
 mod services_source;
+#[cfg(windows)]
+mod trust;
 #[cfg(windows)]
 mod usn_source;
 
@@ -35,6 +39,8 @@ pub use desktop::{
 #[cfg(windows)]
 pub use environment_source::{expand as expand_environment, stored_variables};
 #[cfg(windows)]
+pub use locks::locking_apps;
+#[cfg(windows)]
 pub use packages_source::enumerate_packages;
 #[cfg(windows)]
 pub use programs_source::{enumerate_programs, enumerate_software_keys, registry_program};
@@ -44,6 +50,8 @@ pub use registry_snapshot::{capture_registry_cancellable, capture_registry_keys}
 pub use registry_source::DriverRegistrySource;
 #[cfg(windows)]
 pub use services_source::{enumerate_services, enumerate_services_cancellable};
+#[cfg(windows)]
+pub use trust::verify_signature;
 #[cfg(windows)]
 pub use usn_source::UsnJournalSource;
 

@@ -1,6 +1,18 @@
-import type { UninstallPreview } from "../types";
+import type { SignatureCheck, UninstallPreview } from "../types";
 import { Badge } from "./Workspace";
 import { Icon } from "./Icon";
+
+const SIGNATURE_LABEL: Record<SignatureCheck["status"], [string, "safe" | "review" | "critical"]> = {
+  signed: ["Signed", "safe"],
+  unsigned: ["Unsigned", "review"],
+  untrusted: ["Not trusted", "review"],
+  rejected: ["Blocked", "critical"],
+};
+
+export function SignatureBadge({ signature }: { signature: SignatureCheck }) {
+  const [label, tone] = SIGNATURE_LABEL[signature.status];
+  return <Badge tone={tone}>{label}</Badge>;
+}
 
 export function TerminalPanel({ preview, message }: { preview: UninstallPreview | null; message?: string }) {
   return <section className="terminal-panel" aria-label="Read-only execution preview">
@@ -13,6 +25,7 @@ export function TerminalPanel({ preview, message }: { preview: UninstallPreview 
       {preview ? <dl className="terminal-args">
         <dt>executable</dt><dd>{preview.executable}</dd>
         <dt>arguments</dt><dd>{preview.args.length ? <ol aria-label="Arguments in order">{preview.args.map((arg, i) => <li key={i}><code>{JSON.stringify(arg)}</code></li>)}</ol> : "[]"}</dd>
+        <dt>signature</dt><dd><SignatureBadge signature={preview.signature}/> {preview.signature.detail}{preview.signature.catalog ? " (Windows catalog)" : ""}</dd>
       </dl> : <p role="status">{message ?? "Select an application to see its registered invocation."}</p>}
       <div className="terminal-comment"># This is a plan, not a command prompt. Nothing has been executed by this preview.</div>
     </div>
