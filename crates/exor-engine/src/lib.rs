@@ -22,6 +22,7 @@ pub mod quarantine;
 pub mod registry;
 pub mod report;
 pub mod risk;
+pub mod safety;
 pub mod snapshot;
 pub mod templates;
 pub mod trie;

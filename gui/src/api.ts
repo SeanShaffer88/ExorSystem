@@ -56,7 +56,7 @@ export const api = {
   registerPortableProgram: (name: string, executable: string) => invoke<void>("register_portable_program", { name, executable }),
   forgetPortableProgram: (executable: string) => invoke<void>("forget_portable_program", { executable }),
   previewUninstaller: (programId: string) => invoke<UninstallPreview>("preview_uninstaller", { programId }),
-  runUninstaller: (programId: string, expected: UninstallPreview) => invoke<UninstallRun>("run_uninstaller", { programId, quiet: false, expected }),
+  runUninstaller: (programId: string, expected: UninstallPreview, confirmUnverified = false) => invoke<UninstallRun>("run_uninstaller", { programId, quiet: false, expected, confirmUnverified }),
   findLeftovers: (programId: string) => invoke<LeftoverReview>("find_leftovers", { programId }),
   history: (filter: string | null, limit: number, sessionId: number | null, beforeId: number | null, domain: ChangeDomain | null = null, changeKind: ChangeKind | null = null, dates?: HistoryDates) =>
     invoke<HistoryPage>("history", { limit, filters: { filter, sessionId, beforeId, domain, changeKind, ...dates } }),

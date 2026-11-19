@@ -32,7 +32,7 @@ export async function mockDesktop(page) {
     let removed = false;
     let invocationChanged = true;
     let invocationCount = 0;
-    const argv = { executable: `${moveable}\\uninstall.exe`, args: ['--interactive', 'two words'] };
+    const argv = { executable: `${moveable}\\uninstall.exe`, args: ['--interactive', 'two words'], signature: { status: 'signed', publisher: 'Fixture Vendor', catalog: false, detail: 'The uninstaller is signed by Fixture Vendor.' } };
     const batches = [
       { quarantine_id: 'fixture-held', session_id: null, status: 'quarantined', files: desktopSlices ? 27 : 2, file_bytes: 4 * 1024 ** 2 },
       { quarantine_id: 'fixture-deleted', session_id: 9, status: 'purged', files: 3, file_bytes: 100 * 1024 ** 2 },

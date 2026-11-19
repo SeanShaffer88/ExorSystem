@@ -201,9 +201,19 @@ export interface LeftoverReview {
   }[];
   warnings: string[];
 }
+export type SignatureStatus = "signed" | "unsigned" | "untrusted" | "rejected";
+
+export interface SignatureCheck {
+  status: SignatureStatus;
+  publisher: string | null;
+  catalog: boolean;
+  detail: string;
+}
+
 export interface UninstallPreview {
   executable: string;
   args: string[];
+  signature: SignatureCheck;
 }
 
 export interface UninstallRun {

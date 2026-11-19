@@ -6,6 +6,8 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ### Added
 - Read-only rechecks of the published NSIS, MSI, and portable ZIP against GitHub digests and the retained-candidate evidence. A separate opt-in launch observer records minimal evidence on disposable Windows 10/11 clients. See [PR #33](https://github.com/SeanShaffer88/ExorSystem/pull/33) and the [verification matrix](AUDIT.md#v030-release-evidence). No client run is claimed and the published packages are unchanged.
+- The uninstall preview shows the vendor uninstaller's Authenticode signature, checked offline (embedded or through a Windows catalog, without revocation lookups). An unsigned or untrusted uninstaller runs only after an extra confirmation. One changed after signing, or with a revoked or distrusted signer, never runs.
+- Before a reviewed cleanup moves files, Windows' Restart Manager reports which programs have them open. Apply stops and names those programs without using up the approval, so you can close them and choose Apply again. ExorSystem never closes programs itself.
 
 ### Documentation
 - Refresh the README, roadmap, architecture, and release guides. Keep the live-source lab separate from the released desktop, and link static and native evidence separately from the [documentation index](docs/README.md).

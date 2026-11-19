@@ -132,7 +132,7 @@ export function startDemo() {
   const invocationFor = (id: unknown): UninstallPreview => {
     const row = findProgram(id);
     if (!row || row.removed || row.program.source !== "registry" || row.program.scope === "user") throw new Error("This is not a supported machine-wide application.");
-    return { executable: `${row.program.install_location}\\unins000.exe`, args: ["/NORESTART"] };
+    return { executable: `${row.program.install_location}\\unins000.exe`, args: ["/NORESTART"], signature: { status: "signed", publisher: row.program.publisher, catalog: false, detail: `Demo: signed by ${row.program.publisher ?? "the vendor"}.` } };
   };
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   let nextPlanId = 1;
