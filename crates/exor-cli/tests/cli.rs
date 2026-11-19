@@ -166,3 +166,37 @@ fn reads_a_profile_without_changing_it() {
     let (code, v) = exor(&["sessions", "--profile", s(empty.path())]);
     assert_eq!((code, &v["error"]["kind"]), (4, &Value::from("not_found")));
 }
+
+#[cfg(windows)]
+#[test]
+fn env_reports_findings_and_writes_a_new_script_only() {
+    if refused_when_elevated(&["env"]) {
+        return;
+    }
+    let (code, v) = exor(&["env"]);
+    assert_eq!(code, 0, "{v}");
+    let data = &v["data"];
+    assert!(data["findings"].is_array());
+    assert!(
+        data["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n == "machine:Path"),
+        "{data}"
+    );
+    assert!(data["script"].is_null());
+
+    let d = tempfile::tempdir().unwrap();
+    let script = d.path().join("fix.ps1");
+    let (code, v) = exor(&["env", "--script", s(&script)]);
+    assert_eq!(code, 0, "{v}");
+    let bytes = std::fs::read(&script).unwrap();
+    assert!(
+        bytes.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "UTF-8 BOM for Windows PowerShell"
+    );
+    assert!(String::from_utf8_lossy(&bytes).contains("param([switch]$Undo)"));
+    let (code, v) = exor(&["env", "--script", s(&script)]);
+    assert_eq!((code, &v["error"]["kind"]), (3, &Value::from("refused")));
+}

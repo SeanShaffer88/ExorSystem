@@ -11,6 +11,8 @@ mod activity_window;
 #[cfg(windows)]
 mod desktop;
 #[cfg(windows)]
+mod environment_source;
+#[cfg(windows)]
 mod packages_source;
 #[cfg(windows)]
 mod programs_source;
@@ -30,6 +32,8 @@ pub use desktop::{
     pick_path, prepare_user_data_dir, process_is_elevated, show_startup_error, uninstall_arguments,
     uninstall_executable, user_data_dir,
 };
+#[cfg(windows)]
+pub use environment_source::{expand as expand_environment, stored_variables};
 #[cfg(windows)]
 pub use packages_source::enumerate_packages;
 #[cfg(windows)]

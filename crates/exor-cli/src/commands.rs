@@ -125,6 +125,7 @@ pub fn run(inv: &Invocation) -> Outcome {
         }
         Command::Snapshot { root, out, strict } => take_snapshot(root, out.as_deref(), *strict),
         Command::Diff { before, after } => diff_files(before, after),
+        Command::Env { script } => check_environment(script.as_deref()),
     }
 }
 
@@ -206,6 +207,73 @@ fn default_profile() -> Result<PathBuf, CliError> {
     }
 }
 
+/// `YYYY-MM-DD HH:MM UTC` for a Unix time in seconds (proleptic Gregorian calendar).
+/// Only the Windows-only `env` command uses it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn utc_text(secs: u64) -> String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(0);
+    let rem = secs % 86_400;
+    // Howard Hinnant's civil-from-days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        rem / 3_600,
+        rem % 3_600 / 60
+    )
+}
+
+/// PATH and toolchain-variable hygiene. Read-only; `script` names a new file for a reviewable
+/// PowerShell fix script that ExorSystem never runs.
+fn check_environment(script: Option<&Path>) -> Outcome {
+    #[cfg(windows)]
+    {
+        use exor_engine::envcheck::{self, PathKind};
+        let vars =
+            exor_win::stored_variables(&envcheck::watched_names()).map_err(CliError::failed)?;
+        let probe = |p: &str| match std::fs::metadata(p) {
+            Ok(m) if m.is_dir() => PathKind::Dir,
+            Ok(_) => PathKind::File,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => PathKind::Missing,
+            Err(_) => PathKind::Unknown,
+        };
+        let report = envcheck::check(&vars, &exor_win::expand_environment, &probe);
+        let written = match script {
+            Some(path) => {
+                let text = envcheck::fix_script(&vars, &report, &utc_text(now_ms() / 1_000));
+                // UTF-8 with a byte-order mark, so Windows PowerShell 5.1 reads non-ASCII paths correctly.
+                let mut bytes = vec![0xEF, 0xBB, 0xBF];
+                bytes.extend_from_slice(text.replace('\n', "\r\n").as_bytes());
+                write_new(path, &bytes)?;
+                Some(path.to_string_lossy().into_owned())
+            }
+            None => None,
+        };
+        Ok(json!({
+            "variables": report.variables,
+            "findings": report.findings,
+            "removable": report.removable,
+            "to_review": report.to_review,
+            "script": written,
+            "note": "Nothing was changed. A fix script, if written, only runs when you run it.",
+        }))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = script;
+        Err(CliError::refused(
+            "Stored environment variables are read from the Windows registry; run this on Windows.",
+        ))
+    }
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -249,7 +317,7 @@ fn take_snapshot(root: &Path, out: Option<&Path>, strict: bool) -> Outcome {
     };
     let written = match out {
         Some(path) => {
-            write_new(path, &file)?;
+            write_new(path, &serde_json::to_vec(&file).map_err(CliError::failed)?)?;
             Some(path.to_string_lossy().into_owned())
         }
         None => None,
@@ -267,7 +335,7 @@ fn take_snapshot(root: &Path, out: Option<&Path>, strict: bool) -> Outcome {
 }
 
 /// Write `value` to a new file; an existing file is never replaced.
-fn write_new(path: &Path, file: &SnapshotFile) -> Result<(), CliError> {
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     use std::io::Write;
     let mut f = std::fs::File::create_new(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
@@ -279,8 +347,7 @@ fn write_new(path: &Path, file: &SnapshotFile) -> Result<(), CliError> {
             CliError::failed(format!("could not create {}: {e}", path.display()))
         }
     })?;
-    let bytes = serde_json::to_vec(file).map_err(CliError::failed)?;
-    f.write_all(&bytes)
+    f.write_all(bytes)
         .and_then(|()| f.sync_all())
         .map_err(|e| CliError::failed(format!("could not write {}: {e}", path.display())))
 }
@@ -344,4 +411,17 @@ fn diff_files(before: &Path, after: &Path) -> Outcome {
         "changes": changes,
         "unreadable_in_after": unreadable.into_iter().map(|c| c.path).collect::<Vec<_>>(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::utc_text;
+
+    #[test]
+    fn formats_utc_dates_including_leap_days() {
+        assert_eq!(utc_text(0), "1970-01-01 00:00 UTC");
+        assert_eq!(utc_text(951_782_400), "2000-02-29 00:00 UTC");
+        assert_eq!(utc_text(1_795_057_362), "2026-11-19 03:02 UTC");
+        assert_eq!(utc_text(4_102_444_799), "2099-12-31 23:59 UTC");
+    }
 }

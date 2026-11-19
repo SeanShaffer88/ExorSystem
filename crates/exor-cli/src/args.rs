@@ -42,6 +42,11 @@ pub enum Command {
         /// Hash every file's content (slower, but catches same-size, same-time edits).
         strict: bool,
     },
+    /// PATH and toolchain-variable hygiene; optionally write a fix script to review.
+    Env {
+        /// Write a PowerShell fix script here (never overwrites; never run by ExorSystem).
+        script: Option<PathBuf>,
+    },
     /// Compare two snapshot files.
     Diff {
         /// Earlier snapshot.
@@ -63,6 +68,7 @@ impl Command {
             Self::History { .. } => "history",
             Self::Snapshot { .. } => "snapshot",
             Self::Diff { .. } => "diff",
+            Self::Env { .. } => "env",
         }
     }
 
@@ -100,6 +106,9 @@ Commands:
                                         Capture a folder; --out writes a file for diff,
                                         --strict hashes every file's content
   diff <before-file> <after-file>       Compare two snapshot files
+  env [--script <file.ps1>]             PATH and toolchain variables: duplicates, missing
+                                        folders, relative entries; --script writes a fix
+                                        script for you to review and run yourself
   version                               Version and profile schema
   help                                  This text
 
@@ -110,7 +119,7 @@ Exit codes: 0 success, 1 failed, 2 usage error, 3 refused (for example when run
 as administrator), 4 not found.
 
 Nothing here changes files, the registry or the ExorSystem profile, except the
-file you name with --out.";
+new file you name with --out or --script.";
 
 fn text(arg: OsString) -> Result<String, String> {
     arg.into_string()
@@ -218,6 +227,16 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Invocation, Str
             }
             Command::Snapshot { root, out, strict }
         }
+        Some("env") => {
+            let mut script = None;
+            while let Some(a) = args.rest.next() {
+                match a.as_str() {
+                    "--script" => script = Some(PathBuf::from(args.value("--script")?)),
+                    f => return Err(Args::unknown(f, "env")),
+                }
+            }
+            Command::Env { script }
+        }
         Some("diff") => Command::Diff {
             before: PathBuf::from(args.positional("the earlier snapshot file")?),
             after: PathBuf::from(args.positional("the later snapshot file")?),
@@ -292,6 +311,13 @@ mod tests {
                 after: "b.json".into()
             }
         );
+        assert_eq!(p(&["env"]).unwrap().command, Command::Env { script: None });
+        assert_eq!(
+            p(&["env", "--script", "fix.ps1"]).unwrap().command,
+            Command::Env {
+                script: Some("fix.ps1".into())
+            }
+        );
         assert_eq!(
             p(&["leftovers", "hklm64:Foo"]).unwrap().command,
             Command::Leftovers {
@@ -312,6 +338,8 @@ mod tests {
             (&["snapshot", "--out", "x"], "found option"),
             (&["diff", "a.json"], "missing the later"),
             (&["sessions", "extra"], "unexpected argument"),
+            (&["env", "--script"], "needs a value"),
+            (&["env", "--fix"], "unknown option"),
             (&["programs", "--profile"], "--profile needs a folder"),
         ] {
             let e = p(args).unwrap_err();

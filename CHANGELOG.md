@@ -9,6 +9,8 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 - `exor`, a read-only command line with JSON output and fixed exit codes. It provides `programs`, `leftovers`, `sessions`, `history` (paged), `snapshot` (with an optional snapshot file) and `diff`. It opens the desktop profile read-only, refuses to run elevated, and never changes files except a new `--out` snapshot. See [docs/CLI.md](docs/CLI.md). The portable ZIP now includes `exor.exe`; the candidate check confirms it is x64 and reports the app version, and the published-release verifier requires it for tags after v0.3.0.
 
+- `exor env`: PATH and toolchain-variable hygiene for the user and machine scopes. It reports duplicate, empty, relative, unresolved and missing entries, and variables such as `JAVA_HOME` or `GOROOT` that point at missing folders. `--script` writes a reviewable PowerShell fix script that ExorSystem never runs. The script removes only duplicates and empty entries, marks the rest for review, keeps `REG_EXPAND_SZ`, and can `-Undo`.
+
 ### Documentation
 - Refresh the README, roadmap, architecture, and release guides. Keep the live-source lab separate from the released desktop, and link static and native evidence separately from the [documentation index](docs/README.md).
 
