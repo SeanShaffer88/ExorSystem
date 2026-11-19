@@ -2,6 +2,9 @@
 
 Use this template when running optional interactive Windows 10/11 checks. Attach `PACKAGE-CHECKS.json`, `SHA256SUMS.txt`, and relevant logs to a PR or issue. Avoid personal file paths, account identifiers, and registry value data in screenshots or logs.
 
+For a published build, link `packages.json` from [static published package verification](WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) separately from any `launch.json` from the [client launch observer](WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client). A static pass fills no client cells. A launch-observer pass fills only the launch/exit cell for that OS and format; it does not attest installer actions, SQLite integrity, UAC, or rendered WebView2 content.
+
+- Published release tag / static report or Actions run:
 - Source commit / app version:
 - Passing CI run / successful Windows candidate Actions run ID and link:
 - Tester / UTC date:
@@ -11,14 +14,14 @@ Use this template when running optional interactive Windows 10/11 checks. Attach
 
 Use **Pass**, **Fail**, **Blocked**, or **Not run**. Add exact SHA-256 and evidence links for each package test. Include install/launch/remove and applicable upgrade outcomes; attach the verbose MSI log where available. The template itself is not evidence.
 
-| OS | Format | SHA-256 | Install/extract, launch, upgrade, uninstall | UAC, WebView2, profile | Status / evidence |
-|---|---|---|---|---|---|
-| Windows 10 | NSIS | | | | Not run |
-| Windows 10 | MSI | | | | Not run |
-| Windows 10 | Portable ZIP | | | | Not run |
-| Windows 11 | NSIS | | | | Not run |
-| Windows 11 | MSI | | | | Not run |
-| Windows 11 | Portable ZIP | | | | Not run |
+| OS | Format | SHA-256 | First launch / exit | Install or extract / removal | Upgrade | UAC, WebView2, profile |
+|---|---|---|---|---|---|---|
+| Windows 10 | NSIS | | Not run | Not run | Not run | Not run |
+| Windows 10 | MSI | | Not run | Not run | Not run | Not run |
+| Windows 10 | Portable ZIP | | Not run | Not run | Not run | Not run |
+| Windows 11 | NSIS | | Not run | Not run | Not run | Not run |
+| Windows 11 | MSI | | Not run | Not run | Not run | Not run |
+| Windows 11 | Portable ZIP | | Not run | Not run | Not run | Not run |
 
 Record the format used for each functional run. Repeat it for another format if install/launch behavior differs.
 
