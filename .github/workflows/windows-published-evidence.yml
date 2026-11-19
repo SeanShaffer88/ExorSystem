@@ -25,10 +25,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Test the static verifier
@@ -79,6 +79,13 @@ jobs:
             $stage = 'run the static verifier'
             python -B scripts/verify-published-release.py $packages --release-info $info --tag $tag --output $report
             if ($LASTEXITCODE) { throw 'Published package verification failed.' }
+            @(
+              "### $tag published Windows packages: static checks passed"
+              ''
+              'The NSIS installer, MSI, portable ZIP, and both evidence files matched the published release.'
+              'No installer or desktop ran. All Windows 10/11 client checks remain untested by this job.'
+              'See `packages.json` in the **ExorSystem-published-package-evidence** artifact.'
+            ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
           } catch {
             if (-not (Test-Path -LiteralPath $report)) {
               [ordered]@{
@@ -93,7 +100,7 @@ jobs:
             }
             throw
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: ExorSystem-published-package-evidence

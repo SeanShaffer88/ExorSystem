@@ -37,7 +37,7 @@ Pass Linux/Windows CI and the **Windows candidate packages (no publish)** workfl
 
 [The v0.3.0 promotion run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44432420633) published the retained NSIS installer, MSI, portable ZIP, and two verification files from source `b34188983fdfe2d5e502380ce02873131d388c8e` without rebuilding. [CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44415431971) and the [candidate package checks](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44415431944) passed for that commit. See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for the full-profile backup and rollback steps before upgrading.
 
-Use the [published-package verifier](docs/WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) to repeat integrity and provenance checks on the actual downloads. It never launches or publishes a package. The [audit](AUDIT.md#v020-automated-evidence) preserves historical v0.2.0 evidence.
+The [post-publication check](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44434655724) downloaded and verified all five v0.3.0 assets against GitHub’s recorded sizes and digests, the candidate report, and the checksum file. It did not run an installer or desktop. Use the [published-package verifier](docs/WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) to repeat those checks. The [audit](AUDIT.md#v020-automated-evidence) preserves historical v0.2.0 evidence.
 
 ### Optional Windows client testing
 
