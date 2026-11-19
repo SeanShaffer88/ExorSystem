@@ -7,6 +7,7 @@ The [project README](../README.md) explains what ExorSystem does and where to do
 - [Dashboard guide](DASHBOARD.md): arrange docks, compare Watch scopes, inspect and export changes, review uninstall leftovers, and back up the local profile.
 - [v0.3.0 release notes](releases/v0.3.0.md): full-profile backup before the schema v5 upgrade and how to roll back.
 - [v0.2.0 release notes](releases/v0.2.0.md): legacy executable-adjacent data and the move to a per-user profile.
+- [Command line](CLI.md): read-only `exor` commands with JSON output for scripts and CI (in the portable ZIP after v0.3.0, or built from source).
 
 ## Build, verify, or contribute
 

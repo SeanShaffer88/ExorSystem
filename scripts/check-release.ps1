@@ -95,7 +95,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('exor-package-check-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $stage)
 try {
-  $expected = @('ExorSystem.exe', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CREDITS.md')
+  $expected = @('ExorSystem.exe', 'exor.exe', 'README.md', 'LICENSE', 'CHANGELOG.md', 'CREDITS.md')
   $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $dir $names[2]))
   try {
     $entries = @($zip.Entries | ForEach-Object FullName)
@@ -104,8 +104,19 @@ try {
     }
     $exe = Join-Path $stage 'ExorSystem.exe'
     [IO.Compression.ZipFileExtensions]::ExtractToFile($zip.GetEntry('ExorSystem.exe'), $exe)
+    $cli = Join-Path $stage 'exor.exe'
+    [IO.Compression.ZipFileExtensions]::ExtractToFile($zip.GetEntry('exor.exe'), $cli)
   } finally { $zip.Dispose() }
   if ((Read-PeMachine $exe) -ne 0x8664) { throw 'The portable program is not x64' }
+  if ((Read-PeMachine $cli) -ne 0x8664) { throw 'The portable command line is not x64' }
+  # 'exor version' reads no profile and changes nothing; it proves the command line starts.
+  $cliOutput = & $cli version
+  if ($LASTEXITCODE) { throw "exor.exe version exited with $LASTEXITCODE" }
+  $cliReport = $cliOutput | ConvertFrom-Json
+  if (-not $cliReport.ok -or $cliReport.data.version -cne $config.version) {
+    throw "exor.exe reports version '$($cliReport.data.version)', expected '$($config.version)'"
+  }
+  $checks[$names[2]].command_line_version = $cliReport.data.version
 
   $mt = Get-Command mt.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
   if (-not $mt) {

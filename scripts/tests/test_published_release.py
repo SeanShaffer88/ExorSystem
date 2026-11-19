@@ -50,6 +50,42 @@ def portable(extra: str | None = None, machine: int = 0x8664) -> bytes:
     return data.getvalue()
 
 
+class PortableEntriesTests(unittest.TestCase):
+    def test_command_line_is_expected_only_after_v0_3_0(self):
+        entries = VERIFIER["portable_entries"]
+        self.assertNotIn("exor.exe", entries("v0.3.0"))
+        self.assertNotIn("exor.exe", entries("v0.2.0"))
+        self.assertIn("exor.exe", entries("v0.3.1"))
+        self.assertIn("exor.exe", entries("v1.0.0"))
+
+    def test_later_release_needs_an_x64_command_line(self):
+        def archive(cli):
+            data = io.BytesIO()
+            with zipfile.ZipFile(data, "w") as z:
+                z.writestr("ExorSystem.exe", pe())
+                for name in ("README.md", "LICENSE", "CHANGELOG.md", "CREDITS.md"):
+                    z.writestr(name, "fixture\n")
+                if cli is not None:
+                    z.writestr("exor.exe", cli)
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            path = Path(folder.name) / "p.zip"
+            path.write_bytes(data.getvalue())
+            return path
+
+        inspect, entries = VERIFIER["inspect_portable"], VERIFIER["portable_entries"]
+        later = entries("v0.4.0")
+        self.assertEqual(inspect(archive(pe()), later)["command_line"]["sha256"], sha(pe()))
+        with self.assertRaisesRegex(ValueError, "portable ZIP entries"):
+            inspect(archive(None), later)
+        with self.assertRaisesRegex(ValueError, "exor.exe is not the expected x64"):
+            inspect(archive(pe(0x014C)), later)
+        # v0.3.0 still verifies without it, and treats it as an unexpected extra entry
+        self.assertNotIn("command_line", inspect(archive(None), entries("v0.3.0")))
+        with self.assertRaisesRegex(ValueError, "portable ZIP entries"):
+            inspect(archive(pe()), entries("v0.3.0"))
+
+
 class PublishedReleaseTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

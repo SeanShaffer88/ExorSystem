@@ -7,6 +7,8 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 ### Added
 - Read-only rechecks of the published NSIS, MSI, and portable ZIP against GitHub digests and the retained-candidate evidence. A separate opt-in launch observer records minimal evidence on disposable Windows 10/11 clients. See [PR #33](https://github.com/SeanShaffer88/ExorSystem/pull/33) and the [verification matrix](AUDIT.md#v030-release-evidence). No client run is claimed and the published packages are unchanged.
 
+- `exor`, a read-only command line with JSON output and fixed exit codes. It provides `programs`, `leftovers`, `sessions`, `history` (paged), `snapshot` (with an optional snapshot file) and `diff`. It opens the desktop profile read-only, refuses to run elevated, and never changes files except a new `--out` snapshot. See [docs/CLI.md](docs/CLI.md). The portable ZIP now includes `exor.exe`; the candidate check confirms it is x64 and reports the app version, and the published-release verifier requires it for tags after v0.3.0.
+
 ### Documentation
 - Refresh the README, roadmap, architecture, and release guides. Keep the live-source lab separate from the released desktop, and link static and native evidence separately from the [documentation index](docs/README.md).
 

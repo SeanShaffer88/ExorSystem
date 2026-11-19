@@ -3,7 +3,8 @@
   Build ExorSystem release artifacts into .\dist
 .DESCRIPTION
   Produces ExorSystem-v{VERSION}-x64-Setup.exe, ExorSystem-v{VERSION}-x64.msi,
-  ExorSystem-v{VERSION}-x64-Portable.zip and SHA256SUMS.txt.
+  ExorSystem-v{VERSION}-x64-Portable.zip (desktop app plus the read-only exor command line)
+  and SHA256SUMS.txt.
   Needs: Rust (MSVC toolchain from rust-toolchain.toml), Node 22+, VS Build Tools (C++), WebView2.
   The desktop exe runs asInvoker. Installing or removing machine-wide packages can prompt for UAC.
 #>
@@ -32,6 +33,13 @@ try {
 $metadata = cargo metadata --manifest-path (Join-Path $gui 'src-tauri\Cargo.toml') --no-deps --locked --format-version 1 | ConvertFrom-Json
 if ($LASTEXITCODE) { throw 'cargo metadata failed' }
 $target = Join-Path $metadata.target_directory 'x86_64-pc-windows-msvc\release'
+
+# Read-only command line, shipped in the portable ZIP next to the desktop exe.
+cargo build --manifest-path (Join-Path $root 'Cargo.toml') --release --locked -p exor-cli --target x86_64-pc-windows-msvc
+if ($LASTEXITCODE) { throw 'exor-cli build failed' }
+$workspace = cargo metadata --manifest-path (Join-Path $root 'Cargo.toml') --no-deps --locked --format-version 1 | ConvertFrom-Json
+if ($LASTEXITCODE) { throw 'cargo metadata failed' }
+$cli = Get-Item -LiteralPath (Join-Path $workspace.target_directory 'x86_64-pc-windows-msvc\release\exor.exe')
 $pkg = "$($config.productName)_${version}_x64"
 $exe = Get-Item -LiteralPath (Join-Path $target 'exorsystem-gui.exe')
 $nsis = Get-Item -LiteralPath (Join-Path $target "bundle\nsis\$pkg-setup.exe")
@@ -43,11 +51,12 @@ $prefix = "ExorSystem-v$version-x64"
 Copy-Item $nsis.FullName (Join-Path $OutDir "$prefix-Setup.exe") -Force
 Copy-Item $msi.FullName (Join-Path $OutDir "$prefix.msi") -Force
 
-# Portable: exe + docs; it uses the same per-user profile as the installed builds.
+# Portable: desktop exe, command line and docs; both use the same per-user profile as the installed builds.
 $stage = Join-Path $env:TEMP "exor-portable-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory $stage | Out-Null
 try {
   Copy-Item $exe.FullName (Join-Path $stage 'ExorSystem.exe')
+  Copy-Item $cli.FullName (Join-Path $stage 'exor.exe')
   foreach ($d in 'README.md', 'LICENSE', 'CHANGELOG.md', 'CREDITS.md') {
     $p = Join-Path $root $d
     if (Test-Path $p) { Copy-Item $p $stage }

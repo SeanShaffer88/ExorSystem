@@ -22,7 +22,7 @@ Use the **Windows candidate packages (no publish)** Actions workflow on the cand
 ./scripts/check-release.ps1 -ArtifactDir ./dist
 ```
 
-Use the **workflow artifact** for publication and for testing an unpublished candidate. When testing an already released version, [verify the exact published downloads](#7-verify-the-published-downloads-without-launching-them) instead. Keep `SHA256SUMS.txt` and `PACKAGE-CHECKS.json` with the three packages. The verification script checks their hashes, the NSIS PE header, the MSI x64 template, and the portable ZIP contents plus its executable's x64, `asInvoker`, and PerMonitorV2 manifest. It does **not** install or launch the packages. Local builds are useful for troubleshooting but are not a substitute for the exact workflow artifact you intend to release.
+Use the **workflow artifact** for publication and for testing an unpublished candidate. When testing an already released version, [verify the exact published downloads](#7-verify-the-published-downloads-without-launching-them) instead. Keep `SHA256SUMS.txt` and `PACKAGE-CHECKS.json` with the three packages. The verification script checks their hashes, the NSIS PE header, the MSI x64 template, and the portable ZIP contents plus its executable's x64, `asInvoker`, and PerMonitorV2 manifest. Candidates after v0.3.0 also carry the read-only `exor.exe` command line in the ZIP; the check confirms it is x64 and that `exor.exe version` reports the app version (a command that reads no profile and changes nothing). It does **not** install or launch the packages. Local builds are useful for troubleshooting but are not a substitute for the exact workflow artifact you intend to release.
 
 ## 2. Install, start, and remove each format
 
@@ -118,7 +118,7 @@ python -B ./scripts/verify-published-release.py $packages --release-info $info -
 if ($LASTEXITCODE) { throw 'Stop: published package verification did not pass.' }
 ```
 
-The verifier compares all five file sizes and SHA-256 digests with GitHub release metadata. It checks consistency with the candidate report, release notes, and published checksum file; inspects the NSIS launcher PE header, MSI compound-file header, and expected portable ZIP entries; and fingerprints the x64 desktop executable inside the ZIP. The candidate report is the evidence for the MSI x64 template and embedded manifest; this post-publication check does not rerun those SDK checks. It creates a new report without extracting, installing, launching, signing, or modifying any package. It requires the five-asset release layout used by the retained-candidate workflow; older releases without this metadata cannot pass.
+The verifier compares all five file sizes and SHA-256 digests with GitHub release metadata. It checks consistency with the candidate report, release notes, and published checksum file; inspects the NSIS launcher PE header, MSI compound-file header, and expected portable ZIP entries; and fingerprints the x64 desktop executable inside the ZIP. For tags after v0.3.0 the ZIP must also contain an x64 `exor.exe`, which is fingerprinted too; v0.3.0 and earlier must not contain it. The candidate report is the evidence for the MSI x64 template and embedded manifest; this post-publication check does not rerun those SDK checks. It creates a new report without extracting, installing, launching, signing, or modifying any package. It requires the five-asset release layout used by the retained-candidate workflow; older releases without this metadata cannot pass.
 
 ## 8. Observe first launch and exit on a disposable client
 

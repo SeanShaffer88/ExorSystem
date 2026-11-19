@@ -42,6 +42,8 @@ npm --prefix gui ci
 npm --prefix gui run build
 ```
 
+The read-only command line builds with `cargo build -p exor-cli`; see [docs/CLI.md](docs/CLI.md).
+
 The frontend builds separately from the desktop. To run the browser demo, use `npm --prefix gui run dev` and open the Vite URL. Its **Demo data** badge marks fixture data, not Windows observations. For the Windows desktop, see [development setup](docs/DEVELOPMENT.md#run-the-desktop) or the [package build instructions](docs/WINDOWS-RELEASE.md#1-build-a-candidate-without-publishing).
 
 ## Data

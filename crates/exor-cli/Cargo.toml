@@ -1,0 +1,29 @@
+[package]
+name = "exor-cli"
+description = "ExorSystem command line: read-only inventory, history and snapshot commands with JSON output"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "exor"
+path = "src/main.rs"
+
+[dependencies]
+exor-engine = { path = "../exor-engine" }
+exor-storage = { path = "../exor-storage" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+exor-win = { path = "../exor-win" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

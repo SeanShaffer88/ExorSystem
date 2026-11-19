@@ -28,7 +28,7 @@ pub use activity_window::{place_activity_window, show_activity_window};
 #[cfg(windows)]
 pub use desktop::{
     pick_path, prepare_user_data_dir, process_is_elevated, show_startup_error, uninstall_arguments,
-    uninstall_executable,
+    uninstall_executable, user_data_dir,
 };
 #[cfg(windows)]
 pub use packages_source::enumerate_packages;
