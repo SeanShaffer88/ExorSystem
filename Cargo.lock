@@ -72,11 +72,14 @@ dependencies = [
 name = "exor-cli"
 version = "0.3.0"
 dependencies = [
+ "exor-engine",
  "exor-storage",
+ "exor-win",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

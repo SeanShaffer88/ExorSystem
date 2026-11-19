@@ -352,17 +352,7 @@ fn prune_uninstalls(cache: &mut BTreeMap<String, (std::time::Instant, InstalledP
 
 /// Folders where programs usually leave files.
 fn leftover_roots() -> Vec<PathBuf> {
-    [
-        "ProgramFiles",
-        "ProgramFiles(x86)",
-        "ProgramData",
-        "LOCALAPPDATA",
-        "APPDATA",
-    ]
-    .iter()
-    .filter_map(std::env::var_os)
-    .map(PathBuf::from)
-    .collect()
+    leftovers::default_roots()
 }
 
 #[derive(Serialize)]

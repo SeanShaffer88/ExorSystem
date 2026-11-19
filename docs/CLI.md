@@ -1,6 +1,6 @@
 # `exor` CLI alpha (unreleased)
 
-`exor` is a read-only client for saved ExorSystem evidence. It is built from source and is **not** in the v0.3.0 packages. Use it for scripts that need an archive page or a recorded session's ledger. It does not run a Watch or uninstaller, move files, access the registry, elevate, or initialize a profile.
+`exor` is a read-only client for saved ExorSystem evidence and for the live system. It is **not** in the v0.3.0 packages; later portable ZIPs include `exor.exe` next to `ExorSystem.exe`, and it can be built from source. Use it for scripts that need an archive page, a recorded session's ledger, the installed-program list, leftover suggestions, folder snapshots or an environment check. It does not run a Watch or uninstaller, move files, write the registry, elevate, or initialize a profile. The only files it writes are a new snapshot (`--out`) or fix script (`--script`), never over an existing file.
 
 ## Build and try it
 
@@ -28,5 +28,39 @@ Successful query output is one JSON object on stdout: `schema_version: 1`, `kind
 | `0` | Query succeeded, even when no rows matched; `--help` and `--version` also succeed and print text. |
 | `1` | Profile, query, or output failure (including a missing session, mismatched schema, or unreadable database). |
 | `2` | Command usage error, such as a missing option, unknown flag, or invalid limit. |
+
+## Live-system commands
+
+These read the computer, not the profile, so they take no `--db`. They refuse to run with administrator rights (exit `1`), like the desktop. `programs`, `leftovers` and `env` need Windows. Each prints one JSON object with `schema_version: 1` and a `kind`, and lists its results in `rows`.
+
+| Command | `kind` | Returns |
+|---|---|---|
+| `exor programs [--all]` | `installed_programs` | Programs Windows lists as installed. `--all` includes system components and updates. |
+| `exor leftovers --program ID` | `leftover_suggestions` | Folders the program may have left behind, with reason, confidence and `can_quarantine`. Use an `id` from `programs`. Suggestions only; review and quarantine in the desktop. |
+| `exor snapshot --root PATH [--out FILE] [--strict]` | `folder_snapshot` | File count, digest and unreadable paths for a folder. `--out` writes an `exorsystem-snapshot` v1 file; `--strict` hashes every file's content. `complete: false` means some paths weren't read: unknown, not absent. |
+| `exor diff --before FILE --after FILE` | `snapshot_diff` | Added, removed and modified entries between two snapshot files. A path the later capture couldn't read is in `unreadable_in_after`, not counted as removed. |
+| `exor env [--script FILE]` | `environment_check` | PATH and toolchain-variable findings (below). |
+
+### Environment check
+
+`env` reads `Path`, `GOPATH`, `NODE_PATH` and `PYTHONPATH`, plus toolchain variables such as `JAVA_HOME`, `CARGO_HOME`, `GOROOT`, `ANDROID_HOME` and `DOTNET_ROOT`. It reads them exactly as stored for your account (`HKCU\Environment`) and for the machine, keeping `%NAME%` references as written.
+
+| Finding `kind` | `action` | Meaning |
+|---|---|---|
+| `duplicate` | `remove` | The same folder appears earlier in the variable (case, slashes and a trailing `\` are ignored) |
+| `duplicate_of_machine` | `remove` | A user PATH entry the machine PATH already has; Windows searches the machine PATH first |
+| `empty` | `remove` | `;;` (a single trailing `;` is ignored) |
+| `relative` | `review` | Not a full path, so it resolves against the current folder, a hijacking risk |
+| `unresolved` | `review` | `%NAME%` left after expansion |
+| `missing` | `review` | The folder doesn't exist |
+| `not_a_folder` | `review` | It names a file |
+
+`--script fix.ps1` also writes a PowerShell script for you to read and run yourself; `exor` never runs it. The script:
+- rebuilds each affected variable without the `remove` entries;
+- keeps every `review` entry, marked `# REVIEW:` (delete a line to drop that entry);
+- leaves toolchain variables alone unless you uncomment the line that clears one;
+- keeps the stored registry type (`REG_EXPAND_SZ` stays expandable);
+- changes machine variables only from an elevated PowerShell;
+- embeds the original values, so `-Undo` restores them.
 
 Errors are written to stderr. This alpha doesn't implement automated removal, quiet mode, or profile modification. Those operations require their own review and recovery contracts.
