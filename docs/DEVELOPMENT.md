@@ -25,7 +25,7 @@ cargo test --workspace --locked
 python3 scripts/check-licenses.py
 ```
 
-The root workspace covers engine, storage, filesystem primitives, and Windows sources. The Tauri shell has its own Cargo workspace; from `gui/src-tauri`, run `cargo fmt --check` and `cargo clippy --locked -- -D warnings` with the Windows toolchain. Windows-only collectors and native placement tests do not run on Linux.
+The root workspace covers engine, storage, filesystem primitives, Windows sources, and the read-only [`exor` CLI alpha](CLI.md). The Tauri shell has its own Cargo workspace; from `gui/src-tauri`, run `cargo fmt --check` and `cargo clippy --locked -- -D warnings` with the Windows toolchain. Windows-only collectors and native placement tests do not run on Linux.
 
 ## Run the desktop
 
@@ -50,17 +50,21 @@ npx playwright-core install --only-shell chromium
 npm run test:ui
 ```
 
-Linux may need Chromium system libraries (`npx playwright-core install-deps chromium`). The build type-checks the frontend and checks all 36 theme palettes for WCAG AA contrast. The four browser suites load the built UI with mocked Tauri IPC and exercise Watch/History, docking, cleanup approval, export, backup, and Activity log behavior. They do not run vendor uninstallers, use native IPC/WebView2, or write real app exports. Windows Rust placement tests use temporary native windows; they are not WebView2 tests either.
+Linux may need Chromium system libraries (`npx playwright-core install-deps chromium`). The build type-checks the frontend and checks all 36 theme palettes for WCAG AA contrast. The six browser suites load the built UI with mocked Tauri IPC and exercise Watch, archive search and paging, older inspector evidence, docking, cleanup approval, export, backup, Activity log, and the serial uninstall review queue. They do not run vendor uninstallers, use native IPC/WebView2, or write real app exports. Windows Rust placement tests use temporary native windows; they are not WebView2 tests either.
 
 For the standalone [dashboard demo](DASHBOARD.md#browser-preview), run `npm run dev` and open the Vite URL. **Demo data** marks the in-memory fixture; it does not inspect Windows or exercise the real profile.
 
+## CLI alpha
+
+`cargo build --locked -p exor-cli` builds `exor` from source. It consumes an explicitly supplied database in read-only mode. See the [CLI guide](CLI.md) for versioned JSON, paging and exit codes. `cargo test --locked -p exor-cli` exercises actual child-process calls with disposable SQLite profiles. This alpha is not in the installer or portable downloads.
+
 ## Build-only packages
 
-Use [Windows candidate packages (no publish)](WINDOWS-RELEASE.md#1-build-a-candidate-without-publishing) to retain the tested installer and ZIP artifacts. To publish, the separate [Release workflow](WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) promotes the exact candidate bytes after CI and static verification. Do not rebuild or reuse a release tag for validation.
+Use [Windows candidate packages (no publish)](WINDOWS-RELEASE.md#1-build-a-candidate-without-publishing) to retain the tested installer and ZIP artifacts. To publish, the separate [Release workflow](WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) promotes the exact candidate bytes after CI, static verification, and [reviewed native client sign-off](release-evidence/README.md). Do not rebuild or reuse a release tag for validation.
 
 ## Verify published packages or collect client evidence
 
-Use the [published-asset check](WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) for existing releases. Test its verifier locally with `python -B -m unittest discover -s scripts/tests -v` (Python 3.11+). It checks file hashes/provenance and package structure without launch. The [optional launch observer](WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client) requires a disposable Windows 10/11 x64 client; Windows Server CI only checks its syntax and server refusal. See the [evidence matrix](../AUDIT.md) before reporting results.
+Use the [published-asset check](WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) for existing releases. The published verifier checks hashes, provenance and structure without launch. `python -B -m unittest discover -s scripts/tests -v` (Python 3.11+) runs fixtures for that verifier and the client sign-off policy, without using real Windows evidence. The [optional launch observer](WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client) requires a disposable Windows 10/11 x64 client; Windows Server CI only checks its syntax and server refusal. See the [evidence matrix](../AUDIT.md) before reporting results.
 
 ## IPC and the UI thread
 

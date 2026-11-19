@@ -59,7 +59,7 @@ jobs:
         run: |
           try { ./scripts/check-release.ps1 }
           catch { Write-Host "::error title=Package check::$($_.Exception.Message)"; throw }
-      - name: Verify the candidate can be promoted without rebuilding
+      - name: Verify candidate hashes and provenance (no client sign-off yet)
         shell: pwsh
         run: |
           $commit = git rev-parse HEAD

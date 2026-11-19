@@ -20,6 +20,8 @@ Get [ExorSystem v0.3.0 for Windows x64](https://github.com/SeanShaffer88/ExorSys
 
 Start with the [dashboard guide](docs/DASHBOARD.md#watch-an-install). To try Watch without an installer, use [a disposable file-only fixture](docs/WINDOWS-RELEASE.md#3-verify-watch-and-history-with-real-files-and-registry-keys).
 
+Unreleased builds add a [searchable Watch archive](docs/DASHBOARD.md#browse-the-watch-archive-unreleased), a [serial uninstall review queue](docs/DASHBOARD.md#queue-uninstall-reviews-unreleased), and a source-built [read-only `exor` CLI alpha](docs/CLI.md) for saved evidence. Future stable releases require [reviewed native Windows 10/11 results](docs/release-evidence/README.md); the v0.3.0 packages and evidence are unchanged.
+
 ## Documentation
 
 | If you want to… | Start here |
