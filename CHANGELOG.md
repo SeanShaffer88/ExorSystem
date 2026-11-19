@@ -11,6 +11,7 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 - Build the read-only [`exor` CLI alpha](docs/CLI.md) from source to query saved Watch sessions and ledger pages with versioned JSON and bounded cursors. It does not run uninstallers or migrate profiles.
 - The uninstall preview shows the vendor uninstaller's Authenticode signature, checked offline (embedded or through a Windows catalog, without revocation lookups). An unsigned or untrusted uninstaller runs only after an extra confirmation. One changed after signing, or with a revoked or distrusted signer, never runs.
 - Before a reviewed cleanup moves files, Windows' Restart Manager reports which programs have them open. Apply stops and names those programs without using up the approval, so you can close them and choose Apply again. ExorSystem never closes programs itself.
+- `exor` live-system commands: `programs`, `leftovers --program`, `snapshot --root [--out] [--strict]`, `diff --before --after`, and `env [--script]` for PATH and toolchain-variable hygiene. They refuse to run elevated. The env fix script is reviewed and run by you, removes only duplicate and empty entries, and can `-Undo`. Portable ZIPs after v0.3.0 include `exor.exe`; the candidate check confirms it is x64 and that `exor --version` reports the app version.
 
 ### Changed
 - Future stable promotion requires a reviewed [native Windows 10/11 sign-off](docs/release-evidence/README.md) bound to every exact candidate package. This gate does not change v0.3.0 or claim a native run.

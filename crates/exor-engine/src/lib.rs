@@ -6,6 +6,7 @@ mod error;
 pub mod backup;
 pub mod cleanup;
 pub mod collectors;
+pub mod envcheck;
 pub mod events;
 pub mod execute;
 pub mod fingerprint;

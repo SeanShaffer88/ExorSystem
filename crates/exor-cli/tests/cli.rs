@@ -199,7 +199,7 @@ fn bad_arguments_and_missing_profiles_do_not_create_a_database() {
     fails(
         exor("uninstall", &db, &[]),
         2,
-        "expected the archive or history command",
+        "expected archive, history, programs, leftovers, snapshot, diff or env",
     );
     let help = Command::new(env!("CARGO_BIN_EXE_exor"))
         .args(["archive", "--help"])
@@ -239,4 +239,153 @@ fn schema_mismatch_is_not_migrated_or_modified() {
         );
         assert_eq!(std::fs::read(&db).unwrap(), before);
     }
+}
+
+// ---- live-system commands ----
+
+fn run(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_exor"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn s(p: &Path) -> &str {
+    p.to_str().unwrap()
+}
+
+/// GitHub's Windows runners are elevated, and the live-system commands refuse to run elevated
+/// (like the desktop). When elevated, check that refusal instead and skip the rest of the test.
+fn refused_when_elevated(args: &[&str]) -> bool {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let elevated = Command::new(Path::new(&root).join("System32").join("whoami.exe"))
+            .arg("/groups")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("S-1-16-12288"))
+            .unwrap_or(false);
+        if elevated {
+            fails(run(args), 1, "administrator rights");
+            return true;
+        }
+    }
+    let _ = args;
+    false
+}
+
+#[test]
+fn snapshot_and_diff_round_trip_without_overwriting() {
+    let d = tempfile::tempdir().unwrap();
+    let app = d.path().join("app");
+    std::fs::create_dir_all(app.join("sub")).unwrap();
+    std::fs::write(app.join("keep.txt"), b"same").unwrap();
+    std::fs::write(app.join("edit.txt"), b"before").unwrap();
+    std::fs::write(app.join("sub/gone.txt"), b"bye").unwrap();
+    let (before, after) = (d.path().join("before.json"), d.path().join("after.json"));
+    let first = ["snapshot", "--root", s(&app), "--out", s(&before)];
+    if refused_when_elevated(&first) {
+        assert!(!before.exists(), "nothing is written when refused");
+        return;
+    }
+    let v = json(run(&first));
+    assert_eq!(
+        (v["schema_version"].clone(), v["kind"].clone()),
+        (Value::from(1), Value::from("folder_snapshot"))
+    );
+    assert_eq!(v["files"], 3);
+    assert_eq!(v["complete"], true);
+    fails(run(&first), 1, "already exists");
+
+    std::fs::write(app.join("edit.txt"), b"after, and longer").unwrap();
+    std::fs::remove_file(app.join("sub/gone.txt")).unwrap();
+    std::fs::write(app.join("new.txt"), b"hello").unwrap();
+    json(run(&["snapshot", "--root", s(&app), "--out", s(&after)]));
+
+    let v = json(run(&["diff", "--before", s(&before), "--after", s(&after)]));
+    assert_eq!(v["kind"], "snapshot_diff");
+    assert_eq!(
+        (
+            v["added"].clone(),
+            v["removed"].clone(),
+            v["modified"].clone()
+        ),
+        (Value::from(1), Value::from(1), Value::from(1)),
+        "{v}"
+    );
+    let paths: Vec<&str> = v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.iter().any(|p| p.ends_with("new.txt")));
+    assert!(!paths.iter().any(|p| p.ends_with("keep.txt")));
+
+    std::fs::write(d.path().join("junk.json"), b"{}").unwrap();
+    fails(
+        run(&[
+            "diff",
+            "--before",
+            s(&before),
+            "--after",
+            s(&d.path().join("junk.json")),
+        ]),
+        1,
+        "not an ExorSystem snapshot",
+    );
+    fails(
+        run(&["snapshot", "--root", s(&d.path().join("nope"))]),
+        1,
+        "is not a folder",
+    );
+    fails(run(&["snapshot"]), 2, "--root PATH is required");
+    fails(
+        run(&["diff", "--before", s(&before)]),
+        2,
+        "--after PATH is required",
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn programs_leftovers_and_env_read_windows_without_changing_it() {
+    if refused_when_elevated(&["programs"]) {
+        return;
+    }
+    let v = json(run(&["programs"]));
+    assert_eq!(v["kind"], "installed_programs");
+    let rows = v["rows"].as_array().unwrap();
+    if let Some(id) = rows.first().and_then(|r| r["id"].as_str()) {
+        let v = json(run(&["leftovers", "--program", id]));
+        assert_eq!(v["kind"], "leftover_suggestions");
+        assert_eq!(v["program"]["id"], id);
+    }
+    fails(
+        run(&["leftovers", "--program", "no such program"]),
+        1,
+        "no installed program",
+    );
+    fails(run(&["leftovers"]), 2, "--program ID is required");
+
+    let v = json(run(&["env"]));
+    assert_eq!(v["kind"], "environment_check");
+    assert!(
+        v["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n == "machine:Path"),
+        "{v}"
+    );
+    let d = tempfile::tempdir().unwrap();
+    let script = d.path().join("fix.ps1");
+    let v = json(run(&["env", "--script", s(&script)]));
+    assert_eq!(v["script"], s(&script));
+    let bytes = std::fs::read(&script).unwrap();
+    assert!(
+        bytes.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "UTF-8 BOM for Windows PowerShell"
+    );
+    fails(run(&["env", "--script", s(&script)]), 1, "already exists");
 }
