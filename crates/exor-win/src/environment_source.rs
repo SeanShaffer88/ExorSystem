@@ -143,7 +143,27 @@ mod tests {
             .iter()
             .find(|v| v.scope == EnvScope::Machine)
             .expect("every Windows install has a machine Path");
-        assert!(machine.expandable, "machine Path is REG_EXPAND_SZ");
+        // Usually REG_EXPAND_SZ, but tools that set PATH through .NET store REG_SZ (as on GitHub's
+        // runners), so compare with what reg.exe reports instead of assuming.
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let out = std::process::Command::new(
+            std::path::Path::new(&root).join("System32").join("reg.exe"),
+        )
+        .args(["query", &format!("HKLM\\{MACHINE_KEY}"), "/v", "Path"])
+        .output()
+        .unwrap();
+        let listing = String::from_utf8_lossy(&out.stdout);
+        let reported = listing
+            .lines()
+            .find(|l| l.trim_start().to_lowercase().starts_with("path "))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .unwrap_or_else(|| panic!("no Path in: {listing}"))
+            .to_string();
+        assert_eq!(
+            machine.expandable,
+            reported == "REG_EXPAND_SZ",
+            "reg.exe says {reported}"
+        );
         assert!(
             machine.value.to_lowercase().contains("system32"),
             "{}",
