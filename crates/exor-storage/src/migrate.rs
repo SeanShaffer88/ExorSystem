@@ -61,6 +61,11 @@ fn ensure_table(conn: &Connection) -> Result<()> {
 /// Version currently applied (0 for a fresh database).
 pub fn current_version(conn: &Connection) -> Result<u32> {
     ensure_table(conn)?;
+    applied_version(conn)
+}
+
+/// Read an initialized database's schema version without issuing DDL.
+pub(crate) fn applied_version(conn: &Connection) -> Result<u32> {
     let v: Option<u32> = conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
         r.get(0)
     })?;

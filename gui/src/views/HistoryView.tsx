@@ -5,7 +5,7 @@ import { ChangeBadge, EvidenceDiff, changeStyle, domainIcon, domainText } from "
 import { Icon } from "../components/Icon";
 import { comparisonLabel, hasSkipped, WatchCoverageCards, WatchWarnings } from "../components/WatchCoverage";
 import { Badge, CardHeading, Empty, Intro, evidenceText, leafName } from "../components/Workspace";
-import type { ChangeDomain, ChangeKind, HistoryDates, HistoryPage, HistoryRow, Session, WatchSummary } from "../types";
+import type { ChangeDomain, ChangeKind, HistoryDates, HistoryPage, HistoryRow, Session, SessionHeader, WatchSummary } from "../types";
 
 type Result = { key: string; page?: HistoryPage; error?: string };
 function useHistoryPage(visible: boolean, path: string | null, sessionId: number | null, domain: ChangeDomain | null, limit: number, changeKind: ChangeKind | null, { fromDate, beforeDate }: HistoryDates) {
@@ -62,9 +62,14 @@ function SaveChanges({ path, sessionId, changeKind, dates }: { path: string | nu
   </details>;
 }
 
-export function HistoryView({ visible, initialSessionId, initialRow, onTrace, onWatch }: {
+function sessionLabel(s: SessionHeader) {
+  return `${s.app_name} (#${s.session_id})${s.status === "failed" ? " · Not completed" : s.status === "monitoring" ? " · In progress" : ""}`;
+}
+
+export function HistoryView({ visible, initialSessionId, initialRow, initialSession, onTrace, onWatch, onArchive }: {
   visible: boolean;
-  initialSessionId: number | null; initialRow?: HistoryRow; onTrace: (path: string) => void; onWatch: () => void;
+  initialSessionId: number | null; initialRow?: HistoryRow; initialSession?: SessionHeader;
+  onTrace: (path: string) => void; onWatch: () => void; onArchive: () => void;
 }) {
   const [filter, setFilter] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -79,7 +84,9 @@ export function HistoryView({ visible, initialSessionId, initialRow, onTrace, on
   const [refresh, setRefresh] = useState(0);
   const path = filter.trim() || null;
   const key = JSON.stringify([path, sessionId, changeKind, refresh, fromDate, beforeDate]);
-  const session = sessions.find((s) => s.session_id === sessionId);
+  const recentSession = sessions.find((s) => s.session_id === sessionId);
+  const archivedSession = initialSession && !sessions.some((s) => s.session_id === initialSession.session_id) ? initialSession : undefined;
+  const session = recentSession ?? (archivedSession?.session_id === sessionId ? archivedSession : undefined);
   useEffect(() => {
     if (!visible) return;
     setSessionError("");
@@ -90,12 +97,13 @@ export function HistoryView({ visible, initialSessionId, initialRow, onTrace, on
 
   return <section className="workspace-page" aria-labelledby="history-title">
     <Intro id="history-title" kicker="SYSTEM EVIDENCE" title="Change inspector" description="Compare registry and file system observations side by side. Snapshots show what changed, not which process did it."
-      actions={<><button type="button" className="quiet-button" onClick={() => { setOpeningRow(undefined); setRefresh((n) => n + 1); }}><Icon name="refresh"/> Refresh</button><button type="button" className="primary" onClick={onWatch}><Icon name="plus"/> Watch an install</button></>}/>
+      actions={<><button type="button" className="quiet-button" onClick={() => { setOpeningRow(undefined); setRefresh((n) => n + 1); }}><Icon name="refresh"/> Refresh</button><button type="button" className="quiet-button" onClick={onArchive}><Icon name="archive"/> Browse Watch archive</button><button type="button" className="primary" onClick={onWatch}><Icon name="plus"/> Watch an install</button></>}/>
     <div className="card inspector-toolbar">
       <div className="field"><label htmlFor="inspect-session">Installation</label><select id="inspect-session" value={sessionId ?? ""} onChange={(e) => { setSessionId(e.target.value ? Number(e.target.value) : null); setOpeningRow(undefined); }}>
         <option value="">All installations and unassigned changes</option>
-        {sessionId !== null && !sessions.some((s) => s.session_id === sessionId) && <option value={sessionId}>Session #{sessionId}</option>}
-        {sessions.map((s) => <option key={s.session_id} value={s.session_id}>{s.app_name} (#{s.session_id}){s.status === "failed" ? " · Not completed" : s.status === "monitoring" ? " · In progress" : ""}</option>)}
+        {archivedSession && <option value={archivedSession.session_id}>{sessionLabel(archivedSession)}</option>}
+        {sessionId !== null && !session && <option value={sessionId}>Session #{sessionId}</option>}
+        {sessions.map((s) => <option key={s.session_id} value={s.session_id}>{sessionLabel(s)}</option>)}
       </select></div>
       <label className="field inspector-search">Filter by path<span className="search-box"><Icon name="search"/><input type="search" placeholder="Search the recorded path" value={filter} onChange={(e) => { setFilter(e.target.value); setOpeningRow(undefined); }}/></span></label>
       <div className="field"><label htmlFor="inspect-kind">Change type</label><select id="inspect-kind" value={changeKind ?? ""} onChange={(e) => {
@@ -130,7 +138,7 @@ function SavedWatchCoverage({ visible, sessionId }: { visible: boolean; sessionI
   }, [attempt, sessionId, visible]);
   const summary = result && "summary" in result ? result.summary : null;
   return <section className="card tool-card" aria-label="Saved watch coverage">
-    <CardHeading title="Watch coverage" icon="registry" tone="violet" subtitle={`Session #${sessionId} · Saved snapshot comparison`}
+    <CardHeading title="Watch coverage" icon="registry" tone="violet" subtitle={`Session #${sessionId}${summary ? " · Saved snapshot comparison" : ""}`}
       action={summary && <Badge tone={hasSkipped(summary.coverage) ? "review" : "safe"} dot>{comparisonLabel(summary.coverage)}</Badge>}/>
     {!result ? <p role="status" className="muted">Loading watch coverage…</p> : "error" in result
       ? <div className="watch-result"><p className="error" role="alert">Could not load watch coverage: {result.error}</p>

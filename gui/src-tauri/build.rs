@@ -46,6 +46,7 @@ const COMMANDS: &[&str] = &[
     "stop_watch_capture",
     "storage_usage",
     "update_risk",
+    "watch_archive",
     "watch_comparison",
 ];
 

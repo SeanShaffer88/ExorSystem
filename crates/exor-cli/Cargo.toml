@@ -1,0 +1,25 @@
+[package]
+name = "exor-cli"
+description = "Read-only command-line access to saved ExorSystem evidence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "exor"
+path = "src/main.rs"
+
+[dependencies]
+exor-storage = { path = "../exor-storage" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_run_id:
-        description: Successful Windows candidate packages Actions run ID
+        description: Windows candidate run ID with reviewed Windows 10/11 sign-off on the default branch
         required: true
         type: string
 
@@ -38,15 +38,24 @@ jobs:
             echo 'The run must be a successful candidate build in this repository.' >&2; exit 1;
           }
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-          base="$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...$DEFAULT_BRANCH" --jq '.merge_base_commit.sha')"
+          base="$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...$GITHUB_SHA" --jq '.merge_base_commit.sha')"
           [[ "$base" == "$sha" ]] || { echo 'The tested candidate commit must be reachable from the default branch.' >&2; exit 1; }
           ci="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
             -f head_sha="$sha" -f status=success -F per_page=1 --jq '.workflow_runs[0].html_url // empty')"
           [[ -n "$ci" ]] || { echo 'No passing CI run for the tested candidate commit.' >&2; exit 1; }
           printf 'commit=%s\nci_url=%s\n' "$sha" "$ci" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      # A candidate may predate the gate. It supplies version metadata and notes, never policy code.
+      - name: Check out release policy and reviewed client evidence
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-policy
+          persist-credentials: false
+      - name: Check out candidate metadata and release notes
+        uses: actions/checkout@v4
         with:
           ref: ${{ steps.candidate.outputs.commit }}
+          path: candidate-source
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -54,22 +63,39 @@ jobs:
           path: dist
           run-id: ${{ inputs.candidate_run_id }}
           github-token: ${{ github.token }}
-      - name: Verify and publish the candidate without rebuilding
+      - name: Require exact candidate bytes and passing native sign-off
+        id: verified
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ steps.candidate.outputs.commit }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
+        run: |
+          evidence="docs/release-evidence/$CANDIDATE_RUN.json"
+          matrix="$RUNNER_TEMP/exor-client-matrix.md"
+          version="$(python3 release-policy/scripts/verify-release-candidate.py dist \
+            --source-root candidate-source --commit "$CANDIDATE_COMMIT" --run-id "$CANDIDATE_RUN" \
+            --client-evidence "release-policy/$evidence" --client-matrix-out "$matrix")"
+          cat "$matrix" >> "$GITHUB_STEP_SUMMARY"
+          printf 'version=%s\nevidence=%s\n' "$version" "$evidence" >> "$GITHUB_OUTPUT"
+      - name: Publish the verified candidate without rebuilding
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_COMMIT: ${{ steps.candidate.outputs.commit }}
           CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
           CI_URL: ${{ steps.candidate.outputs.ci_url }}
+          VERSION: ${{ steps.verified.outputs.version }}
+          EVIDENCE: ${{ steps.verified.outputs.evidence }}
         run: |
-          version="$(python3 scripts/verify-release-candidate.py dist --commit "$CANDIDATE_COMMIT" --run-id "$CANDIDATE_RUN")"
-          tag="v$version"
+          tag="v$VERSION"
           has_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" | jq -r --arg ref "refs/tags/$tag" 'any(.[]; .ref == $ref)')"
           [[ "$has_tag" == false ]] || { echo "Refusing to reuse existing tag $tag." >&2; exit 1; }
           notes="$RUNNER_TEMP/exor-release-notes.md"
-          cp "docs/releases/$tag.md" "$notes"
-          printf '\n## Verification\n\n- Source commit: `%s`\n- [Automated CI](%s)\n- [Windows candidate package run](%s/%s/actions/runs/%s)\n\nThese are automated build and package checks, not interactive Windows 10/11 test results.\n' \
-            "$CANDIDATE_COMMIT" "$CI_URL" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$CANDIDATE_RUN" >> "$notes"
+          cp "candidate-source/docs/releases/$tag.md" "$notes"
+          printf '\n## Verification\n\n- Source commit: `%s`\n- [Automated CI](%s)\n- [Windows candidate package run](%s/%s/actions/runs/%s)\n- [Reviewed native client results and exact package hashes](%s/%s/blob/%s/%s)\n\n' \
+            "$CANDIDATE_COMMIT" "$CI_URL" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$CANDIDATE_RUN" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$EVIDENCE" >> "$notes"
+          cat "$RUNNER_TEMP/exor-client-matrix.md" >> "$notes"
           prefix="dist/ExorSystem-$tag-x64"
           gh release create "$tag" "$prefix-Setup.exe" "$prefix.msi" "$prefix-Portable.zip" \
             dist/SHA256SUMS.txt dist/PACKAGE-CHECKS.json \
