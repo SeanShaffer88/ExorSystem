@@ -52,6 +52,7 @@
     "allow-stop-watch-capture",
     "allow-storage-usage",
     "allow-update-risk",
+    "allow-watch-archive",
     "allow-watch-comparison"
   ]
 }

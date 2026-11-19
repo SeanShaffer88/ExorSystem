@@ -1309,6 +1309,7 @@ fn run() -> Result<(), String> {
             inventory::forget_portable_program,
             archive::history,
             archive::save_changes,
+            archive::watch_archive,
             archive::watch_comparison,
             archive::recent_watch_runs,
             export_report,

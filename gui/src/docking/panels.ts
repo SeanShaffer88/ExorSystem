@@ -6,6 +6,7 @@ const catalog = {
   overview: { title: "Overview", icon: "overview" },
   sessions: { title: "Applications", icon: "apps" },
   watch: { title: "Registry monitor", icon: "registry", enabled: flags.watchView },
+  watchArchive: { title: "Watch archive", icon: "archive", enabled: flags.watchView },
   history: { title: "Change inspector", icon: "changes" },
   quarantine: { title: "Cleanup summary", icon: "shield", enabled: flags.quarantineView },
   simulator: { title: "Policy simulator", icon: "sliders" },
@@ -24,7 +25,7 @@ export const isPanel = (id: unknown): id is PanelId =>
   typeof id === "string" && Object.hasOwn(catalog, id) && panel(id as PanelId).enabled !== false;
 
 const groups: { label: string; ids: PanelId[] }[] = [
-  { label: "Workspace", ids: ["overview", "sessions", "watch", "history"] },
+  { label: "Workspace", ids: ["overview", "sessions", "watch", "watchArchive", "history"] },
   { label: "Cleanup", ids: ["quarantine", "simulator", "scan"] },
   { label: "Analysis", ids: ["provenance", "risk"] },
   { label: "Output", ids: ["terminal", "activity"] },

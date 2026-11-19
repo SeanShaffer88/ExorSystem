@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-log-is-open"
+description = "Enables the log_is_open command without any pre-configured scope."
+commands.allow = ["log_is_open"]
+
+[[permission]]
+identifier = "deny-log-is-open"
+description = "Denies the log_is_open command without any pre-configured scope."
+commands.deny = ["log_is_open"]

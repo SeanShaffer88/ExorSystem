@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-finish-watch"
+description = "Enables the finish_watch command without any pre-configured scope."
+commands.allow = ["finish_watch"]
+
+[[permission]]
+identifier = "deny-finish-watch"
+description = "Denies the finish_watch command without any pre-configured scope."
+commands.deny = ["finish_watch"]

@@ -19,6 +19,7 @@ Tauri `log` WebView: separate permissions for Activity log only
 |---|---|
 | `gui/` | Dockable workspace, side-by-side change lists, exact cleanup review, and keyboard controls. The Vite demo and browser test IPC fixtures are not native evidence. |
 | `gui/src-tauri/` | Validates incoming commands, owns state and approval plans, and bounds concurrent work. The `main` capability serves the workspace; `log` can access only its log commands, not cleanup, profile, or vendor-uninstall operations. |
+| `crates/exor-cli/` (unreleased) | Read-only JSON access to the same saved session and ledger queries; no Tauri, live capture, profile creation, or mutation. |
 | `crates/exor-engine/` | Safe Rust logic for file snapshots, BLAKE3 fingerprints, diffing, comparison coverage, program/session evidence, policy, quarantine, and archives. |
 | `crates/exor-storage/` | Safe Rust storage using SQLite WAL with transactional schema changes and ledger writes. |
 | `crates/exor-win/` and `crates/exor-fs/` | Platform adapters: registry/inventory/SCM reads, token and known-folder checks, native window placement, open-file identities and bounded filesystem publication primitives. |
@@ -35,13 +36,17 @@ Desktop Watch is **before/after snapshots**, not continuous capture. The NTFS US
 
 The shell merges classic uninstall registrations, current-user MSIX packages, opted-in portable entries, and local session records. Only a supported live machine-wide classic registration can supply a vendor invocation. Preview and launch resolve the registration separately; launch rejects changes to the reviewed executable or arguments, and does not fall back to a shell or elevation. Use Windows Settings for per-user or unsupported uninstallers. A recently uninstalled app can be reviewed for leftovers until the session ends. Software key names, service executables, and task matches are read-only suggestions, not file movement authority.
 
+The unreleased uninstall review queue is UI state in Applications, bounded to 12 display identities and session-local outcomes. It keeps neither commands nor approvals. Each item uses the same live preview and explicitly confirmed invocation as the individual wizard, with the existing exclusive desktop job gate. An exit outcome is not a verified removal. The queue adds no native command, unattended launch, persistence, or cleanup authority.
+
 ## Driverless install watch
 
 Watch reads only selected folders, bounded Software subtrees, and opted-in service or task metadata. An absent scope can be a valid snapshot input; a read/hash failure, incomplete task read, or unreadable, redirected, or over-limit registry scope is skipped instead of treated as empty. Registry capture records key paths and last-write stamps, not values. Differences from usable pairs are recorded as `snapshot_diff` with heuristic attribution. The snapshots are not atomic and do not attribute work to a process.
 
 File comparisons use path tries and BLAKE3 hashes; ordinary capture can reuse hashes for unchanged metadata, while **Strict file comparison** hashes the content again. Comparison only uses usable pairs. The engine commits the coverage summary, ledger rows, graph changes, and final status together. A comparison with no usable pairs can save incomplete coverage without observations; stopping before commit or a failed write does not save a comparison. The baseline is in memory and cannot resume after restart.
 
-## Change history and exports
+## Watch archive and change history
+
+The unreleased Watch archive reads a main-window-only `watch_archive` command on the read-only WAL path. SQLite filters `installation_sessions` by literal application name (ASCII case-insensitive), exact `#ID`, and optional stored lifecycle status before applying an exclusive session-ID cursor. It left-joins `watch_comparisons`, returning up to 20 sessions per page without reading the ledger or sending paths and skip diagnostics. A missing summary does not identify a run's origin, establish coverage, or count as zero changes. No schema change or backfill is needed. The session ID opens the existing inspector, which loads coverage and observations independently.
 
 History reads the append-only ledger, including observations without a known node. The session, literal path, optional source domain, change kind, and UTC filters apply before paging. An exclusive `entry_id` cursor keeps older pages stable as new observations arrive. Saved coverage is read independently; older sessions without it remain unknown. The inspector shows recorded fingerprints and key-change evidence, not file contents or registry values. Timeline shows all domains; the relationship graph follows recorded links, not an exhaustive Windows dependency scan. JSON export uses the same requested filters across all domains and a bounded continuation cursor.
 
@@ -57,7 +62,7 @@ A verified profile copy contains a SQLite snapshot, manifests, and held bytes. R
 
 The [panel catalog](../gui/src/docking/panels.ts) and layout reducer own dock placement, focus, and sizing. The `exor.workspace.layout.v1` preference stores validated layout choices, not file paths or capture state. Initialized tool frames stay mounted across panel moves or hides, so a Watch or Scan is not restarted by rearranging the workspace. Explicit context links update a destination that is already open. Compact mode exposes one dock at a time without overwriting saved sizes. Applications scrolls its detail card independently or switches to a detail page in a narrow dock.
 
-On Windows, `log` is an owned top-level window attached below `main`. Placement uses physical monitor work bounds; the main window reclaims maximized work area on log close without changing the saved normal bounds. The log's geometry/open state is not persisted. The status bar reads only the latest message and clear watermark via `log_status`; the log window reads the 1,000-line ring via `get_log`. Sequence numbers and a clear watermark prevent old events from resurrecting cleared messages. This ring is not the evidence ledger and accepts no commands from displayed text. See [workspace controls](DASHBOARD.md#arrange-the-workspace) and the [optional client checks](WINDOWS-RELEASE.md#5-accessibility-and-optional-client-evidence).
+On Windows, `log` is an owned top-level window attached below `main`. Placement uses physical monitor work bounds; the main window reclaims maximized work area on log close without changing the saved normal bounds. The log's geometry/open state is not persisted. The status bar reads only the latest message and clear watermark via `log_status`; the log window reads the 1,000-line ring via `get_log`. Sequence numbers and a clear watermark prevent old events from resurrecting cleared messages. This ring is not the evidence ledger and accepts no commands from displayed text. See [workspace controls](DASHBOARD.md#arrange-the-workspace) and the [native client checks](WINDOWS-RELEASE.md#5-accessibility-and-native-client-evidence).
 
 ## Known limitations
 

@@ -6,8 +6,14 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ### Added
 - Read-only rechecks of the published NSIS, MSI, and portable ZIP against GitHub digests and the retained-candidate evidence. A separate opt-in launch observer records minimal evidence on disposable Windows 10/11 clients. See [PR #33](https://github.com/SeanShaffer88/ExorSystem/pull/33) and the [verification matrix](AUDIT.md#v030-release-evidence). No client run is claimed and the published packages are unchanged.
+- Search the **Watch archive** by application name or session ID and filter by lifecycle status. Open original evidence in Change inspector, including sessions older than its picker. The archive distinguishes unfinished sessions and unknown coverage from saved comparisons with no comparable scopes or zero recorded changes. No migration or re-capture is required.
+- Select up to 12 supported classic apps for a [serial uninstall review](docs/DASHBOARD.md#queue-uninstall-reviews-unreleased). Each item needs a fresh preview and confirmation; record an exit outcome, skip, or explicitly retry. The in-memory queue does not automate cleanup or quiet execution.
+- Build the read-only [`exor` CLI alpha](docs/CLI.md) from source to query saved Watch sessions and ledger pages with versioned JSON and bounded cursors. It does not run uninstallers or migrate profiles.
 - The uninstall preview shows the vendor uninstaller's Authenticode signature, checked offline (embedded or through a Windows catalog, without revocation lookups). An unsigned or untrusted uninstaller runs only after an extra confirmation. One changed after signing, or with a revoked or distrusted signer, never runs.
 - Before a reviewed cleanup moves files, Windows' Restart Manager reports which programs have them open. Apply stops and names those programs without using up the approval, so you can close them and choose Apply again. ExorSystem never closes programs itself.
+
+### Changed
+- Future stable promotion requires a reviewed [native Windows 10/11 sign-off](docs/release-evidence/README.md) bound to every exact candidate package. This gate does not change v0.3.0 or claim a native run.
 
 ### Documentation
 - Refresh the README, roadmap, architecture, and release guides. Keep the live-source lab separate from the released desktop, and link static and native evidence separately from the [documentation index](docs/README.md).

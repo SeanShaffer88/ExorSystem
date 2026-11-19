@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rotate-archived-batch"
+description = "Enables the rotate_archived_batch command without any pre-configured scope."
+commands.allow = ["rotate_archived_batch"]
+
+[[permission]]
+identifier = "deny-rotate-archived-batch"
+description = "Denies the rotate_archived_batch command without any pre-configured scope."
+commands.deny = ["rotate_archived_batch"]

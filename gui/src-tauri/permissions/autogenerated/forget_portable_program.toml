@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-forget-portable-program"
+description = "Enables the forget_portable_program command without any pre-configured scope."
+commands.allow = ["forget_portable_program"]
+
+[[permission]]
+identifier = "deny-forget-portable-program"
+description = "Denies the forget_portable_program command without any pre-configured scope."
+commands.deny = ["forget_portable_program"]

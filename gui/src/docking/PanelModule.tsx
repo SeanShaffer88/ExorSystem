@@ -1,5 +1,5 @@
 import type { ActivityLogState } from "../components/ActivityLog";
-import type { HistoryRow } from "../types";
+import type { HistoryRow, SessionHeader } from "../types";
 import { ActivityView } from "../views/ActivityView";
 import { AppearanceView } from "../views/AppearanceView";
 import { HistoryView } from "../views/HistoryView";
@@ -12,12 +12,13 @@ import { SessionsView } from "../views/SessionsView";
 import { SettingsView } from "../views/SettingsView";
 import { SimulatorView } from "../views/SimulatorView";
 import { TerminalView } from "../views/TerminalView";
+import { WatchArchiveView } from "../views/WatchArchiveView";
 import { WatchView } from "../views/WatchView";
 import type { PanelId } from "./panels";
 
 export type Inputs = {
   sessions: string;
-  history: { sessionId: number | null; row?: HistoryRow };
+  history: { sessionId: number | null; row?: HistoryRow; session?: SessionHeader };
   provenance: string;
   simulator: number;
   terminal: string;
@@ -36,15 +37,18 @@ export function PanelModule({ id, visible, requests, navigation, log, onWatching
   const inspect = (sessionId: number | null, row?: HistoryRow) => request("history", { sessionId, row });
   const trace = (path: string) => request("provenance", path);
   const watch = () => open("watch");
+  const archive = () => open("watchArchive");
   const cleanup = () => open("quarantine");
   switch (id) {
     case "overview": return <OverviewView visible={visible} onApplications={(programId) => programId ? request("sessions", programId) : open("sessions")}
       onWatch={watch} onHistory={(row) => inspect(row?.session_id ?? null, row)} onCleanup={cleanup}/>;
     case "sessions": return <SessionsView key={requests.sessions?.revision} visible={visible} initialProgramId={requests.sessions?.value ?? null}
       onTrace={trace} onHistory={inspect} onSimulate={(sessionId) => request("simulator", sessionId)} onCleanup={cleanup} onTerminal={(programId) => request("terminal", programId)}/>;
-    case "watch": return <WatchView hidden={!visible} onOpenHistory={inspect} onWatching={onWatching}/>;
+    case "watch": return <WatchView hidden={!visible} onOpenHistory={inspect} onOpenArchive={archive} onWatching={onWatching}/>;
+    case "watchArchive": return <WatchArchiveView visible={visible}
+      onInspect={(session) => request("history", { sessionId: session.session_id, session })}/>;
     case "history": return <HistoryView key={requests.history?.revision} visible={visible} initialSessionId={requests.history?.value.sessionId ?? null}
-      initialRow={requests.history?.value.row} onTrace={trace} onWatch={watch}/>;
+      initialRow={requests.history?.value.row} initialSession={requests.history?.value.session} onTrace={trace} onWatch={watch} onArchive={archive}/>;
     case "provenance": return <ProvenanceView key={requests.provenance?.revision} initialPath={requests.provenance?.value ?? ""}/>;
     case "simulator": return <SimulatorView key={requests.simulator?.revision} visible={visible} initialSessionId={requests.simulator?.value ?? null}/>;
     case "quarantine": return <QuarantineView visible={visible} onSimulate={() => open("simulator")}/>;

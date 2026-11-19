@@ -138,6 +138,23 @@ export interface WatchRun {
   summary: WatchSummary;
 }
 
+export type SessionHeader = Pick<Session, "session_id" | "app_name" | "started_at" | "ended_at" | "status">;
+
+export interface WatchArchiveRow extends SessionHeader {
+  comparison: { coverage: WatchCoverage; recorded_changes: number | null } | null;
+}
+
+export interface WatchArchivePage {
+  rows: WatchArchiveRow[];
+  next_before_id: number | null;
+}
+
+export interface WatchArchiveFilters {
+  search: string | null;
+  status: Session["status"];
+  beforeId: number | null;
+}
+
 export interface InstalledProgram {
   id: string;
   source: "registry" | "msix" | "portable";

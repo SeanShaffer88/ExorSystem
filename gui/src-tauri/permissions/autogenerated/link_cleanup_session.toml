@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-link-cleanup-session"
+description = "Enables the link_cleanup_session command without any pre-configured scope."
+commands.allow = ["link_cleanup_session"]
+
+[[permission]]
+identifier = "deny-link-cleanup-session"
+description = "Denies the link_cleanup_session command without any pre-configured scope."
+commands.deny = ["link_cleanup_session"]

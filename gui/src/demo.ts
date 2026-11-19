@@ -1,7 +1,7 @@
 // Vite development only. Synthetic in-memory responses; no native command, registry or file access.
 import { installFixture } from "./bridge";
 import type { LogLine } from "./logApi";
-import type { AppInfo, BatchPreview, Decision, GraphNode, HistoryRow, InstalledProgram, LeftoverReview, PlanHeader, PlanRequest, ProgramRow, QuarantineRow, RelationshipGraph, Session, SessionItems, UninstallPreview, WatchRun, WatchStart, WatchSummary, WatchSystem } from "./types";
+import type { AppInfo, BatchPreview, Decision, GraphNode, HistoryRow, InstalledProgram, LeftoverReview, PlanHeader, PlanRequest, ProgramRow, QuarantineRow, RelationshipGraph, Session, SessionItems, UninstallPreview, WatchArchiveFilters, WatchArchivePage, WatchArchiveRow, WatchRun, WatchStart, WatchSummary, WatchSystem } from "./types";
 
 const MiB = 1024 ** 2;
 const KiB = 1024;
@@ -70,17 +70,27 @@ const templates = [
 
 export function startDemo() {
   const rows = demoPrograms();
-  const sessions = [session(19, "Interrupted Watch Example", "failed"),
-    { ...session(18, "Visual Studio Code"), ended_at: "2026-11-18 06:16:00" },
-    session(17, "7-Zip"), session(16, "Microsoft PowerToys"), session(15, "Blender")];
+  const sessions = [
+    { ...session(22, "Example Editor (cancelled)", "failed"), started_at: "2026-11-18 07:29:00", ended_at: "2026-11-18 07:31:00" },
+    { ...session(21, "Windows Terminal"), started_at: "2026-11-18 07:00:00", ended_at: "2026-11-18 07:10:00" },
+    { ...session(20, "Example Editor (skipped)", "failed"), started_at: "2026-11-18 06:50:00", ended_at: "2026-11-18 06:55:00" },
+    session(19, "Interrupted Watch Example", "failed"),
+    { ...session(18, "Visual Studio Code"), started_at: "2026-11-18 06:11:00", ended_at: "2026-11-18 06:16:00" },
+    session(17, "7-Zip"), session(16, "Microsoft PowerToys"), session(15, "Blender"),
+    ...programs.map(([name], i) => session(14 - i, name)),
+    session(2, "Example Editor (archived)"), session(1, "Classic Editor 1.0", null),
+  ];
   const observations = [...initialRows];
   const scope = (requested: number, usable = requested) => ({ requested, usable });
+  const zero = { files_changed: 0, registry_keys_changed: 0, services_changed: 0, tasks_changed: 0 };
+  const folderCoverage = (usable: number) => ({ folders: scope(1, usable), registry: scope(0), services: scope(0), tasks: scope(0) });
   const comparisons = new Map<number, WatchSummary>([[18, {
     session_id: 18,
     coverage: { folders: scope(2, 1), registry: scope(2), services: scope(1), tasks: scope(1) },
     files_changed: 3, registry_keys_changed: 3, services_changed: 1, tasks_changed: 1,
     warnings: ["Demo: one folder was not captured after changes because access was denied."],
-  }]]);
+  }], [21, { ...zero, session_id: 21, coverage: folderCoverage(1), warnings: [] }],
+  [20, { ...zero, session_id: 20, coverage: folderCoverage(0), warnings: ["Demo: the folder could not be read after changes."] }]]);
   const batches: QuarantineRow[] = [
     { quarantine_id: "q19ab5-0004", session_id: 18, files: 19, file_bytes: 264 * MiB, status: "quarantined" },
     { quarantine_id: "q19a71-0003", session_id: 15, files: 88, file_bytes: 1311 * MiB, status: "purged" },
@@ -167,7 +177,29 @@ export function startDemo() {
           ...rows.filter((r) => r.program.source !== "portable"),
           ...[...portable].map(([executable, name]) => ({ program: { ...rows[0]!.program, source: "portable", id: `portable:${executable}`, scope: "user", name, version: null, publisher: null, size_kb: null, install_location: executable, uninstall_command: null, install_date: null }, removed: false, inferred_session_ids: [], session_ids: [] })),
         ].map((r) => ({ ...r })), warnings: [] };
-        case "list_sessions": return [...sessions];
+        case "list_sessions": return sessions.slice(0, 150);
+        case "watch_archive": {
+          const { search, status, beforeId } = args.filters as WatchArchiveFilters;
+          const term = search?.trim() ?? "";
+          if (new TextEncoder().encode(term).length > 240 || /[\u0000-\u001f\u007f-\u009f]/.test(term)) {
+            throw new Error("Enter at most 240 bytes without control characters.");
+          }
+          const ascii = (value: string) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+          const byId = /^#\d+$/.test(term);
+          const id = byId ? BigInt(term.slice(1)) : null;
+          if (id !== null && (id <= 0n || id > 9223372036854775807n)) throw new Error("Expected a positive session ID after #.");
+          const matches = sessions.filter((s) => (status === null || s.status === status)
+            && (beforeId === null || s.session_id < beforeId)
+            && (id === null ? ascii(s.app_name).includes(ascii(term)) : BigInt(s.session_id) === id));
+          const rows: WatchArchiveRow[] = matches.slice(0, 20).map(({ session_id, app_name, started_at, ended_at, status }) => {
+            const summary = comparisons.get(session_id);
+            const comparison = summary ? { coverage: summary.coverage, recorded_changes: Object.values(summary.coverage).some((s) => s.usable)
+              ? (summary.coverage.folders.usable ? summary.files_changed : 0) + (summary.coverage.registry.usable ? summary.registry_keys_changed : 0)
+                + (summary.coverage.services.usable ? summary.services_changed : 0) + (summary.coverage.tasks.usable ? summary.tasks_changed : 0) : null } : null;
+            return { session_id, app_name, started_at, ended_at, status, comparison };
+          });
+          return { rows, next_before_id: matches.length > 20 ? rows.at(-1)!.session_id : null } satisfies WatchArchivePage;
+        }
         case "watch_comparison": return comparisons.get(Number(args.sessionId)) ?? null;
         case "recent_watch_runs": return sessions.flatMap((s) => {
           const summary = comparisons.get(s.session_id);
@@ -280,16 +312,19 @@ export function startDemo() {
           return { found: true, summary: `${focus.path} has ${edges.length} recorded relationship(s) in this demo.`, confidence: .3, graph: { focus, links: edges, total_edges: edges.length }, ledger };
         }
         case "begin_watch": {
-          if (active) throw new Error("A watch is already open.");
+          if (active || capture) throw new Error("A watch is already open.");
           const request = args.request as { appName: string; folders: string[]; registrySubtrees: string; system: WatchSystem };
           const { folders, system } = request;
           const registry = request.registrySubtrees.split("\n").map((p) => p.trim()).filter(Boolean);
           const warnings = system.tasks ? ["Demo: scheduled tasks were not checked because access was denied."] : [];
           const coverage = { folders: scope(folders.length), registry: scope(registry.length), services: scope(Number(system.services)), tasks: scope(Number(system.tasks), 0) };
-          if (!Object.values(coverage).some((entry) => entry.usable)) throw new Error("No requested scopes could be captured in the demo. Choose a folder, registry subtree, or services.");
-          if (await captureAfter(args, 800)) { updateLog("Demo: stopped the baseline."); return null; }
           const id = sessions[0]!.session_id + 1;
-          sessions.unshift(session(id, request.appName, "monitoring"));
+          sessions.unshift({ ...session(id, request.appName, "monitoring"), started_at: utcText() });
+          if (await captureAfter(args, 800)) { closeSession(id, "failed"); updateLog("Demo: stopped the baseline."); return null; }
+          if (!Object.values(coverage).some((entry) => entry.usable)) {
+            closeSession(id, "failed");
+            throw new Error("No requested scopes could be captured in the demo. Choose a folder, registry subtree, or services.");
+          }
           const baseline = { session_id: id, coverage, warnings };
           active = { baseline, folder: folders[0], registry: registry[0] };
           return baseline;

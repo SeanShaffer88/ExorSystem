@@ -23,6 +23,17 @@ export async function mockDesktop(page) {
     const params = new URLSearchParams(location.search);
     const stressInventory = params.has('inventory-stress');
     const desktopSlices = params.has('desktop-slices');
+    const archiveStress = params.has('watch-archive');
+    const queueRows = params.has('uninstall-queue') ? Array.from({ length: 18 }, (_, i) => {
+      const name = `Queue Lab ${String(i + 1).padStart(2, '0')}`;
+      const root = `C:\\Program Files\\${name}`;
+      return { program: { ...app, id: `queue-${i + 1}`, name, install_location: root,
+        uninstall_command: `"${root}\\Vendor.exe" --interactive` }, removed: false, inferred_session_ids: [], session_ids: [] };
+    }) : [];
+    const queuePlans = new Map();
+    const queuePreviews = new Map();
+    const queueRemoved = new Set();
+    let queueRunning = false;
     const stressRows = stressInventory ? Array.from({ length: 32 }, (_, i) => ({
       program: { ...standard, source: 'registry', id: `stress-${i + 1}`, name: `Inventory Fixture ${i + 1}`,
         install_location: 'C:\\' + 'UnbrokenDirectoryName'.repeat(i === 23 ? 20 : 1) },
@@ -38,12 +49,13 @@ export async function mockDesktop(page) {
       { quarantine_id: 'fixture-deleted', session_id: 9, status: 'purged', files: 3, file_bytes: 100 * 1024 ** 2 },
     ];
     let watch = null;
-    let nextWatchId = desktopSlices ? 50 : 40;
+    let nextWatchId = archiveStress ? 212 : desktopSlices ? 50 : 40;
     let capture = null;
     const comparisons = new Map();
     const comparisonNames = new Map();
     const counts = { files_changed: 0, services_changed: 0, tasks_changed: 0, registry_keys_changed: 0 };
     const coverage = (folders, files, registry = 0, keys = registry) => ({ folders: { requested: folders, usable: files }, registry: { requested: registry, usable: keys }, services: { requested: 0, usable: 0 }, tasks: { requested: 0, usable: 0 } });
+    const started = '2026-11-18 04:55:00';
     const ended = '2026-11-18 05:00:00';
     if (desktopSlices) {
       comparisons.set(38, { ...counts, session_id: 38, coverage: coverage(1, 0), warnings: ['A fixture folder was not readable.'] });
@@ -52,7 +64,34 @@ export async function mockDesktop(page) {
       comparisonNames.set(38, 'Coverage-only Fixture');
       comparisonNames.set(39, 'Zero-change Fixture');
     }
+    const sessionRow = (session_id, app_name, status = 'completed', ended_at = ended) => ({
+      session_id, app_name, status, started_at: started, ended_at, installer_path: null, fingerprint_family: null,
+    });
+    const archived = [];
+    if (archiveStress) {
+      archived.push(sessionRow(1, 'Archive Editor %_ Legacy'), sessionRow(3, 'Archive Interrupted', 'failed', null));
+      archived.push(...Array.from({ length: 150 }, (_, i) => sessionRow(i + 54, `Archive filler ${i + 54}`)));
+      comparisons.set(2, { ...counts, session_id: 2, coverage: coverage(1, 1), files_changed: 1, warnings: [] });
+      comparisons.set(4, { ...counts, session_id: 4, coverage: coverage(1, 0), warnings: ['Folder unreadable.'] });
+      comparisons.set(5, { ...counts, session_id: 5, coverage: coverage(1, 1), warnings: [] });
+      comparisonNames.set(2, 'Archive Editor %_ Compared');
+      comparisonNames.set(4, 'Archive Coverage Only');
+      comparisonNames.set(5, 'Archive Zero');
+      for (let id = 204; id <= 211; id += 1) {
+        comparisons.set(id, { ...counts, session_id: id, coverage: coverage(1, 1), warnings: [] });
+        comparisonNames.set(id, id === 211 ? 'ArchiveUnbrokenName'.repeat(12) : `Archive filler ${id}`);
+      }
+    }
     const failedSessions = [];
+    const recordedSessions = () => [
+      ...[...comparisons.values()].map(({ session_id, coverage }) => sessionRow(session_id,
+        comparisonNames.get(session_id) ?? 'Watch Fixture', Object.values(coverage).some((scope) => scope.usable) ? 'completed' : 'failed')),
+      ...failedSessions,
+      ...(watch ? [sessionRow(watch.session_id, comparisonNames.get(watch.session_id), 'monitoring', null)] : []),
+      ...(desktopSlices ? [sessionRow(37, 'Interrupted Fixture', 'failed', null)] : []),
+      sessionRow(9, 'Another Fixture'), ...archived,
+    ].sort((a, b) => b.session_id - a.session_id);
+    let archiveFailed = false;
     let coverageFailed = desktopSlices;
     let previewFailed = !desktopSlices;
     let restoreFailed = !desktopSlices;
@@ -64,6 +103,10 @@ export async function mockDesktop(page) {
       { id: 41, session_id: 40, path: String.raw`HKCU\Software\Watch Fixture\Changed`, what: 'modified', source: 'snapshot_diff' },
       { id: 40, session_id: 40, path: String.raw`C:\Watch Fixture\Older.txt`, what: 'created', source: 'snapshot_diff' },
       { id: 39, session_id: 40, path: String.raw`C:\Watch Fixture\Modified.txt`, what: 'modified', source: 'snapshot_diff', old_hash: 'a'.repeat(64), new_hash: 'b'.repeat(64) },
+      ...(archiveStress ? [
+        { id: 2, session_id: 2, path: String.raw`C:\Archive Editor\Old settings.ini`, what: 'created', source: 'snapshot_diff' },
+        { id: 1, session_id: 1, path: String.raw`C:\Classic Editor\Legacy settings.ini`, what: 'created', source: 'manifest' },
+      ] : []),
     ].map(row => ({ old_hash: null, new_hash: null, ...row, domain: row.path.startsWith('HKCU') ? 'registry' : 'file', when: '2026-11-18 05:00:00' }));
     const calls = [];
     const callbacks = new Map();
@@ -144,15 +187,31 @@ export async function mockDesktop(page) {
             return null;
           }
           case 'update_risk': return { low: [], medium: [], high: [], not_assessed: [] };
-          case 'list_sessions': return [
-            ...[...comparisons.values()].reverse().map(({ session_id, coverage }) => ({
-              session_id, app_name: comparisonNames.get(session_id) ?? 'Watch Fixture', ended_at: ended,
-              status: Object.values(coverage).some((scope) => scope.usable) ? 'completed' : 'failed',
-            })),
-            ...failedSessions,
-            ...(desktopSlices ? [{ session_id: 37, app_name: 'Interrupted Fixture', status: 'failed', ended_at: null }] : []),
-            { session_id: 9, app_name: 'Another Fixture', status: 'completed' },
-          ];
+          case 'list_sessions': return recordedSessions().slice(0, 150);
+          case 'watch_archive': {
+            const { search, status, beforeId } = args.filters;
+            if (window.failArchive && !archiveFailed) {
+              archiveFailed = true;
+              throw new Error('archive temporarily unavailable');
+            }
+            const term = search?.trim() ?? '';
+            const ascii = (value) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+            const matches = recordedSessions().filter((s) => (beforeId == null || s.session_id < beforeId)
+              && (status == null || s.status === status)
+              && (/^#\d+$/.test(term) ? s.session_id === Number(term.slice(1)) : ascii(s.app_name).includes(ascii(term))));
+            const rows = matches.slice(0, 20).map(({ session_id, app_name, status, started_at, ended_at }) => {
+              const summary = comparisons.get(session_id);
+              const comparison = summary ? { coverage: summary.coverage, recorded_changes: Object.values(summary.coverage).some((s) => s.usable)
+                ? (summary.coverage.folders.usable ? summary.files_changed : 0) + (summary.coverage.registry.usable ? summary.registry_keys_changed : 0)
+                  + (summary.coverage.services.usable ? summary.services_changed : 0) + (summary.coverage.tasks.usable ? summary.tasks_changed : 0) : null } : null;
+              return { session_id, app_name, status, started_at, ended_at, comparison };
+            });
+            if (window.deferArchive === search) {
+              window.deferArchive = undefined;
+              await new Promise(resolve => { window.releaseArchive = resolve; });
+            }
+            return { rows, next_before_id: matches.length > 20 ? rows.at(-1).session_id : null };
+          }
           case 'recent_watch_runs': return [...comparisons.values()].reverse().slice(0, 6).map(summary => ({
             app_name: comparisonNames.get(summary.session_id) ?? 'Watch Fixture', ended_at: ended, summary,
           }));
@@ -213,7 +272,7 @@ export async function mockDesktop(page) {
             const stopped = capture.stopped;
             capture = null;
             if (stopped) {
-              failedSessions.unshift({ session_id, app_name: appName, status: 'failed', ended_at: ended });
+              failedSessions.unshift(sessionRow(session_id, appName, 'failed'));
               return null;
             }
             watch = current;
@@ -231,7 +290,7 @@ export async function mockDesktop(page) {
             const stopped = capture.stopped;
             capture = null;
             if (stopped && mode !== 'committed') {
-              failedSessions.unshift({ session_id: current.session_id, app_name: comparisonNames.get(current.session_id), status: 'failed', ended_at: ended });
+              failedSessions.unshift(sessionRow(current.session_id, comparisonNames.get(current.session_id), 'failed'));
               return null;
             }
             let summary = { ...current, ...counts };
@@ -240,7 +299,7 @@ export async function mockDesktop(page) {
               warnings: ['Scheduled tasks were not checked after changes: access denied.'],
             };
             else if (current.session_id === 40) summary = { ...summary, files_changed: 2, registry_keys_changed: 2 };
-            else if (current.session_id !== 41 && !desktopSlices) throw new Error('file snapshot failed');
+            else if (current.session_id !== 41 && !desktopSlices && !archiveStress) throw new Error('file snapshot failed');
             comparisons.set(summary.session_id, summary);
             return summary;
           }
@@ -251,6 +310,7 @@ export async function mockDesktop(page) {
           }
           case 'cancel_watch':
             if (!watch) throw new Error('no watch to cancel');
+            failedSessions.unshift(sessionRow(watch.session_id, comparisonNames.get(watch.session_id), 'failed'));
             watch = null;
             return null;
           case 'list_programs': return { programs: [
@@ -258,6 +318,10 @@ export async function mockDesktop(page) {
             { program: msix, session_ids: [], inferred_session_ids: [], removed: false },
             { program: userApp, session_ids: [], inferred_session_ids: [], removed: false },
             ...stressRows,
+            ...queueRows.filter(row => row.program.id !== window.queueMissing).map(row => ({ ...row,
+              removed: queueRemoved.has(row.program.id),
+              program: row.program.id === window.queueChanged ? { ...row.program, version: '2.0' } : row.program,
+            })),
             ...portable.map((p) => ({program: {...standard, ...p, source: 'portable', id: 'portable:'+p.executable}, session_ids: [], inferred_session_ids: [], removed: false})),
           ], warnings: ['One inventory source could not be checked.'] };
           case 'session_items': {
@@ -267,10 +331,41 @@ export async function mockDesktop(page) {
               node_type: 'registry_key', confidence: .95, shared: i < 12 })).filter(item => item.path.toLowerCase().includes((args.filter ?? '').toLowerCase()));
             return { total, matching: matches.length, items: matches.slice(args.offset, args.offset + 12) };
           }
-          case 'preview_uninstaller':
+          case 'preview_uninstaller': {
+            const queued = queueRows.find(({ program }) => program.id === args.programId)?.program;
+            if (queued) {
+              if (queueRemoved.has(queued.id) || window.queueMissing === queued.id || window.queueBlocked === queued.id) {
+                throw new Error('No supported live registration.');
+              }
+              const attempt = (queuePreviews.get(queued.id) ?? 0) + 1;
+              queuePreviews.set(queued.id, attempt);
+              // window.queueSignature maps a program id to a signature status; signed by default.
+              const status = window.queueSignature?.[queued.id] ?? 'signed';
+              const detail = { signed: 'The uninstaller is signed by Fixture Vendor.', unsigned: 'The uninstaller has no digital signature.', untrusted: 'Windows could not verify the uninstaller\'s signature.', rejected: 'The uninstaller was changed after it was signed.' }[status];
+              const plan = { executable: `${queued.install_location}\\Vendor.exe`, args: ['--interactive', `preview ${attempt}`], signature: { status, publisher: status === 'signed' ? 'Fixture Vendor' : null, catalog: false, detail } };
+              queuePlans.set(queued.id, plan);
+              return plan;
+            }
             if (args.programId !== app.id || removed) throw new Error('unsupported registration');
             return argv;
+          }
           case 'run_uninstaller':
+            if (queueRows.some(({ program }) => program.id === args.programId)) {
+              if (queueRunning || args.quiet !== false || !queuePlans.has(args.programId) ||
+                  JSON.stringify(args.expected) !== JSON.stringify(queuePlans.get(args.programId))) throw new Error('incorrect queued invocation');
+              const signature = queuePlans.get(args.programId).signature.status;
+              queuePlans.delete(args.programId);
+              if (window.queueStale === args.programId) throw new Error('The registered uninstaller changed.');
+              // Same rule as the native command: rejected never runs, unverified needs confirmation.
+              if (signature === 'rejected') throw new Error('ExorSystem will not run it.');
+              if (signature !== 'signed' && args.confirmUnverified !== true) throw new Error('Confirm that you trust this uninstaller before running it.');
+              queueRunning = true;
+              try {
+                const code = await new Promise(resolve => { window.finishQueuedUninstaller = resolve; });
+                if (code === 0) queueRemoved.add(args.programId);
+                return { exit_code: code, summary: 'Fixture vendor process returned.' };
+              } finally { queueRunning = false; window.finishQueuedUninstaller = null; }
+            }
             if (args.programId !== app.id || args.quiet || JSON.stringify(args.expected) !== JSON.stringify(argv)) throw new Error('incorrect uninstall target');
             if (invocationChanged) {
               invocationChanged = false;

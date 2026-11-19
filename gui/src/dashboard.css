@@ -195,6 +195,17 @@
 }
 .app-detail:focus-visible { outline-offset: -3px; }
 .inventory-back { display: none; margin-block-end: 12px; }
+.uninstall-queue { min-width: 0; }
+.queue-body { padding: 0 17px 14px; }
+.queue-body > p { margin: 0 0 10px; }
+.queue-items { list-style: none; max-height: 22rem; overflow: auto; padding: 0; margin: 0 0 12px; border-top: 1px solid var(--line); }
+.queue-item { display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px 14px; padding: 9px 2px; border-bottom: 1px solid var(--line); }
+.queue-item-copy { flex: 1 1 215px; display: grid; min-width: 0; gap: 3px; overflow-wrap: anywhere; }
+.queue-item-copy small { font-size: 11px; color: var(--muted); }
+.queue-result { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+.queue-checkbox { width: 1%; text-align: center; }
+.queue-checkbox input { margin: 0; vertical-align: middle; accent-color: var(--accent); }
+.wizard-steps.vendor-only-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .selected-app > div { min-inline-size: 0; }
 .selected-app { display: flex; gap: 10px; align-items: center; margin-bottom: 15px; }
 .selected-app h2 { margin: 1px 0 0; font-size: 19px; line-height: 1.2; overflow-wrap: anywhere; }
@@ -454,3 +465,16 @@
 .plan-files { max-height: 16rem; overflow: auto; }
 .plan-files code, .plan-review code { overflow-wrap: anywhere; }
 .shutdown-notice { margin: .55rem .8rem; flex: none; }
+
+/* Watch archive stays legible in a narrow dock and contains long application names. */
+.watch-recent .card-heading { flex-wrap: wrap; }
+.archive-fields { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.archive-fields .field, .archive-fields select { max-width: 100%; }
+.archive-fields .field.grow { flex-basis: 230px; }
+.archive-search > p { margin: 7px 0 0; }
+.archive-result-status { margin: 0; padding: 0 16px 10px; }
+.archive-run-name { flex: 1 1 14rem; }
+.archive-run-status { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; min-width: 0; gap: 5px 8px; }
+.archive-run-status small { flex-basis: 100%; }
+.archive-pager { gap: 8px; flex-wrap: wrap; border-top: 0; border-bottom: 1px solid var(--line); }
+.archive-note { margin: 0; }

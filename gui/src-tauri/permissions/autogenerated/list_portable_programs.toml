@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-portable-programs"
+description = "Enables the list_portable_programs command without any pre-configured scope."
+commands.allow = ["list_portable_programs"]
+
+[[permission]]
+identifier = "deny-list-portable-programs"
+description = "Denies the list_portable_programs command without any pre-configured scope."
+commands.deny = ["list_portable_programs"]

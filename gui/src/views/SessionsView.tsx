@@ -4,6 +4,7 @@ import { Icon } from "../components/Icon";
 import { AppMark, Badge, CardHeading, Empty, Intro, TileIcon, nodeText, programSize, scopeText, sourceText } from "../components/Workspace";
 import type { InstalledProgram, ProgramInventory, Session, SessionItems } from "../types";
 import { ProgramActions } from "./ProgramActions";
+import { MAX_QUEUED_PROGRAMS, UninstallQueue, queueEligible, queueTarget, type QueuedProgram } from "./UninstallQueue";
 
 interface Entry {
   key: string; name: string; program: InstalledProgram | null; sessionIds: number[]; inferred?: boolean; removed: boolean;
@@ -28,6 +29,8 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
   const [showSystem, setShowSystem] = useState(false);
   const [selected, setSelected] = useState(initialProgramId ? `p:${initialProgramId}` : null);
   const [page, setPage] = useState<number | null>(null);
+  const [selectingQueue, setSelectingQueue] = useState(false);
+  const [queue, setQueue] = useState<QueuedProgram[]>([]);
   const details = useRef<HTMLElement>(null);
   const back = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLElement>(null);
@@ -52,6 +55,21 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
     const recordedOnly = sessions.filter((s) => !matched.has(s.session_id)).map((s) => ({ key: `s:${s.session_id}`, program: null, name: s.app_name, sessionIds: [s.session_id], removed: false }));
     return [...fromPrograms, ...recordedOnly].sort((a, b) => a.name.localeCompare(b.name));
   }, [inventory, sessions]);
+  const queuePrograms = useMemo(() => {
+    const programs = new Map<string, InstalledProgram>();
+    for (const row of inventory?.programs ?? []) {
+      if (queueEligible(row.program, row.removed)) programs.set(row.program.id, row.program);
+    }
+    return programs;
+  }, [inventory]);
+  const inventoryReady = !!inventory && !pending && !error;
+  const queueIds = new Set(queue.map((item) => item.target.id));
+  const refresh = () => setRevision((n) => n + 1);
+  const selectForQueue = (program: InstalledProgram, add: boolean) => setQueue((items) => {
+    if (!add) return items.filter(({ target }) => target.id !== program.id);
+    if (!inventoryReady || items.length >= MAX_QUEUED_PROGRAMS || items.some(({ target }) => target.id === program.id)) return items;
+    return [...items, { target: queueTarget(program), result: null }];
+  });
   const shown = entries.filter((e) => {
     const p = e.program;
     const text = `${e.name} ${p?.publisher ?? ""} ${p?.version ?? ""}`.toLowerCase();
@@ -88,9 +106,16 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
   }, [currentKey, visible]);
 
   return <section className="workspace-page" aria-labelledby="apps-title">
-    <Intro id="apps-title" kicker="INVENTORY" title="Installed applications" description="Browse classic programs, current-user packages, portable entries, and recorded installs." actions={<button type="button" className="quiet-button" disabled={pending} onClick={() => setRevision((n) => n + 1)}><Icon name="refresh"/> Refresh inventory</button>}/>
+    <Intro id="apps-title" kicker="INVENTORY" title="Installed applications" description="Browse classic programs, current-user packages, portable entries, and recorded installs." actions={<>
+      <button type="button" className="quiet-button" aria-pressed={selectingQueue} onClick={() => {
+        if (!selectingQueue) setSelected(null);
+        setSelectingQueue(!selectingQueue);
+      }}><Icon name="shield"/> Select apps for uninstall queue</button>
+      <button type="button" className="quiet-button" disabled={pending} onClick={refresh}><Icon name="refresh"/> Refresh inventory</button>
+    </>}/>
     {error && <p role="alert" className="notice review-notice">Could not load programs: {error}</p>}
     {inventory?.warnings.map((w) => <div className="notice review-notice" key={w}><Icon name="alert"/><span>{w}</span></div>)}
+    {(selectingQueue || queue.length > 0) && <UninstallQueue items={queue} setItems={setQueue} programs={queuePrograms} inventoryReady={inventoryReady} selecting={selectingQueue} onVendorExit={refresh}/>}
     <div className="inventory-layout" data-selection={!!current}>
       <section className="card card-overflow inventory-list" ref={list} aria-label="Application inventory">
         <CardHeading title="Application inventory" action={<Badge>{shown.length} result{shown.length === 1 ? "" : "s"}</Badge>}/>
@@ -103,22 +128,31 @@ export function SessionsView({ visible, initialProgramId, onTrace, onHistory, on
           <label className="check system-filter"><input type="checkbox" checked={showSystem} onChange={(e) => { setShowSystem(e.target.checked); setPage(0); }}/> Show system components</label>
         </div>
         {shown.length > 0 ? <div className="dashboard-scroll"><table className="dashboard-table inventory-table">
-          <thead><tr><th scope="col">Application</th><th scope="col">Source</th><th scope="col" className="numeric">Size</th></tr></thead>
-          <tbody>{shown.slice(number * PAGE_SIZE, (number + 1) * PAGE_SIZE).map((e) => <tr key={e.key} className={`interactive-row ${e.key === current?.key ? "selected-row" : ""}`} onClick={(event) => {
-            trigger.current = event.currentTarget.querySelector("button");
-            setSelected(e.key); setPage(number);
-          }}>
-            <td><button type="button" className="app-cell row-button" aria-pressed={e.key === current?.key}>
-              {e.program ? <AppMark program={e.program}/> : <TileIcon icon="clock" tone="violet"/>}
-              <span><strong>{e.name}</strong><small>{e.removed ? "Recently removed" : e.program ? [e.program.publisher, e.program.version].filter(Boolean).join(" · ") || "Version not reported" : "Recorded installation"}</small></span>
-            </button></td>
-            <td><Badge tone={e.removed ? "review" : "neutral"}>{e.removed ? "Removed" : e.program ? sourceText[e.program.source] : "Recorded"}</Badge></td>
-            <td className="numeric">{programSize(e.program?.size_kb ?? null)}</td>
-          </tr>)}</tbody>
+          <thead><tr>{selectingQueue && <th scope="col" className="queue-checkbox">Queue</th>}<th scope="col">Application</th><th scope="col">Source</th><th scope="col" className="numeric">Size</th></tr></thead>
+          <tbody>{shown.slice(number * PAGE_SIZE, (number + 1) * PAGE_SIZE).map((e) => {
+            const candidate = selectingQueue && e.program ? queuePrograms.get(e.program.id) : undefined;
+            const isQueued = !!candidate && queueIds.has(candidate.id);
+            return <tr key={e.key} className={`interactive-row ${e.key === current?.key ? "selected-row" : ""}`} onClick={(event) => {
+              trigger.current = event.currentTarget.querySelector("button");
+              setSelected(e.key); setPage(number);
+            }}>
+              {selectingQueue && <td className="queue-checkbox" onClick={(event) => event.stopPropagation()}>
+                {candidate ? <input type="checkbox" aria-label={`Queue ${candidate.name}${candidate.version ? ` ${candidate.version}` : ""}`} checked={isQueued}
+                  disabled={!isQueued && (!inventoryReady || queue.length >= MAX_QUEUED_PROGRAMS)} onChange={(event) => selectForQueue(candidate, event.currentTarget.checked)}/>
+                  : <span className="muted" title="Not eligible for queued vendor review">—</span>}
+              </td>}
+              <td><button type="button" className="app-cell row-button" aria-pressed={e.key === current?.key}>
+                {e.program ? <AppMark program={e.program}/> : <TileIcon icon="clock" tone="violet"/>}
+                <span><strong>{e.name}</strong><small>{e.removed ? "Recently removed" : e.program ? [e.program.publisher, e.program.version].filter(Boolean).join(" · ") || "Version not reported" : "Recorded installation"}</small></span>
+              </button></td>
+              <td><Badge tone={e.removed ? "review" : "neutral"}>{e.removed ? "Removed" : e.program ? sourceText[e.program.source] : "Recorded"}</Badge></td>
+              <td className="numeric">{programSize(e.program?.size_kb ?? null)}</td>
+            </tr>;
+          })}</tbody>
         </table></div> : <Empty icon="apps" title={pending ? "Loading inventory…" : "No matching applications"} detail="Try another search or include a different source."/>}
         {pages > 1 && <div className="pager"><button type="button" disabled={number === 0} onClick={() => setPage(number - 1)}>Previous</button><span>Page {number + 1} of {pages}</span><button type="button" disabled={number + 1 >= pages} onClick={() => setPage(number + 1)}>Next</button></div>}
       </section>
-      {current ? <ApplicationDetail key={current.key} entry={current} sessions={sessions} onTrace={onTrace} onHistory={onHistory} onSimulate={onSimulate} onCleanup={onCleanup} onTerminal={onTerminal} onUninstallComplete={() => setRevision((n) => n + 1)} details={details} back={back} onBack={() => {
+      {current ? <ApplicationDetail key={current.key} entry={current} sessions={sessions} onTrace={onTrace} onHistory={onHistory} onSimulate={onSimulate} onCleanup={onCleanup} onTerminal={onTerminal} onUninstallComplete={refresh} details={details} back={back} onBack={() => {
           returnToList.current = true;
           setSelected(null);
         }}/>

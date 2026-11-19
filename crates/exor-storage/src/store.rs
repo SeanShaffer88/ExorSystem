@@ -79,6 +79,40 @@ fn session_row(r: &Row<'_>) -> rusqlite::Result<Session> {
         status: opt_col(r, 6)?,
     })
 }
+fn archive_comparison(session_id: i64, json: &str) -> Result<WatchArchiveComparison> {
+    let summary: WatchSummary = serde_json::from_str(json)?;
+    if summary.session_id != session_id {
+        return Err(StorageError::InvalidValue {
+            field: "saved Watch comparison",
+            value: format!("session ID does not match session {session_id}"),
+        });
+    }
+    let coverage = summary.coverage;
+    let recorded_changes = if coverage.has_usable() {
+        let total = [
+            (coverage.folders, summary.files_changed),
+            (coverage.registry, summary.registry_keys_changed),
+            (coverage.services, summary.services_changed),
+            (coverage.tasks, summary.tasks_changed),
+        ]
+        .into_iter()
+        .filter(|(scope, _)| scope.usable > 0)
+        .map(|(_, changes)| changes)
+        .try_fold(0_usize, usize::checked_add)
+        .ok_or_else(|| StorageError::InvalidValue {
+            field: "saved Watch comparison",
+            value: format!("change count overflows for session {session_id}"),
+        })?;
+        Some(total)
+    } else {
+        None
+    };
+    Ok(WatchArchiveComparison {
+        coverage,
+        recorded_changes,
+    })
+}
+
 fn ledger_row(r: &Row<'_>) -> rusqlite::Result<LedgerEntry> {
     Ok(LedgerEntry {
         entry_id: r.get(0)?,
@@ -283,9 +317,9 @@ impl Store {
         Ok(Self { conn })
     }
 
-    /// Applied schema version.
+    /// Applied schema version of an initialized store, without changing it.
     pub fn schema_version(&self) -> Result<u32> {
-        migrate::current_version(&self.conn)
+        migrate::applied_version(&self.conn)
     }
 
     /// Run `PRAGMA wal_checkpoint(TRUNCATE)`.
@@ -437,6 +471,94 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    /// Search saved sessions without depending on ledger entries or the recent comparison list.
+    /// Only the requested page is decoded, and a single look-ahead row detects continuation.
+    pub fn watch_archive(
+        &self,
+        limit: usize,
+        query: WatchArchiveQuery<'_>,
+    ) -> Result<WatchArchivePage> {
+        let limit = limit.clamp(1, 50);
+        let search = query.search.unwrap_or_default();
+        if search.len() > 240 || search.chars().any(char::is_control) {
+            return Err(StorageError::InvalidValue {
+                field: "Watch archive search",
+                value: "enter at most 240 bytes without control characters".into(),
+            });
+        }
+
+        let mut sql = String::from(
+            "SELECT s.session_id, s.app_name, s.started_at, s.ended_at, s.status, w.summary_json
+             FROM installation_sessions s LEFT JOIN watch_comparisons w USING (session_id)
+             WHERE 1 = 1",
+        );
+        let mut values = Vec::<Value>::new();
+        if let Some(before_id) = query.before_id {
+            if before_id <= 0 {
+                return Err(StorageError::InvalidValue {
+                    field: "Watch archive page cursor",
+                    value: "expected a positive session ID".into(),
+                });
+            }
+            sql.push_str(" AND s.session_id < ?");
+            values.push(before_id.into());
+        }
+        if let Some(status) = query.status {
+            sql.push_str(" AND s.status = ?");
+            values.push(status.as_str().to_owned().into());
+        }
+        let search = search.trim();
+        if let Some(digits) = search
+            .strip_prefix('#')
+            .filter(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+        {
+            let id = digits
+                .parse::<i64>()
+                .ok()
+                .filter(|id| *id > 0)
+                .ok_or_else(|| StorageError::InvalidValue {
+                    field: "Watch archive session search",
+                    value: "expected a positive session ID after #".into(),
+                })?;
+            sql.push_str(" AND s.session_id = ?");
+            values.push(id.into());
+        } else if !search.is_empty() {
+            sql.push_str(" AND instr(lower(s.app_name), lower(?)) > 0");
+            values.push(search.to_owned().into());
+        }
+        sql.push_str(" ORDER BY s.session_id DESC LIMIT ?");
+        values.push(((limit + 1) as i64).into());
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut results = stmt.query(params_from_iter(&values))?;
+        let mut rows: Vec<WatchArchiveRow> = Vec::with_capacity(limit);
+        let mut next_before_id = None;
+        while let Some(row) = results.next()? {
+            if rows.len() == limit {
+                next_before_id = rows.last().map(|row| row.session_id);
+                break;
+            }
+            let session_id = row.get(0)?;
+            let json: Option<String> = row.get(5)?;
+            let comparison = json
+                .as_deref()
+                .map(|text| archive_comparison(session_id, text))
+                .transpose()?;
+            rows.push(WatchArchiveRow {
+                session_id,
+                app_name: row.get(1)?,
+                started_at: row.get(2)?,
+                ended_at: row.get(3)?,
+                status: opt_col(row, 4)?,
+                comparison,
+            });
+        }
+        Ok(WatchArchivePage {
+            rows,
+            next_before_id,
+        })
     }
 
     // ---- portable inventory ----

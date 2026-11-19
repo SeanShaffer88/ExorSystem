@@ -9,9 +9,19 @@ import type { InstalledProgram, LeftoverReview, PlanHeader, QuarantineResult, Un
 const steps = ["Review plan", "Vendor uninstall", "Review leftovers", "Summary"];
 type Task = "uninstall" | "review" | "quarantine";
 
-export function UninstallWizard({ program, reviewOnly, onClose, onUninstallComplete }: {
-  program: InstalledProgram; sessionId: number | null; reviewOnly: boolean; onClose: () => void; onUninstallComplete: () => void;
-}) {
+export type VendorReviewOutcome =
+  | { kind: "exited"; run: UninstallRun }
+  | { kind: "blocked" | "unconfirmed"; message: string };
+
+type Mode =
+  | { mode: "uninstall" | "leftovers"; onClose: () => void }
+  | { mode: "queue"; retry: boolean; onClose: (outcome: VendorReviewOutcome | null) => void };
+
+export function UninstallWizard(props: { program: Pick<InstalledProgram, "id" | "name">; onUninstallComplete: () => void } & Mode) {
+  const { program, onUninstallComplete } = props;
+  const reviewOnly = props.mode === "leftovers";
+  const queued = props.mode === "queue";
+  const lastStep = queued ? 1 : steps.length - 1;
   const dialog = useRef<HTMLDialogElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const gate = useRef(false);
@@ -49,7 +59,17 @@ export function UninstallWizard({ program, reviewOnly, onClose, onUninstallCompl
     return () => { live = false; };
   }, [program.id, reviewOnly]);
 
-  const close = () => { if (!gate.current && !movePlan) { dialog.current?.close(); onClose(); } };
+  const close = () => {
+    if (gate.current || movePlan) return;
+    dialog.current?.close();
+    if (props.mode !== "queue") props.onClose();
+    else if (run) props.onClose({ kind: "exited", run });
+    else if (step === 1 && error) props.onClose({ kind: "unconfirmed", message: error });
+    else if (planError) props.onClose({ kind: "blocked", message: planError });
+    else props.onClose(null);
+  };
+  // A failed queued attempt returns to the queue. A retry always opens a new live preview.
+  const failedQueuedRun = queued && step === 1 && !!error && !run;
   const perform = async (task: Task, work: () => Promise<void>) => {
     if (gate.current) return;
     gate.current = true; setBusy(task); setError("");
@@ -64,33 +84,35 @@ export function UninstallWizard({ program, reviewOnly, onClose, onUninstallCompl
   return <dialog className="wizard" ref={dialog} aria-labelledby="wizard-title" onCancel={(e) => { e.preventDefault(); close(); }}>
     <div className="wizard-top">
       <span className="tile-icon tone-safe"><Icon name="shield"/></span>
-      <div><div className="eyebrow">Guided uninstall</div><h2 id="wizard-title">{program.name}</h2></div>
+      <div><div className="eyebrow">{queued ? "Queued vendor review" : "Guided uninstall"}</div><h2 id="wizard-title">{program.name}</h2></div>
       <button className="icon-button" type="button" aria-label="Close wizard" disabled={!!busy || !!movePlan} onClick={close}><Icon name="close"/></button>
     </div>
-    <ol className="wizard-steps" aria-label="Wizard progress">
-      {steps.map((label, i) => <li key={label} aria-current={i === step ? "step" : undefined} className={i === step ? "step-current" : i < step && (!skipVendor || i >= 2) ? "step-done" : ""}>
+    <ol className={`wizard-steps${queued ? " vendor-only-steps" : ""}`} aria-label="Wizard progress">
+      {steps.slice(0, lastStep + 1).map((label, i) => <li key={label} aria-current={i === step ? "step" : undefined} className={i === step ? "step-current" : i < step && (!skipVendor || i >= 2) ? "step-done" : ""}>
         <span className="step-number">{i < step && (!skipVendor || i >= 2) ? <Icon name="check" size={14}/> : `0${i + 1}`}</span>
         <span>{label}{skipVendor && i < 2 && <small>Skipped</small>}</span>
       </li>)}
     </ol>
     <div className="wizard-body">
-      <div className="eyebrow">Step {step + 1} of {steps.length}</div>
+      <div className="eyebrow">Step {step + 1} of {lastStep + 1}</div>
       <h3 ref={heading} tabIndex={-1}>{steps[step]}</h3>
       {busy && <div className="notice busy-notice" role="status"><progress aria-label={busy === "uninstall" ? "Vendor uninstaller running" : "Working"}/><span>{busy === "uninstall" ? "Waiting for the vendor uninstaller. Windows does not report its progress here." : busy === "review" ? "Checking for possible leftovers…" : "Reading and fingerprinting eligible files…"}</span></div>}
       {error && <p role="alert" className="notice review-notice">{error}</p>}
       {step === 0 && <>
         <p>Review the live Windows registration first. The next step lets you start this vendor’s uninstaller. Cleanup is a separate decision.</p>
+        {props.mode === "queue" && props.retry && <p className="notice review-notice">Check Windows to see what the previous attempt did before retrying. This is a fresh preview, not a replay of the previous command.</p>}
         <TerminalPanel preview={plan} message={planError ? "No validated invocation to show." : "Checking the live registration…"}/>
         {planError && <p className="notice review-notice" role="alert">{planError} Use Windows Settings → Apps for unsupported uninstallers.</p>}
         <div className="wizard-controls">
-          <button type="button" className="quiet-button" onClick={() => toReview(true)}>Skip to leftover review</button>
+          {queued ? <button type="button" className="quiet-button" onClick={close}>Return to queue</button> :
+            <button type="button" className="quiet-button" onClick={() => toReview(true)}>Skip to leftover review</button>}
           <button type="button" className="primary" disabled={!plan} onClick={() => setStep(1)}>Continue <Icon name="arrow" size={16}/></button>
         </div>
       </>}
       {step === 1 && <>
         {run ? <div className={`notice ${run.exit_code === 0 ? "success-notice" : "review-notice"}`} role="status">
           <Icon name={run.exit_code === 0 ? "check" : "alert"}/><div><strong>{run.exit_code === 0 ? "Vendor process exited" : "Uninstall not confirmed"}</strong><p>{run.summary}</p><small>Exit code: {run.exit_code ?? "unknown"}. Check Windows to confirm the app was removed.</small></div>
-        </div> : <>
+        </div> : failedQueuedRun ? <p>Check Windows before retrying. Return to the queue to review a new invocation.</p> : <>
           <p>The vendor controls what its uninstaller removes. ExorSystem re-checks the live registration and refuses a changed invocation. It will not retry with administrator rights.</p>
           <label className="check confirm-check"><input type="checkbox" checked={confirmedRun} disabled={!!busy || plan?.signature.status === "rejected"} onChange={(e) => setConfirmedRun(e.target.checked)}/> Run this program’s own uninstaller</label>
           {plan && plan.signature.status === "rejected" && <div className="notice review-notice" role="alert"><Icon name="alert"/><div><strong>ExorSystem will not run this uninstaller</strong><p>{plan.signature.detail} Use Windows Settings → Apps, or reinstall the program first.</p></div></div>}
@@ -100,9 +122,11 @@ export function UninstallWizard({ program, reviewOnly, onClose, onUninstallCompl
           </>}
         </>}
         <div className="wizard-controls">
-          {!run && <button type="button" className="quiet-button" disabled={!!busy} onClick={() => { setError(""); setConfirmedRun(false); setTrustUnverified(false); setStep(0); }}><Icon name="back" size={15}/> Back</button>}
-          {!busy && !run && error && <button type="button" className="quiet-button" onClick={() => toReview(true)}>Skip to leftover review</button>}
-          {run ? <button type="button" className="primary" onClick={() => toReview()}>Continue to leftover review <Icon name="arrow" size={15}/></button> : <button type="button" className="primary" disabled={!!busy || !plan || !confirmedRun || plan.signature.status === "rejected" || (plan.signature.status !== "signed" && !trustUnverified)} onClick={() => {
+          {!run && !failedQueuedRun && <button type="button" className="quiet-button" disabled={!!busy} onClick={() => { setError(""); setConfirmedRun(false); setTrustUnverified(false); setStep(0); }}><Icon name="back" size={15}/> Back</button>}
+          {!queued && !busy && !run && error && <button type="button" className="quiet-button" onClick={() => toReview(true)}>Skip to leftover review</button>}
+          {queued && (run || failedQueuedRun) ? <button type="button" className="primary" onClick={close}>Return to queue</button>
+            : run ? <button type="button" className="primary" onClick={() => toReview()}>Continue to leftover review <Icon name="arrow" size={15}/></button>
+            : <button type="button" className="primary" disabled={!!busy || !plan || !confirmedRun || plan.signature.status === "rejected" || (plan.signature.status !== "signed" && !trustUnverified)} onClick={() => {
             if (!plan) return;
             const trusted = plan.signature.status !== "signed" && trustUnverified;
             setConfirmedRun(false); setTrustUnverified(false);
