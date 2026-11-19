@@ -17,6 +17,43 @@ fn exor(args: &[&str]) -> (u8, Value) {
     (code, json)
 }
 
+/// Running elevated (as GitHub's Windows runners do). `exor` refuses to run that way, like the
+/// desktop app, so there the tests check the refusal instead of the normal-user behaviour.
+fn elevated() -> bool {
+    #[cfg(windows)]
+    {
+        // S-1-16-12288 is the High Mandatory Level that elevated administrator tokens carry.
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        Command::new(Path::new(&root).join("System32").join("whoami.exe"))
+            .arg("/groups")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("S-1-16-12288"))
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// When elevated, assert that `args` is refused (exit 3) and return true so the test stops.
+fn refused_when_elevated(args: &[&str]) -> bool {
+    if !elevated() {
+        return false;
+    }
+    let (code, v) = exor(args);
+    assert_eq!(code, 3, "{v}");
+    assert_eq!(v["error"]["kind"], "refused");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("administrator rights"),
+        "{v}"
+    );
+    true
+}
+
 fn s(p: &Path) -> &str {
     p.to_str().unwrap()
 }
@@ -51,6 +88,10 @@ fn snapshot_and_diff_round_trip_without_overwriting() {
     std::fs::write(app.join("edit.txt"), b"before").unwrap();
     std::fs::write(app.join("sub/gone.txt"), b"bye").unwrap();
     let (before, after) = (d.path().join("before.json"), d.path().join("after.json"));
+    if refused_when_elevated(&["snapshot", s(&app), "--out", s(&before)]) {
+        assert!(!before.exists(), "nothing is written when refused");
+        return;
+    }
 
     let (code, v) = exor(&["snapshot", s(&app), "--out", s(&before)]);
     assert_eq!(code, 0, "{v}");
@@ -104,6 +145,10 @@ fn reads_a_profile_without_changing_it() {
         store.begin_session("Fixture App", None, None).unwrap();
     }
     let before = std::fs::read(&db).unwrap();
+    if refused_when_elevated(&["sessions", "--profile", s(d.path())]) {
+        assert_eq!(std::fs::read(&db).unwrap(), before);
+        return;
+    }
     let (code, v) = exor(&["sessions", "--profile", s(d.path())]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["data"]["count"], 1);

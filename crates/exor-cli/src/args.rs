@@ -67,6 +67,8 @@ impl Command {
     }
 
     /// Commands that read the system or the profile, and so follow the no-elevation rule.
+    /// Elevation only exists on Windows, so the check is compiled there only.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn needs_normal_user(&self) -> bool {
         !matches!(self, Self::Help | Self::Version)
     }
