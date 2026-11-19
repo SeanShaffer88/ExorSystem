@@ -4,7 +4,8 @@ use crate::{AppState, dock, jobs};
 use exor_engine::execute::{self, BatchPreview};
 use exor_engine::report::{self, ChangeExport, SessionEvidencePage};
 use exor_storage::{
-    ChangeDomain, ChangeKind, LedgerEntry, LedgerQuery, Store, WatchRun, WatchSummary,
+    ChangeDomain, ChangeKind, LedgerEntry, LedgerQuery, SessionStatus, Store, WatchArchivePage,
+    WatchArchiveQuery, WatchRun, WatchSummary,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
@@ -66,6 +67,36 @@ pub(crate) async fn recent_watch_runs(
 ) -> Result<Vec<WatchRun>, String> {
     jobs::read(&app, &state, |store| {
         store.recent_watch_runs(6).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WatchArchiveFilters {
+    search: Option<String>,
+    status: Option<SessionStatus>,
+    before_id: Option<i64>,
+}
+
+/// Browse saved Watch sessions on the same bounded, read-only WAL path as History.
+#[tauri::command]
+pub(crate) async fn watch_archive(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    filters: WatchArchiveFilters,
+) -> Result<WatchArchivePage, String> {
+    jobs::read(&app, &state, move |store| {
+        store
+            .watch_archive(
+                20,
+                WatchArchiveQuery {
+                    search: filters.search.as_deref(),
+                    status: filters.status,
+                    before_id: filters.before_id,
+                },
+            )
+            .map_err(|e| e.to_string())
     })
     .await
 }

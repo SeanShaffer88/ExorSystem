@@ -1,6 +1,6 @@
 # Desktop dashboard
 
-ExorSystem is a local evidence and cleanup workspace. The sidebar groups the tools by task; **Overview** shows installed inventory, session counts, recent observations, and cleanup outcomes. This guide follows the v0.3.0 desktop. It does not need the driver or an elevated process. Before upgrading an existing profile, read the [backup and rollback notes](releases/v0.3.0.md#before-you-upgrade).
+ExorSystem is a local evidence and cleanup workspace. The sidebar groups the tools by task; **Overview** shows installed inventory, session counts, recent observations, and cleanup outcomes. This guide follows the v0.3.0 desktop except where marked unreleased. It does not need the driver or an elevated process. Before upgrading an existing profile, read the [backup and rollback notes](releases/v0.3.0.md#before-you-upgrade).
 
 ## Arrange the workspace
 
@@ -16,6 +16,7 @@ ExorSystem is a local evidence and cleanup workspace. The sidebar groups the too
 |---|---|---|
 | **Applications** | Search by name, publisher, or version. Filter classic, MSIX, portable, and recorded entries. Sort by name or reported size; missing sizes come last in size order. Select an app to see its registration, filter and page through a linked session’s recorded items, and trace an item or inspect the session. Scroll the detail card independently in a wide dock; in a narrow dock, **Back to applications** returns to the selected row and page. | Windows uninstall registrations, current-user packages, opted-in portable entries, and local session records. Installation sizes are Windows estimates when present. |
 | **Registry monitor** | Choose snapshot scopes, check the baseline, and see which sources were compared or skipped. Save and reapply scope presets. Reopen recent saved comparisons or browse recent registry observations. | Explicit file folders and Software subtrees; services and scheduled-task metadata are separately opt-in. No live process attribution or registry value capture. |
+| **Watch archive** (unreleased) | Search recorded sessions by application name or ID, filter by status, and open an older session in Change inspector. | Saved session records and comparison coverage from the local profile. Includes older records that do not have saved comparisons. |
 | **Change inspector** | Side-by-side registry and file lists with installation, literal path, change-type, and UTC date filters. Select a change for before/after details, or use **Timeline** for all observations including services and tasks. | Paged SQLite ledger. File details show recorded fingerprints, not contents. Registry snapshots show key presence or a last-write change, not the raw timestamp or the values. A missing fingerprint is not proof of absence. |
 | **Relationships** | Trace a recorded path and follow links to its origins, dependencies, and dependents or shared nodes. Select a node to trace it in turn. | A bounded, one-hop view of recorded relationships with evidence sources and confidence, not an exhaustive Windows dependency analysis. |
 | **Activity log** | Recent messages with time and severity; scroll up to review older messages. | The desktop's in-memory log for this run, not the durable SQLite ledger. |
@@ -37,6 +38,16 @@ A missing folder or registry subtree can appear or disappear between snapshots. 
 **Saved scope presets** stores only folder paths, registry subtree paths, and the optional system checks in local desktop preferences. It does not store the application name, installer path, or snapshots. **Apply scopes** replaces the scope fields without starting a capture; review them before taking a baseline. Use **Forget preset** to remove a saved choice.
 
 Use **Stop capture** while either snapshot is running. It is cooperative: the current read may need to finish. A cancelled comparison does not save observations or coverage; if the comparison already committed, the saved result is shown instead. **Cancel watch** abandons the baseline between captures. Closing the main window stops cancellable work and waits for other active work to finish, without terminating a vendor uninstaller. On restart, an interrupted session is marked not completed, with no invented end time, coverage, or changes. Its in-memory baseline cannot be resumed. **Recent comparisons** lists the six newest saved Watch sessions, including zero-change and coverage-only results but not cancelled or interrupted runs without a saved comparison.
+
+## Browse the Watch archive (unreleased)
+
+Open **Watch archive** in the sidebar, or choose **Browse Watch archive** from Recent comparisons or Change inspector. Enter part of the saved application name (literal text, ignoring A–Z case), or enter an exact ID such as `#123`. Optionally choose a **Session status**, then press **Search**. Use **Older sessions** and **Newer sessions** to move between pages of up to 20 matching sessions. Select a session to open its original evidence and coverage in Change inspector, even when it is older than the 150 sessions in the picker. The inspector's path, change-type, and date filters apply to observations, not to the archive results.
+
+- **Not completed** without a saved comparison covers runs that failed, were cancelled, or were interrupted after a session was recorded. A recovered session can have no recorded ending time. An attempt that never created a session cannot appear in the archive.
+- **Coverage unknown** means the saved session has no comparison. Older installation records may not have come from Watch, even if they have observations. The archive does not infer Watch coverage, an ending time, or a change count from those records.
+- **No scopes compared** is a saved result with coverage information but no usable pairs, not a zero-change comparison. **Comparison incomplete** means some scopes were compared and some were skipped. **0 recorded changes** means there was usable coverage and nothing was recorded in the compared scopes.
+
+**Recent comparisons** still shows only the six latest saved comparisons. Neither view starts a capture or changes the profile.
 
 ## Export matching changes
 
@@ -63,10 +74,17 @@ Choose **View batch** in Cleanup summary to page through the stored manifest’s
 
 Press Escape to close the wizard when it is not busy. Workspace shortcuts do not switch panels while the modal wizard is open.
 
+## Queue uninstall reviews (unreleased)
+
+1. In **Applications**, turn on **Select apps for uninstall queue**. Check up to 12 eligible machine-wide classic apps across inventory pages or searches. Per-user, MSIX, portable, recently removed and system/update entries cannot be queued. Selection alone does not preview or run a command.
+2. Choose **Review next uninstaller**. Review its fresh executable and arguments, then separately confirm **Run uninstaller**. Closing before launch leaves the item waiting. While the vendor process is running, the wizard waits for its result and does not terminate it on Escape.
+3. **Return to queue** to see the per-item exit code, blocked preview or unconfirmed outcome. Exit code 0 is not proof of removal. **Skip** leaves the item recorded as skipped; **Review again** opens a new preview for a skipped, blocked or unconfirmed item. Check Windows before retrying. If refreshed inventory no longer matches, remove the old queue entry and reselect the current app if appropriate.
+4. Review leftovers separately from the app's details, using the existing exact-file approval. **Remove from queue** and **Clear queue** affect only the selection and results shown here. No quiet fallback, elevation, automatic next item or automatic cleanup. Closing or reloading the Applications view discards the in-memory queue; it does not resume later.
+
 ## Back up or rotate a local profile
 
 Under **Settings → Profile storage and backup**, measure file lengths, choose a destination, and make a verified backup. This leaves the active profile unchanged. **Restore to separate copy** rechecks the backup and publishes a new directory; it never replaces or mounts a live database. To free local held-file space while retaining the archived bytes, choose **Rotate verified archive…** on a held batch and supply the backup folder. If the archive or the local batch doesn't verify, the operation does not authorize deletion. Both rotate and restore preserve History. Keep copies somewhere durable; the index checks bytes, not the trustworthiness of whoever supplied the backup.
 
 ## Browser preview
 
-Run `npm ci` and `npm run dev` from `gui/` and open the Vite page in a regular browser. The **Demo data** badge identifies an in-memory fixture, with Activity log as a browser panel instead of a native window; actions there never launch Windows processes or inspect or change the host. The fixture is not included in production bundles or used by Tauri. Browser tests use a separate mocked IPC fixture to check the built interface. Use the [Windows release runbook](WINDOWS-RELEASE.md) for optional native tests on exact packages. Neither the demo nor the browser suites fill a Windows 10/11 evidence row.
+Run `npm ci` and `npm run dev` from `gui/` and open the Vite page in a regular browser. The **Demo data** badge identifies an in-memory fixture, with Activity log as a browser panel instead of a native window; actions there never launch Windows processes or inspect or change the host. The fixture is not included in production bundles or used by Tauri. Browser tests use a separate mocked IPC fixture to check the built interface. Use the [Windows release runbook](WINDOWS-RELEASE.md) for native tests on exact packages. Neither the demo nor the browser suites fill a Windows 10/11 evidence row.

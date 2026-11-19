@@ -23,6 +23,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Dependency licenses must be free/open source
         run: python3 scripts/check-licenses.py
+      - name: Release policy and package verifier fixtures
+        run: python3 -B -m unittest discover -s scripts/tests -v
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked

@@ -12,7 +12,7 @@ import type { HistoryRow, WatchProgress, WatchStart, WatchSummary, WatchSystem }
 type Operation = "begin" | "finish" | "cancel";
 let nextCaptureId = 0;
 
-export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boolean; onOpenHistory: (id: number | null, row?: HistoryRow) => void; onWatching: (active: boolean) => void }) {
+export function WatchView({ hidden, onOpenHistory, onOpenArchive, onWatching }: { hidden: boolean; onOpenHistory: (id: number | null, row?: HistoryRow) => void; onOpenArchive: () => void; onWatching: (active: boolean) => void }) {
   const [appName, setAppName] = useState("");
   const [strict, setStrict] = useState(false);
   const [captureProgress, setCaptureProgress] = useState<WatchProgress | null>(null);
@@ -174,7 +174,7 @@ export function WatchView({ hidden, onOpenHistory, onWatching }: { hidden: boole
         </div>}
       </section>
       <div className="monitor-side">
-        <RecentWatches visible={!hidden} comparedId={summary?.session_id} onInspect={onOpenHistory}/>
+        <RecentWatches visible={!hidden} comparedId={summary?.session_id} onInspect={onOpenHistory} onArchive={onOpenArchive}/>
         <section className="card card-overflow" aria-label="Recent registry observations"><CardHeading title="Registry observations" subtitle="Latest recorded key changes"/>
           {recentError ? <p className="error tool-card" role="alert">Could not load registry observations: {recentError}</p> : recent?.length ? <ul className="diff-list">{recent.map((r) => <li key={r.id}><button className="row-button evidence-row" type="button" title={r.path} onClick={() => onOpenHistory(r.session_id, r)}><ChangeBadge what={r.what} signed/><span><strong>{leafName(r.path)}</strong><code>{r.path}</code></span><Icon name="chevron" size={15}/></button></li>)}</ul>
             : <Empty icon="registry" title={recent ? "No key changes recorded" : "Loading observations…"} detail={recent ? "Add a registry subtree to a watch, then compare the snapshots." : undefined}/>}
