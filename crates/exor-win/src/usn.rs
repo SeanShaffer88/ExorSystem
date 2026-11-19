@@ -75,6 +75,28 @@ pub fn parse_usn_buffer(buf: &[u8]) -> (i64, Vec<UsnRecord>) {
     (next, out)
 }
 
+/// Check the kernel buffer for completeness; unlike the forgiving parser this reports gaps.
+pub fn checked_usn_buffer(buf: &[u8]) -> Option<(i64, Vec<UsnRecord>)> {
+    let mut offset = 8;
+    if buf.len() < offset {
+        return None;
+    }
+    while offset < buf.len() {
+        let len = u32::from_le_bytes(rd::<4>(buf, offset)?) as usize;
+        let rec = buf.get(offset..offset.checked_add(len)?)?;
+        if len < V2_MIN || !len.is_multiple_of(8) || u16::from_le_bytes(rd::<2>(rec, 4)?) != 2 {
+            return None;
+        }
+        let size = u16::from_le_bytes(rd::<2>(rec, 56)?) as usize;
+        let start = u16::from_le_bytes(rd::<2>(rec, 58)?) as usize;
+        if start < V2_MIN || !size.is_multiple_of(2) || start + size > len {
+            return None;
+        }
+        offset += len;
+    }
+    Some(parse_usn_buffer(buf))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -117,6 +139,7 @@ mod tests {
         r[0..4].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
         buf.extend(r);
         assert!(parse_usn_buffer(&buf).1.is_empty());
+        assert!(checked_usn_buffer(&buf).is_none());
         assert!(parse_usn_buffer(&[]).1.is_empty());
         let mut r2 = record(1, 1, 1, 0x100, "x");
         r2[58..60].copy_from_slice(&0xFFF0u16.to_le_bytes()); // name offset outside record

@@ -5,11 +5,12 @@ use crate::collectors::{ServiceChange, TaskChange};
 use crate::error::{EngineError, Result};
 use crate::events::{FsReason, RawEvent, RegOp};
 use crate::noise::{NoiseFilter, Verdict};
+use crate::registry::RegistryChange;
 use crate::trie::{Change, ChangeType};
 use crate::walker::EntryKind;
 use exor_storage::{
     ChangeKind, ChangeSource, Evidence, NewLedgerEntry, NewNode, NodeType, RelationshipType,
-    SessionStatus, Store,
+    SessionStatus, Store, WatchSummary,
 };
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::mpsc;
@@ -34,6 +35,15 @@ pub struct ManifestEntry {
     pub node_type: NodeType,
     /// Expected hash, if the manifest carries one.
     pub hash: Option<String>,
+}
+
+/// Follow-up differences collected before opening a database transaction.
+#[derive(Default)]
+pub(crate) struct WatchChanges {
+    pub(crate) files: Vec<Change>,
+    pub(crate) registry: Vec<RegistryChange>,
+    pub(crate) services: Vec<ServiceChange>,
+    pub(crate) tasks: Vec<TaskChange>,
 }
 
 /// Monitors one installation session.
@@ -187,6 +197,10 @@ impl SessionMonitor {
     /// raised automatically when events or a manifest back the same edge.
     pub fn attribute_diff(&self, changes: &[Change]) -> Result<usize> {
         let s = lock(&self.store)?;
+        self.attribute_diff_on(&s, changes)
+    }
+
+    fn attribute_diff_on(&self, s: &Store, changes: &[Change]) -> Result<usize> {
         let mut n = 0;
         for c in changes.iter().filter(|c| c.kind == EntryKind::File) {
             let (kind, rel) = match c.change {
@@ -206,7 +220,7 @@ impl SessionMonitor {
                 s.node_by_path(&c.path)?.map(|x| x.node_id)
             };
             if let (Some(id), Some(rel)) = (node_id, rel) {
-                self.link(&s, id, rel, Evidence::Heuristic)?;
+                self.link(s, id, rel, Evidence::Heuristic)?;
             }
             s.append_ledger(&NewLedgerEntry {
                 session_id: Some(self.session_id),
@@ -222,10 +236,54 @@ impl SessionMonitor {
         Ok(n)
     }
 
+    /// Attribute metadata-only registry changes as snapshot evidence, not driver observations.
+    /// Removed keys contribute history but do not create new cleanup candidates.
+    pub fn attribute_registry_keys(&self, changes: &[RegistryChange]) -> Result<usize> {
+        let s = lock(&self.store)?;
+        self.attribute_registry_keys_on(&s, changes)
+    }
+
+    fn attribute_registry_keys_on(&self, s: &Store, changes: &[RegistryChange]) -> Result<usize> {
+        for c in changes {
+            let (kind, relation) = match c.change {
+                ChangeType::Added => (ChangeKind::Created, Some(RelationshipType::CreatedBy)),
+                ChangeType::Modified => (ChangeKind::Modified, Some(RelationshipType::ModifiedBy)),
+                ChangeType::Removed => (ChangeKind::Deleted, None),
+            };
+            let node_id = if let Some(relation) = relation {
+                let id = s.upsert_node(&NewNode {
+                    node_type: NodeType::RegistryKey,
+                    path: c.path.clone(),
+                    hash: None,
+                    acl_fingerprint: None,
+                    first_detected_in: Some(self.session_id),
+                })?;
+                self.link(s, id, relation, Evidence::Heuristic)?;
+                Some(id)
+            } else {
+                s.node_by_path(&c.path)?.map(|node| node.node_id)
+            };
+            s.append_ledger(&NewLedgerEntry {
+                session_id: Some(self.session_id),
+                node_id,
+                path: c.path.clone(),
+                change_kind: kind,
+                old_hash: None,
+                new_hash: None,
+                source: ChangeSource::SnapshotDiff,
+            })?;
+        }
+        Ok(changes.len())
+    }
+
     /// Attribute service changes. Added/modified services become `service` nodes (heuristic 0.3);
     /// when the service's executable is already a known node, the service `depends_on` it.
     pub fn attribute_services(&self, changes: &[ServiceChange]) -> Result<usize> {
         let s = lock(&self.store)?;
+        self.attribute_services_on(&s, changes)
+    }
+
+    fn attribute_services_on(&self, s: &Store, changes: &[ServiceChange]) -> Result<usize> {
         let mut n = 0;
         for c in changes {
             let path = format!("service:{}", c.service.name);
@@ -249,7 +307,7 @@ impl SessionMonitor {
                 } else {
                     RelationshipType::ModifiedBy
                 };
-                self.link(&s, id, rel, Evidence::Heuristic)?;
+                self.link(s, id, rel, Evidence::Heuristic)?;
                 if let Some(exe) = image_path(&c.service.binary_path)
                     && let Some(f) = s.node_by_path(&exe)?
                 {
@@ -279,6 +337,10 @@ impl SessionMonitor {
     /// Attribute scheduled-task changes (same rules as services).
     pub fn attribute_tasks(&self, changes: &[TaskChange]) -> Result<usize> {
         let s = lock(&self.store)?;
+        self.attribute_tasks_on(&s, changes)
+    }
+
+    fn attribute_tasks_on(&self, s: &Store, changes: &[TaskChange]) -> Result<usize> {
         let mut n = 0;
         for c in changes {
             let path = format!("task:{}", c.task.path);
@@ -302,7 +364,7 @@ impl SessionMonitor {
                 } else {
                     RelationshipType::ModifiedBy
                 };
-                self.link(&s, id, rel, Evidence::Heuristic)?;
+                self.link(s, id, rel, Evidence::Heuristic)?;
                 if let Some(exe) = c.task.command.as_deref().and_then(image_path)
                     && let Some(f) = s.node_by_path(&exe)?
                 {
@@ -327,6 +389,29 @@ impl SessionMonitor {
             n += 1;
         }
         Ok(n)
+    }
+
+    /// Record one completed snapshot comparison. No probe runs with the store locked.
+    pub(crate) fn record_watch(
+        &self,
+        mut summary: WatchSummary,
+        changes: &WatchChanges,
+        cancel: &Cancel,
+    ) -> Result<WatchSummary> {
+        let s = lock(&self.store)?;
+        s.record_watch_comparison(|s| {
+            cancel.check()?;
+            summary.files_changed = self.attribute_diff_on(s, &changes.files)?;
+            cancel.check()?;
+            summary.services_changed = self.attribute_services_on(s, &changes.services)?;
+            cancel.check()?;
+            summary.tasks_changed = self.attribute_tasks_on(s, &changes.tasks)?;
+            cancel.check()?;
+            summary.registry_keys_changed =
+                self.attribute_registry_keys_on(s, &changes.registry)?;
+            cancel.check()?;
+            Ok(summary)
+        })
     }
 
     /// Confirm artifacts via a manifest: confidence 1.0.

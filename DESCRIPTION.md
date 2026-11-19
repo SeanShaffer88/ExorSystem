@@ -1,8 +1,11 @@
-# Repository description
+# Repository description and topics
 
-**GitHub description (<=350 chars):**
-Open-source Windows uninstaller and installation governance suite. Tracks every file, registry key, service and task an install touches in a confidence-scored graph, simulates cleanup policies, and quarantines with evidence. Rust + SQLite + Tauri, with a USN-journal and registry-driver visibility layer.
+Use these values in the GitHub repository’s **About** settings. Merging this document does not change the live panel; repository administration permission is required.
 
-**Topics:** windows, uninstaller, rust, tauri, sqlite, provenance, system-management, usn-journal, blake3, open-source
+**Description:** Open-source Windows desktop app for comparing installation snapshots and tracing recorded changes. Review uninstall leftovers and quarantine files with restore support. Built with Rust, Tauri, and SQLite; no driver required.
 
-**Tagline:** System State & Provenance Engine
+**Topics:** `windows`, `windows-utilities`, `system-management`, `uninstaller`, `installation-monitoring`, `software-inventory`, `provenance`, `file-quarantine`, `rust`, `tauri`, `react`, `sqlite`, `blake3`, `open-source`
+
+**Tagline:** Compare what an installation changed before deciding what to clean up.
+
+The [optional live-source lab](docs/LIVE-COLLECTION.md) is not part of the released desktop's Watch backend.

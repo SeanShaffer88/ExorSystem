@@ -5,11 +5,12 @@
 //! program's name is `0.3`. A publisher name alone never matches, because publisher folders are
 //! shared between that publisher's programs.
 
+use crate::collectors::{ServiceInfo, TaskInfo};
 use crate::error::{EngineError, Result};
 use crate::programs::{InstalledProgram, norm};
-use crate::quarantine::{self, QuarantineItem};
-use exor_storage::{ChangeKind, ChangeSource, NewLedgerEntry, Store};
+use exor_storage::Store;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 /// A folder an uninstaller may have left behind.
@@ -21,6 +22,40 @@ pub struct Leftover {
     pub reason: String,
     /// `0.7` recorded location, `0.3` name match.
     pub confidence: f64,
+    /// Only folders below the configured application roots are eligible for file quarantine.
+    pub can_quarantine: bool,
+}
+
+/// A registry key name read during the review. No registry values are read.
+#[derive(Debug, Clone)]
+pub struct RegistryKey {
+    /// Key in its registry view, for display only.
+    pub path: String,
+    /// Final key component.
+    pub name: String,
+}
+
+/// A system entry that can be inspected but not changed by ExorSystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewKind {
+    /// Registry key.
+    RegistryKey,
+    /// Windows service.
+    Service,
+    /// Scheduled task.
+    Task,
+}
+
+/// A possible leftover, always read-only. The match is not proof of ownership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewLeftover {
+    /// Class of item.
+    pub kind: ReviewKind,
+    /// Key, service name or task path.
+    pub path: String,
+    /// Why the item was suggested.
+    pub reason: &'static str,
 }
 
 /// Split a registry uninstall command into program and arguments. No shell is involved.
@@ -72,43 +107,6 @@ pub fn split_command(cmd: &str) -> Option<(String, Vec<String>)> {
     Some((exe.to_string(), args))
 }
 
-/// Build a Windows command line from a program and its arguments, quoting the way the C runtime
-/// (and `std::process::Command`) parses it back. The inverse of [`split_command`].
-pub fn join_command(exe: &str, args: &[String]) -> String {
-    fn quote(out: &mut String, a: &str) {
-        if !a.is_empty() && !a.contains([' ', '\t', '"']) {
-            out.push_str(a);
-            return;
-        }
-        out.push('"');
-        let mut slashes = 0usize;
-        for c in a.chars() {
-            match c {
-                '\\' => slashes += 1,
-                '"' => {
-                    out.extend(std::iter::repeat_n('\\', slashes * 2 + 1));
-                    out.push('"');
-                    slashes = 0;
-                }
-                c => {
-                    out.extend(std::iter::repeat_n('\\', slashes));
-                    out.push(c);
-                    slashes = 0;
-                }
-            }
-        }
-        out.extend(std::iter::repeat_n('\\', slashes * 2));
-        out.push('"');
-    }
-    // the program name is parsed by different rules: quote it whole, it cannot contain quotes
-    let mut out = format!("\"{exe}\"");
-    for a in args {
-        out.push(' ');
-        quote(&mut out, a);
-    }
-    out
-}
-
 /// Folder names that are shared by many programs (or hold user data) and are never a leftover.
 const SHARED_NAMES: &[&str] = &[
     "appdata",
@@ -134,7 +132,7 @@ const SHARED_NAMES: &[&str] = &[
     "windowsapps",
 ];
 
-/// Environment variables naming folders that must never be quarantined, nor any folder above them.
+/// Environment variables naming folders that must never be offered, nor any folder above them.
 const PROTECTED_VARS: &[&str] = &[
     "ProgramFiles",
     "ProgramFiles(x86)",
@@ -194,40 +192,13 @@ fn protected_paths(extra: &[PathBuf]) -> Vec<String> {
         .collect()
 }
 
-/// Paths that must never be suggested or quarantined: roots, top-level folders, the Windows
-/// directory, shared folders such as `Common Files`, and any folder that is (or contains) a
-/// protected folder such as Program Files, AppData or the user's profile.
-fn too_broad(p: &Path, protected: &[String]) -> bool {
-    let depth = p
-        .components()
-        .filter(|c| matches!(c, Component::Normal(_)))
-        .count();
-    if depth < 2 {
-        return true;
-    }
-    let s = norm_path(p);
-    if s.contains("\\windows\\") || s.ends_with("\\windows") {
-        return true;
-    }
-    let last = s.rsplit('\\').next().unwrap_or("");
-    if SHARED_NAMES.contains(&last) {
-        return true;
-    }
-    let under = format!("{s}\\");
-    protected.iter().any(|q| *q == s || q.starts_with(&under))
-}
-
-/// First word of `s`, normalized.
-fn first_word(s: &str) -> String {
-    s.split_whitespace().next().map(norm).unwrap_or_default()
-}
-
-/// A folder named only after the vendor ("Google" for "Google Chrome", "Mozilla" for
-/// "Mozilla Firefox") is shared by that vendor's programs and is not a leftover.
+/// A folder named only after the vendor ("Google" for "Google Chrome" by "Google LLC",
+/// "Microsoft" for "Microsoft Teams") is shared by that vendor's programs and is not a leftover.
 fn is_vendor_folder(folder: &str, p: &InstalledProgram, name: &str) -> bool {
     if folder == name {
         return false;
     }
+    let first_word = |s: &str| s.split_whitespace().next().map(norm).unwrap_or_default();
     if let Some(publisher) = p.publisher.as_deref()
         && (folder == norm(publisher) || folder == first_word(publisher))
     {
@@ -236,21 +207,81 @@ fn is_vendor_folder(folder: &str, p: &InstalledProgram, name: &str) -> bool {
     p.name.split_whitespace().count() > 1 && folder == first_word(&p.name)
 }
 
+/// Paths that must never be suggested: roots, top-level folders, the Windows directory, shared
+/// folders such as `Common Files`, and any folder that is (or contains) a `protected` folder such
+/// as Program Files, AppData or the user's profile.
+fn too_broad(p: &Path, protected: &[String]) -> bool {
+    let depth = p
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .count();
+    if !p.is_absolute() || depth < 2 || p.components().any(|c| c == Component::ParentDir) {
+        return true;
+    }
+    #[cfg(windows)]
+    if !matches!(p.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+    {
+        return true;
+    }
+    let s = norm_path(p);
+    if s.contains("\\windows\\") || s.ends_with("\\windows") {
+        return true;
+    }
+    if SHARED_NAMES.contains(&s.rsplit('\\').next().unwrap_or("")) {
+        return true;
+    }
+    let under = format!("{s}\\");
+    protected.iter().any(|q| *q == s || q.starts_with(&under))
+}
+
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Junctions and other reparse points aren't necessarily reported as symlinks.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    meta.file_type().is_symlink()
+}
+
+fn plain_folder(path: &Path) -> bool {
+    path.ancestors()
+        .filter(|p| p.parent().is_some())
+        .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !is_link(&m)))
+}
+
+fn in_application_root(path: &Path, roots: &[PathBuf]) -> bool {
+    let Ok(real) = path.canonicalize() else {
+        return false;
+    };
+    roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| real != root && real.starts_with(root))
+}
+
 /// Folders left after uninstalling `p`. `roots` are the folders to look inside (Program Files,
 /// AppData and similar); only direct children are examined.
 pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> {
     let protected = protected_paths(roots);
     let mut out: Vec<Leftover> = Vec::new();
     let mut add = |path: PathBuf, reason: &str, confidence: f64| {
-        if path.is_dir() && !too_broad(&path, &protected) {
-            let s = path.to_string_lossy().into_owned();
-            if !out.iter().any(|l| l.path.eq_ignore_ascii_case(&s)) {
-                out.push(Leftover {
-                    path: s,
-                    reason: reason.into(),
-                    confidence,
-                });
-            }
+        // The UI round-trips paths as strings; never offer a lossy path for an action.
+        let Some(s) = path.to_str() else { return };
+        if !too_broad(&path, &protected)
+            && !out.iter().any(|l| l.path.eq_ignore_ascii_case(s))
+            && plain_folder(&path)
+        {
+            out.push(Leftover {
+                path: s.into(),
+                reason: reason.into(),
+                confidence,
+                can_quarantine: confidence >= 0.4
+                    && p.is_listed()
+                    && in_application_root(&path, roots),
+            });
         }
     };
     if let Some(loc) = p
@@ -265,18 +296,29 @@ pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> 
         );
     }
     let name = norm(&p.name);
+    let publisher = p.publisher.as_deref().map(norm);
     if name.len() >= 4 {
         for root in roots {
             let Ok(rd) = std::fs::read_dir(root) else {
                 continue;
             };
-            for e in rd.flatten() {
+            for e in rd.take(4_096).flatten() {
                 let n = norm(&e.file_name().to_string_lossy());
                 if n.len() >= 4
+                    && publisher.as_deref() != Some(n.as_str())
                     && (n == name || name.contains(&n) && n.len() * 2 >= name.len())
                     && !is_vendor_folder(&n, p, &name)
                 {
-                    add(e.path(), "The folder name matches the program.", 0.3);
+                    let exact = n == name;
+                    add(
+                        e.path(),
+                        if exact {
+                            "The folder name matches the program."
+                        } else {
+                            "Similar name only; not an approved cleanup folder."
+                        },
+                        if exact { 0.4 } else { 0.3 },
+                    );
                 }
             }
         }
@@ -286,36 +328,122 @@ pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> 
             .total_cmp(&a.confidence)
             .then(a.path.cmp(&b.path))
     });
+    out.truncate(64);
+    out
+}
+
+// Compare Windows paths independent of the host OS, without wildcard, environment or UNC
+// resolution. Unknown formats are excluded rather than used as evidence.
+fn local_windows_path(raw: &str) -> Option<Vec<String>> {
+    let raw = raw.trim().trim_matches('"');
+    let bytes = raw.as_bytes();
+    if !bytes.first().is_some_and(u8::is_ascii_alphabetic)
+        || bytes.get(1) != Some(&b':')
+        || !matches!(bytes.get(2), Some(b'\\' | b'/'))
+    {
+        return None;
+    }
+    let mut parts = vec![raw[..2].to_ascii_lowercase()];
+    for word in raw[3..].split(['\\', '/']).filter(|word| !word.is_empty()) {
+        if word.ends_with(['.', ' ']) || word.contains([':', '%', '"', '*', '?', '\0']) {
+            return None;
+        }
+        parts.push(word.to_lowercase());
+    }
+    Some(parts)
+}
+
+/// Suggest possible registry keys, services and tasks. Name matching is exact after normalising
+/// punctuation and case; publisher-only keys and services/tasks outside the install folder are
+/// ignored. This is advisory only, even when a configured command matches.
+pub fn review_system_leftovers(
+    p: &InstalledProgram,
+    registry: &[RegistryKey],
+    services: &[ServiceInfo],
+    tasks: &[TaskInfo],
+) -> Vec<ReviewLeftover> {
+    let mut out = Vec::new();
+    let name = norm(&p.name);
+    let publisher = p.publisher.as_deref().map(norm);
+    if name.chars().count() >= 4 && publisher.as_deref() != Some(name.as_str()) {
+        for key in registry.iter().filter(|key| norm(&key.name) == name) {
+            out.push(ReviewLeftover {
+                kind: ReviewKind::RegistryKey,
+                path: key.path.clone(),
+                reason: "The key name matches the program name.",
+            });
+        }
+    }
+    let root = p
+        .install_location
+        .as_deref()
+        .and_then(local_windows_path)
+        .filter(|parts| {
+            // Ignore drive roots, top-level folders, Windows and bare profile/AppData roots.
+            parts.len() >= 3
+                && parts[1] != "windows"
+                && !(parts[1] == "users"
+                    && (parts.len() < 4 || (parts[3] == "appdata" && parts.len() < 6)))
+        });
+    let under_install = |path: &str| {
+        root.as_ref().is_some_and(|root| {
+            local_windows_path(path)
+                .is_some_and(|parts| parts.len() > root.len() && parts.starts_with(root))
+        })
+    };
+    for service in services {
+        if split_command(&service.binary_path).is_some_and(|(exe, _)| under_install(&exe)) {
+            out.push(ReviewLeftover {
+                kind: ReviewKind::Service,
+                path: service.name.clone(),
+                reason: "The service command points inside the install folder.",
+            });
+        }
+    }
+    for task in tasks
+        .iter()
+        .filter(|task| task.command.as_deref().is_some_and(under_install))
+    {
+        out.push(ReviewLeftover {
+            kind: ReviewKind::Task,
+            path: task.path.clone(),
+            reason: "The task command points inside the install folder.",
+        });
+    }
+    out.sort_by_cached_key(|item| (item.kind, item.path.to_lowercase()));
+    out.dedup_by(|a, b| a.kind == b.kind && a.path.to_lowercase() == b.path.to_lowercase());
     out
 }
 
 /// Every regular file under `dirs` (symlinks are not followed). At most `cap` files.
 fn files_under(dirs: &[PathBuf], cap: usize) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+    let mut files = BTreeSet::new();
     let mut stack: Vec<PathBuf> = dirs.to_vec();
     while let Some(d) = stack.pop() {
+        if !plain_folder(&d) {
+            continue;
+        }
         let rd = match std::fs::read_dir(&d) {
             Ok(r) => r,
             Err(_) => continue,
         };
         for e in rd.flatten() {
-            let Ok(t) = e.file_type() else { continue };
-            if t.is_symlink() {
+            let Ok(meta) = std::fs::symlink_metadata(e.path()) else {
+                continue;
+            };
+            if is_link(&meta) {
                 continue;
             }
-            if t.is_dir() {
+            if meta.is_dir() {
                 stack.push(e.path());
-            } else if t.is_file() {
-                if files.len() >= cap {
-                    return Err(EngineError::Quarantine(format!(
-                        "more than {cap} files; choose a smaller folder"
-                    )));
-                }
-                files.push(e.path());
+            } else if meta.is_file() && files.insert(e.path()) && files.len() > cap {
+                return Err(EngineError::Quarantine(format!(
+                    "more than {cap} files; choose a smaller folder"
+                )));
             }
         }
     }
-    Ok(files)
+    Ok(files.into_iter().collect())
 }
 
 /// Quarantine every file under the chosen folders and record it. Empty folders are left in place.
@@ -339,26 +467,7 @@ pub fn quarantine_leftovers(
             "no files found in those folders".into(),
         ));
     }
-    let (manifest, manifest_path) = quarantine::quarantine(quarantine_root, &files, &[])?;
-    crate::execute::record_or_undo(store, &manifest, &manifest_path, session_id)?;
-    for it in &manifest.items {
-        if let QuarantineItem::File {
-            original_path,
-            blake3,
-            ..
-        } = it
-        {
-            store.append_ledger(&NewLedgerEntry {
-                session_id,
-                node_id: None,
-                path: original_path.clone(),
-                change_kind: ChangeKind::Quarantined,
-                old_hash: Some(blake3.clone()),
-                new_hash: None,
-                source: ChangeSource::Policy,
-            })?;
-        }
-    }
+    let (manifest, _) = crate::execute::record_files(store, quarantine_root, session_id, &files)?;
     Ok((manifest.quarantine_id, files.len()))
 }
 
@@ -366,10 +475,12 @@ pub fn quarantine_leftovers(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::programs::ProgramSource;
     use crate::programs::Scope;
 
     fn prog(name: &str, loc: Option<&str>) -> InstalledProgram {
         InstalledProgram {
+            source: ProgramSource::Registry,
             id: "x".into(),
             name: name.into(),
             version: None,
@@ -412,67 +523,50 @@ mod tests {
     }
 
     #[test]
-    fn joins_commands_with_crt_quoting() {
-        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(
-            join_command(r"C:\A B\u.exe", &args(&["/S", r"/DIR=C:\x y"])),
-            r#""C:\A B\u.exe" /S "/DIR=C:\x y""#
-        );
-        assert_eq!(
-            join_command("MsiExec.exe", &args(&["/X{ABC-1}"])),
-            r#""MsiExec.exe" /X{ABC-1}"#
-        );
-        // empty arguments survive, quotes are escaped, trailing backslashes are doubled
-        assert_eq!(
-            join_command("u.exe", &args(&["", r#"a"b"#, r"C:\dir\ x\"])),
-            r#""u.exe" "" "a\"b" "C:\dir\ x\\""#
-        );
-        // splitting what was joined gives the same program and arguments back
-        let (exe, a) = split_command(r#""C:\A B\u.exe" /S "/DIR=C:\x y""#).unwrap();
-        assert_eq!(join_command(&exe, &a), r#""C:\A B\u.exe" /S "/DIR=C:\x y""#);
-    }
-
-    #[test]
     fn broad_paths_are_refused() {
         assert!(too_broad(Path::new("/"), &[]));
         assert!(too_broad(Path::new("/tmp"), &[]));
         assert!(too_broad(Path::new(r"C:\Windows\System32"), &[]));
+        #[cfg(windows)]
+        {
+            assert!(too_broad(Path::new("/tmp/a/b"), &[]), "no drive letter");
+            assert!(!too_broad(Path::new(r"C:\Program Files\Example"), &[]));
+        }
+        #[cfg(not(windows))]
         assert!(!too_broad(Path::new("/tmp/a/b"), &[]));
     }
 
     #[test]
     fn shared_and_protected_folders_are_refused() {
-        let prot = vec![
-            norm_path(Path::new(r"C:\Users\Sam\AppData\Local")),
-            norm_path(Path::new(r"C:\Users\Sam")),
-        ];
-        // a protected folder itself, and every folder above it
-        assert!(too_broad(Path::new(r"C:\Users\Sam\AppData\Local"), &prot));
-        assert!(too_broad(Path::new("c:/users/sam/appdata/local/"), &prot));
-        assert!(too_broad(Path::new(r"C:\Users\Sam\AppData"), &prot));
-        assert!(too_broad(Path::new(r"C:\Users\Sam"), &prot));
-        assert!(too_broad(Path::new(r"\\?\C:\Users\Sam"), &prot));
-        // shared folders, wherever they are
-        assert!(too_broad(Path::new(r"C:\Program Files\Common Files"), &[]));
-        assert!(too_broad(Path::new(r"D:\Apps\Microsoft"), &[]));
-        // a program's own folder inside a protected one is fine
-        assert!(!too_broad(
-            Path::new(r"C:\Users\Sam\AppData\Local\Foo"),
+        #[cfg(windows)]
+        let (local, home, own, shared) = (
+            r"C:\Users\Sam\AppData\Local",
+            r"C:\Users\Sam",
+            r"C:\Users\Sam\AppData\Local\Foo",
+            [r"C:\Program Files\Common Files", r"D:\Apps\Microsoft"],
+        );
+        #[cfg(not(windows))]
+        let (local, home, own, shared) = (
+            "/home/sam/.local",
+            "/home/sam",
+            "/home/sam/.local/Foo",
+            ["/opt/apps/Common Files", "/opt/apps/Microsoft"],
+        );
+        let prot = vec![norm_path(Path::new(local)), norm_path(Path::new(home))];
+        // a protected folder itself (in any spelling), and every folder above it
+        assert!(too_broad(Path::new(local), &prot));
+        assert!(too_broad(
+            Path::new(&format!("{}/", local.to_uppercase())),
             &prot
         ));
-    }
-
-    #[test]
-    fn install_location_pointing_at_a_root_is_not_suggested() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("data").join("Roots");
-        std::fs::create_dir_all(root.join("Foo")).unwrap();
-        let p = prog("Foo Bar", Some(root.to_str().unwrap()));
-        let found = find_leftovers(&p, std::slice::from_ref(&root));
-        assert!(
-            !found.iter().any(|l| Path::new(&l.path) == root),
-            "a search root is never a leftover: {found:?}"
-        );
+        assert!(too_broad(Path::new(home), &prot));
+        assert!(too_broad(Path::new(local).parent().unwrap(), &prot));
+        // shared folders, wherever they are
+        for s in shared {
+            assert!(too_broad(Path::new(s), &[]), "{s}");
+        }
+        // a program's own folder inside a protected one is fine
+        assert!(!too_broad(Path::new(own), &prot));
     }
 
     #[test]
@@ -485,7 +579,6 @@ mod tests {
             "Mozilla",
             "Mozilla Firefox",
             "Microsoft",
-            "Teams",
         ] {
             std::fs::create_dir_all(root.join(n)).unwrap();
         }
@@ -532,6 +625,78 @@ mod tests {
     }
 
     #[test]
+    fn review_requires_app_name_or_a_command_under_the_install_folder() {
+        let p = prog("Foo Bar", Some(r"C:\Program Files\Foo Bar"));
+        let registry = ["FooBar", "Acme", "FooBar2"].map(|name| RegistryKey {
+            name: name.into(),
+            path: format!(r"HKCU\Software\{name}"),
+        });
+        let service = |name: &str, command: &str| ServiceInfo {
+            name: name.into(),
+            display_name: "Foo Bar".into(),
+            binary_path: command.into(),
+            start_type: "auto".into(),
+        };
+        let services = [
+            service("matches", r#""c:\PROGRAM FILES\foo bar\svc.exe" /service"#),
+            service("sibling", r"C:\Program Files\Foo Bar Tools\svc.exe"),
+            service("traversal", r"C:\Program Files\Foo Bar\..\Other\svc.exe"),
+            service("environment", r"%ProgramFiles%\Foo Bar\svc.exe"),
+        ];
+        let task = |name: &str, command: &str| TaskInfo {
+            path: name.into(),
+            command: Some(command.into()),
+            author: Some("Acme".into()),
+            definition_hash: None,
+        };
+        let tasks = [
+            task(r"\Foo\Updater", r"C:/Program Files/Foo Bar/update.exe"),
+            task(r"\Foo\Other", r"C:\Windows\system32\cmd.exe"),
+        ];
+        let found = review_system_leftovers(&p, &registry, &services, &tasks);
+        assert_eq!(
+            found
+                .iter()
+                .map(|i| (i.kind, i.path.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (ReviewKind::RegistryKey, r"HKCU\Software\FooBar"),
+                (ReviewKind::Service, "matches"),
+                (ReviewKind::Task, r"\Foo\Updater"),
+            ]
+        );
+        let broad = prog("Acme", Some(r"C:\Program Files"));
+        assert!(review_system_leftovers(&broad, &registry, &services, &tasks).is_empty());
+    }
+
+    #[test]
+    fn install_folder_outside_application_roots_is_review_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("programs");
+        let app = dir.path().join("other/App");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        let p = prog("TestApp", app.to_str());
+        let found = find_leftovers(&p, &[root]);
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].can_quarantine);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_install_folder_is_not_suggested() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("programs");
+        let target = dir.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        let link = root.join("TestApp");
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        let p = prog("TestApp", link.to_str());
+        assert!(find_leftovers(&p, &[root]).is_empty());
+    }
+
+    #[test]
     fn quarantines_and_restores_leftovers() {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("app/Foo");
@@ -543,7 +708,7 @@ mod tests {
         let (id, n) = quarantine_leftovers(&store, &q, None, std::slice::from_ref(&dir)).unwrap();
         assert_eq!(n, 2);
         assert!(!dir.join("a.txt").exists());
-        crate::execute::restore_by_id(&store, &id, false).unwrap();
+        crate::execute::restore_by_id(&store, &q, &id).unwrap();
         assert_eq!(std::fs::read(dir.join("sub/b.txt")).unwrap(), b"b");
         assert!(quarantine_leftovers(&store, &q, None, &[PathBuf::from("/tmp")]).is_err());
     }

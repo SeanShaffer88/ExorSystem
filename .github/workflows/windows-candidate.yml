@@ -1,0 +1,76 @@
+name: Windows candidate packages (no publish)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-candidate.yml'
+      - '.cargo/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'gui/**'
+      - 'scripts/release.ps1'
+      - 'scripts/check-release.ps1'
+      - 'scripts/verify-release-candidate.py'
+      - 'scripts/windows-fixture.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-candidate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    name: Build and inspect NSIS, MSI and portable ZIP
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+          key: candidate-x64
+      - name: Exercise the disposable fixture without opening the desktop
+        shell: pwsh
+        run: |
+          $fixture = ./scripts/windows-fixture.ps1 -Action New
+          try {
+            ./scripts/windows-fixture.ps1 -Action ChangeA -Id $fixture.id | Out-Null
+            ./scripts/windows-fixture.ps1 -Action ChangeB -Id $fixture.id | Out-Null
+            ./scripts/windows-fixture.ps1 -Action Verify -Id $fixture.id | Out-Null
+          } finally { ./scripts/windows-fixture.ps1 -Action Remove -Id $fixture.id }
+      - name: Build packages
+        shell: pwsh
+        run: |
+          try { ./scripts/release.ps1 }
+          catch { Write-Host "::error title=Package build::$($_.Exception.Message)"; throw }
+      - name: Verify hashes and actual package metadata
+        shell: pwsh
+        run: |
+          try { ./scripts/check-release.ps1 }
+          catch { Write-Host "::error title=Package check::$($_.Exception.Message)"; throw }
+      - name: Verify the candidate can be promoted without rebuilding
+        shell: pwsh
+        run: |
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE) { throw 'Could not resolve the candidate commit' }
+          python ./scripts/verify-release-candidate.py dist --commit $commit --run-id $env:GITHUB_RUN_ID
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExorSystem-Windows-x64-candidate
+          path: |
+            dist/ExorSystem-v*
+            dist/SHA256SUMS.txt
+            dist/PACKAGE-CHECKS.json
+          if-no-files-found: error
+          retention-days: 30

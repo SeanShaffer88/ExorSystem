@@ -79,7 +79,7 @@ pub fn parse_registry_message(buf: &[u8]) -> Result<RawEvent, WinError> {
             .then_some(value),
         op,
         process,
-        ts_ms: filetime / 10_000,
+        ts_ms: crate::filetime_to_unix_ms(filetime),
     })
 }
 
@@ -96,7 +96,7 @@ mod tests {
         b.extend((total as u32).to_le_bytes());
         b.extend(KIND_REGISTRY.to_le_bytes());
         b.extend(op.to_le_bytes());
-        b.extend(1_000_000_000u64.to_le_bytes());
+        b.extend(116_444_737_000_000_000u64.to_le_bytes());
         b.extend(4242u32.to_le_bytes());
         b.extend((k.len() as u16).to_le_bytes());
         b.extend((v.len() as u16).to_le_bytes());

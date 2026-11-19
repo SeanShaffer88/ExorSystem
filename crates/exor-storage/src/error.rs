@@ -38,6 +38,9 @@ pub enum StorageError {
         /// Child node id.
         child: i64,
     },
+    /// More than one stored path matches a case-insensitive trace.
+    #[error("several recorded paths match '{0}'; enter the exact recorded spelling")]
+    AmbiguousPath(String),
     /// Row not found.
     #[error("not found: {0}")]
     NotFound(String),

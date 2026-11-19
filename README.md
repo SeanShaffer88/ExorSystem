@@ -1,49 +1,53 @@
 # ExorSystem
 
-Open-source Windows system management and installation governance suite: a FOSS Total Uninstall replacement built as an intelligent **System State & Provenance Engine**.
+**Compare what an installation changed before deciding what to clean up.** ExorSystem is an open-source Windows desktop app for installation snapshots, system-change evidence, guided uninstall review, and recoverable file quarantine. The desktop runs as a normal user and does not require a driver.
 
-Every file, registry key, service and task is recorded as a node in a directed acyclic graph with a probabilistic confidence score, so you can answer "where did this come from, and is it safe to remove?" with evidence.
+## Downloads
 
-## Layers
+Get [ExorSystem v0.3.0 for Windows x64](https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.3.0) as an **NSIS installer** (`-Setup.exe`), **MSI**, or **portable ZIP**. Compare the download with the release's `SHA256SUMS.txt` before running it. Extract the portable ZIP to a local folder and open `ExorSystem.exe` from Explorer. Installers may prompt for UAC; **open the desktop normally**, not as Administrator.
 
-| Layer | Path | Tech | Status |
-|---|---|---|---|
-| GUI | `gui/` | Tauri v2 + React/TypeScript, keyboard-first, plain-language reports | tabs, three-pane programs list, status bar, slide-out log; type-checked |
-| User-space engine | `crates/exor-engine` | Rust + tokio, BLAKE3 | implemented, 100% safe Rust, tested |
-| Storage | `crates/exor-storage` | SQLite, WAL | implemented, tested |
-| Windows sources | `crates/exor-win` | windows-rs: USN journal, driver client | type-checked, not run on Windows |
-| Kernel driver | `driver/` | C, minifilter framework, `CmRegisterCallbackEx` | source only, not compiled |
+**Before upgrading:** Close ExorSystem and back up the entire `%LOCALAPPDATA%\ExorSystem` profile, including quarantine. v0.3.0 upgrades the database to schema v5 on first launch. Its automatic pre-migration SQLite copy does **not** include held files. Keep any legacy `data` folder from v0.1.0; it is not imported. See the [upgrade and rollback notes](docs/releases/v0.3.0.md#before-you-upgrade).
 
-See `docs/ARCHITECTURE.md`, `AUDIT.md` (what is and is not verified) and `CHANGELOG.md`.
+[CI verified the published packages](AUDIT.md#v030-release-evidence) without installing or launching them. The interactive Windows 10/11 client matrix is **Not run**.
 
-## Features
+## What you can do
 
-- **BOM & inference graph**: confidence `1.0` manifest-confirmed, `0.7` inferred from timing, `0.3` heuristic/unknown. Edges are cycle-checked.
-- **Noise filtering**: background telemetry, browser caches, indexer and Defender writes dropped in real time, with burst de-duplication.
-- **Differential engine**: async parallel directory walk, Merkle path-trie diff (identical subtrees skipped), BLAKE3 hashing with incremental reuse.
-- **Install watch**: take a before picture, run the installer, take an after picture; files, services and scheduled tasks land in one traceable session.
-- **Optional themes**: 36 dark and light palettes with live preview and a temporary Undo; all pass WCAG AA contrast.
-- **Cleanup policy simulator**: JSONLogic rules, pure dry run; most protective rule wins (keep, then review, then quarantine). Templates: conservative, standard, thorough.
-- **Evidence-preserving quarantine**: compact JSON manifests with BLAKE3 verification, all-or-nothing moves, restore and purge, manifests kept as evidence. No VSS snapshots.
-- **Provenance timeline & change ledger**: append-only ledger (enforced by triggers); trace any artifact to its session, installer family and timestamp.
-- **Governance extras**: shared-component impact maps, orphaned-dependency review, installer family fingerprinting (silent switches), update batching by risk, portable-app transition plan, accessibility-first summaries.
-- **Mock harnesses**: seeded USN/registry event generators so the whole pipeline runs under `cargo test` without a driver.
+- **Compare an install.** In **Registry monitor**, choose specific folders and optionally registry Software subtrees. Take a baseline, make a change or run the installer yourself, and compare. Services and scheduled tasks are independent, read-only opt-ins. See which scopes were compared or skipped. Snapshots can miss short-lived changes and do not identify the process responsible.
+- **Trace recorded evidence.** Open a Watch result in **Change inspector**. Filter changes by installation, path, kind, or UTC dates, and export matching observations as JSON. Follow recorded relationships or save an installation report. A relationship's confidence score is not proof of ownership.
+- **Review installed apps and leftovers.** Browse classic Windows programs, current-user MSIX apps, and explicitly added portable apps. Preview supported vendor uninstall commands before running them. Use Windows Settings for per-user or unsupported uninstallers. Registry, service, and task findings are review-only.
+- **Quarantine exact files.** Review the file list before approving a reversible move. Restore held files without overwriting an existing destination, make a verified profile backup, or separately confirm permanent deletion. Quarantine does not replace a backup.
+- **Arrange your workspace.** Dock tools in Main, Right, or Bottom, save a layout, and keep Watch open alongside the inspector. Activity log is a separate window on Windows. Themes and keyboard controls are available; native accessibility and mixed-DPI behavior still need client testing.
+
+Start with the [dashboard guide](docs/DASHBOARD.md#watch-an-install). To try Watch without an installer, use [a disposable file-only fixture](docs/WINDOWS-RELEASE.md#3-verify-watch-and-history-with-real-files-and-registry-keys).
+
+## Documentation
+
+| If you want to… | Start here |
+|---|---|
+| Use Watch, History, cleanup, or backup | [Dashboard guide](docs/DASHBOARD.md) |
+| Build or test a release, or collect native evidence | [Windows runbook](docs/WINDOWS-RELEASE.md) · [Evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md) |
+| See what shipped or what is still open | [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Verification matrix](AUDIT.md) |
+| Work on the code | [Development](docs/DEVELOPMENT.md) · [Architecture](docs/ARCHITECTURE.md) |
+
+See the [full documentation index](docs/README.md) for release notes and the separate experimental live-source lab.
 
 ## Build and test
 
-```
-cargo test --locked                     # engine + storage + parsers (any OS)
-cargo clippy --all-targets --locked -- -D warnings
-cd gui && npm ci && npm run build       # frontend
-cd gui && npm run tauri build           # desktop app (Windows, WebView2)
+From the repository root, with the [pinned toolchain](docs/DEVELOPMENT.md):
+
+```sh
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+npm --prefix gui ci
+npm --prefix gui run build
 ```
 
-Requires Rust 1.90+ (edition 2024). The driver needs the WDK; see `driver/README.md`.
+The frontend builds separately from the desktop. To run the browser demo, use `npm --prefix gui run dev` and open the Vite URL. Its **Demo data** badge marks fixture data, not Windows observations. For the Windows desktop, see [development setup](docs/DEVELOPMENT.md#run-the-desktop) or the [package build instructions](docs/WINDOWS-RELEASE.md#1-build-a-candidate-without-publishing).
 
 ## Data
 
-Everything is local and offline. The desktop app stores `data/exor.db` next to the executable. No telemetry.
+All three package formats use the current Windows user's `%LOCALAPPDATA%\ExorSystem` for the SQLite profile and quarantine. The desktop has no telemetry. It stores recorded paths, file fingerprints, and comparison coverage; Watch does not record registry values. Reports and exports can include local paths, so review them before sharing. The Activity log is session-only and is not the evidence ledger. Windows prerequisites and vendor uninstallers are separate from the app's local evidence store.
 
 ## License
 
-MIT. See `LICENSE`, `CREDITS.md`.
+[MIT](LICENSE). See [credits and dependency licensing](CREDITS.md).

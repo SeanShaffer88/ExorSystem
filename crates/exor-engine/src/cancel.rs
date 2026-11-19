@@ -32,7 +32,8 @@ impl Cancel {
         // The sender lives inside self, so the channel cannot close while we wait.
         let _ = rx.wait_for(|v| *v).await;
     }
-    pub(crate) fn check(&self) -> crate::Result<()> {
+    /// Return a cancellation error at a safe stopping boundary.
+    pub fn check(&self) -> crate::Result<()> {
         if self.is_cancelled() {
             Err(crate::EngineError::Cancelled)
         } else {

@@ -1,16 +1,24 @@
-//! Portable-app transition assistant: what can move into a self-contained folder, what cannot.
+//! Read-only export of recorded files and a descriptive plan, not a runnable application.
 
-use crate::error::{EngineError, Result};
-use exor_storage::{Node, NodeType};
+use crate::error::{EngineError, Result, io_err};
+use crate::publication::{Staging, sync_dir};
+use crate::quarantine::{local_path, plain, plain_dirs};
+use exor_storage::{Node, NodeType, Store};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Plan for turning an installed app into a portable one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortablePlan {
+    /// Recorded file identities, if required for this export. No registry data is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_hashes: Option<BTreeMap<String, String>>,
     /// Files to copy beneath the portable app folder.
     pub copy_files: Vec<String>,
-    /// Registry keys/values to export and replay at launch.
+    /// Recorded registry paths for reference only, never applied.
     pub export_registry: Vec<String>,
     /// Items that cannot be made portable (services, scheduled tasks), with the reason.
     pub unsupported: Vec<(String, String)>,
@@ -74,38 +82,137 @@ fn target_for(dest: &Path, src: &str) -> Option<PathBuf> {
     any.then_some(t)
 }
 
-/// Copy a plan's files into `dest` (created; must be new or empty) and write `portable-plan.json`
-/// beside them listing the registry keys to replay and what could not be made portable.
-/// Sources are only read.
-pub fn build_portable(plan: &PortablePlan, dest: &Path) -> Result<PortableBuild> {
-    let io = |e: std::io::Error| EngineError::Quarantine(format!("{}: {e}", dest.display()));
-    if dest.exists() && std::fs::read_dir(dest).map_err(io)?.next().is_some() {
-        return Err(EngineError::Quarantine(format!(
-            "{} is not empty",
-            dest.display()
-        )));
+/// Load a bounded plan without trusting current contents as recorded data.
+pub fn plan_recorded(store: &Store, session_id: i64) -> Result<PortablePlan> {
+    let mut nodes = Vec::new();
+    loop {
+        let page = store.session_nodes_page(session_id, None, nodes.len(), 100)?;
+        if usize::try_from(page.total).unwrap_or(usize::MAX) > crate::cleanup::MAX_FINDINGS {
+            return Err(EngineError::Quarantine(
+                "Too many recorded items for one file export; use History for the paged evidence."
+                    .into(),
+            ));
+        }
+        if page.nodes.is_empty() {
+            break;
+        }
+        nodes.extend(page.nodes);
     }
-    std::fs::create_dir_all(dest).map_err(io)?;
+    let mut plan = plan_portable(&nodes);
+    plan.file_hashes = Some(
+        nodes
+            .into_iter()
+            .filter_map(|n| n.hash.map(|h| (n.path, h)))
+            .collect(),
+    );
+    Ok(plan)
+}
+
+fn fill(plan: &PortablePlan, dest: &Path) -> Result<PortableBuild> {
     let (mut copied, mut missing) = (0, Vec::new());
+    let mut remaining = 2_u64 * 1024 * 1024 * 1024;
     for f in &plan.copy_files {
         let src = Path::new(f);
-        let Some(t) = target_for(dest, f).filter(|_| src.is_file()) else {
+        let Some(expected) = plan
+            .file_hashes
+            .as_ref()
+            .map_or(Some(None), |hashes| hashes.get(f).map(Some))
+        else {
             missing.push(f.clone());
             continue;
         };
-        if let Some(parent) = t.parent() {
-            std::fs::create_dir_all(parent).map_err(io)?;
+        let Some(t) = target_for(dest, f).filter(|_| {
+            local_path(src).is_ok()
+                && src
+                    .parent()
+                    .is_some_and(|p| matches!(plain_dirs(p), Ok(true)))
+        }) else {
+            missing.push(f.clone());
+            continue;
+        };
+        let Ok(Some(meta)) = plain(src, false) else {
+            missing.push(f.clone());
+            continue;
+        };
+        if meta.len() > remaining {
+            missing.push(f.clone());
+            continue;
         }
-        std::fs::copy(src, &t).map_err(io)?;
+        remaining -= meta.len();
+        #[cfg(windows)]
+        let input = exor_fs::open_locked(src, false);
+        #[cfg(not(windows))]
+        let input = File::open(src);
+        let Ok(input) = input else {
+            missing.push(f.clone());
+            continue;
+        };
+        let parent = t
+            .parent()
+            .ok_or_else(|| EngineError::Quarantine("Missing export directory".into()))?;
+        fs::create_dir_all(parent).map_err(io_err(parent))?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&t)
+            .map_err(io_err(&t))?;
+        let n = std::io::copy(&mut input.take(meta.len() + 1), &mut output).map_err(io_err(&t))?;
+        output.sync_all().map_err(io_err(&t))?;
+        drop(output);
+        if n != meta.len()
+            || expected
+                .is_some_and(|h| crate::hashing::hash_file_blocking(&t).as_ref().ok() != Some(h))
+        {
+            fs::remove_file(&t).map_err(io_err(&t))?;
+            missing.push(f.clone());
+            continue;
+        }
+        sync_dir(parent)?;
         copied += 1;
     }
     let plan_file = dest.join("portable-plan.json");
-    std::fs::write(&plan_file, serde_json::to_string_pretty(plan)?).map_err(io)?;
+    let mut file = File::create(&plan_file).map_err(io_err(&plan_file))?;
+    let payload = serde_json::json!({ "format": "exorsystem.recorded-files", "version": 1, "plan": plan,
+        "not_copied": missing, "copied": copied, "note": "This is not a runnable application. No registry entries were exported or replayed." });
+    file.write_all(&serde_json::to_vec_pretty(&payload)?)
+        .and_then(|()| file.sync_all())
+        .map_err(io_err(&plan_file))?;
     Ok(PortableBuild {
         copied,
         missing,
-        plan_file: plan_file.to_string_lossy().into_owned(),
+        plan_file: String::new(),
     })
+}
+
+/// Copy into a private staging directory and publish complete files and plan under a new name.
+pub fn export_recorded(
+    plan: &PortablePlan,
+    directory: &Path,
+    label: &str,
+) -> Result<(PathBuf, PortableBuild)> {
+    let stage = Staging::new(directory)?;
+    let mut result = fill(plan, stage.path())?;
+    let folder = stage.publish_directory(label)?;
+    result.plan_file = folder
+        .join("portable-plan.json")
+        .to_string_lossy()
+        .into_owned();
+    Ok((folder, result))
+}
+
+/// Export to an exact, new destination. Existing directories are never intentionally reused.
+pub fn build_portable(plan: &PortablePlan, dest: &Path) -> Result<PortableBuild> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| EngineError::Quarantine("Missing output directory".into()))?;
+    let stage = Staging::new(parent)?;
+    let mut result = fill(plan, stage.path())?;
+    stage.publish_as(dest)?;
+    result.plan_file = dest
+        .join("portable-plan.json")
+        .to_string_lossy()
+        .into_owned();
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -124,6 +231,7 @@ mod tests {
             copy_files: vec![f.to_string_lossy().into_owned(), "/nope/x.txt".into()],
             export_registry: vec!["HKCU\\Software\\Foo".into()],
             unsupported: vec![("Svc".into(), "needs admin".into())],
+            ..Default::default()
         };
         let dest = d.path().join("out");
         let r = build_portable(&plan, &dest).unwrap();

@@ -1,42 +1,77 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
-  # Run from the Actions tab: builds, then creates the tag v{Cargo version} on this commit.
   workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful Windows candidate packages Actions run ID
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: write
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
 
 jobs:
   release:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: gui/package-lock.json
-      - run: rustup show
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: gui/src-tauri
-      - name: Build artifacts
-        shell: pwsh
-        run: ./scripts/release.ps1
-      - name: Publish GitHub release
-        shell: pwsh
+      - name: Verify publishing prerequisites
+        id: candidate
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
         run: |
-          $v = (Select-String -Path Cargo.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          $tag = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "v$v" }
-          $files = @(Get-ChildItem dist/ExorSystem-v* | ForEach-Object FullName) + "dist/SHA256SUMS.txt"
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $files --clobber
-          } else {
-            gh release create $tag --target "${{ github.sha }}" --title "ExorSystem $tag" --generate-notes $files
+          [[ "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]] || { echo 'Dispatch Release from the default branch.' >&2; exit 1; }
+          [[ "$CANDIDATE_RUN" =~ ^[1-9][0-9]*$ ]] || { echo 'Use a numeric Actions run ID.' >&2; exit 1; }
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN")"
+          sha="$(jq -er --arg repo "$GITHUB_REPOSITORY" '
+            select(.status == "completed" and .conclusion == "success"
+              and .path == ".github/workflows/windows-candidate.yml"
+              and .head_repository.full_name == $repo) | .head_sha' <<< "$run")" || {
+            echo 'The run must be a successful candidate build in this repository.' >&2; exit 1;
           }
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          base="$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...$DEFAULT_BRANCH" --jq '.merge_base_commit.sha')"
+          [[ "$base" == "$sha" ]] || { echo 'The tested candidate commit must be reachable from the default branch.' >&2; exit 1; }
+          ci="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$sha" -f status=success -F per_page=1 --jq '.workflow_runs[0].html_url // empty')"
+          [[ -n "$ci" ]] || { echo 'No passing CI run for the tested candidate commit.' >&2; exit 1; }
+          printf 'commit=%s\nci_url=%s\n' "$sha" "$ci" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.candidate.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ExorSystem-Windows-x64-candidate
+          path: dist
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify and publish the candidate without rebuilding
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_COMMIT: ${{ steps.candidate.outputs.commit }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
+          CI_URL: ${{ steps.candidate.outputs.ci_url }}
+        run: |
+          version="$(python3 scripts/verify-release-candidate.py dist --commit "$CANDIDATE_COMMIT" --run-id "$CANDIDATE_RUN")"
+          tag="v$version"
+          has_tag="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" | jq -r --arg ref "refs/tags/$tag" 'any(.[]; .ref == $ref)')"
+          [[ "$has_tag" == false ]] || { echo "Refusing to reuse existing tag $tag." >&2; exit 1; }
+          notes="$RUNNER_TEMP/exor-release-notes.md"
+          cp "docs/releases/$tag.md" "$notes"
+          printf '\n## Verification\n\n- Source commit: `%s`\n- [Automated CI](%s)\n- [Windows candidate package run](%s/%s/actions/runs/%s)\n\nThese are automated build and package checks, not interactive Windows 10/11 test results.\n' \
+            "$CANDIDATE_COMMIT" "$CI_URL" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$CANDIDATE_RUN" >> "$notes"
+          prefix="dist/ExorSystem-$tag-x64"
+          gh release create "$tag" "$prefix-Setup.exe" "$prefix.msi" "$prefix-Portable.zip" \
+            dist/SHA256SUMS.txt dist/PACKAGE-CHECKS.json \
+            --repo "$GITHUB_REPOSITORY" --target "$CANDIDATE_COMMIT" \
+            --title "ExorSystem $tag" --notes-file "$notes" --latest

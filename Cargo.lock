@@ -70,10 +70,12 @@ dependencies = [
 
 [[package]]
 name = "exor-engine"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
+ "exor-fs",
  "exor-storage",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -82,8 +84,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "exor-fs"
+version = "0.3.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "exor-storage"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -94,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "exor-win"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "exor-engine",
  "thiserror",

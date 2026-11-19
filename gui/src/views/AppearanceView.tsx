@@ -1,17 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { applyTheme, endPreview, previewTheme, themes, useThemeState } from "../theme";
 
-export function AppearanceView() {
-  const { applied } = useThemeState();
-  const [selected, setSelected] = useState(applied);
+export function AppearanceView({ visible }: { visible: boolean }) {
+  const { applied, preview } = useThemeState();
 
-  // A preview never outlives this screen.
-  useEffect(() => endPreview, []);
-
-  const choose = (id: string) => {
-    setSelected(id);
-    previewTheme(id);
-  };
+  // Leaving the active tab (or the compact dock) cancels an unapplied preview.
+  useEffect(() => { if (visible) return endPreview; }, [visible]);
+  const selected = preview ?? applied;
 
   const groups = [
     { label: "Dark themes", items: themes.filter((t) => t.mode === "dark") },
@@ -29,7 +24,7 @@ export function AppearanceView() {
         <button
           type="button"
           disabled={selected === applied}
-          onClick={() => { setSelected(applied); endPreview(); }}
+          onClick={endPreview}
           title="Go back to the theme you are using"
         >
           Cancel preview
@@ -40,7 +35,7 @@ export function AppearanceView() {
           <legend>{g.label}</legend>
           {g.items.map((t) => (
             <label key={t.id} className="theme-option" title={t.description}>
-              <input type="radio" name="theme" value={t.id} checked={selected === t.id} onChange={() => choose(t.id)} />
+              <input type="radio" name="theme" value={t.id} checked={selected === t.id} onChange={() => previewTheme(t.id)} />
               <span className="swatches" aria-hidden="true">
                 {(["bg", "panel", "accent", "fg"] as const).map((k) => (
                   <span key={k} style={{ background: t.tokens[k] }} />

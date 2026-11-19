@@ -3,7 +3,8 @@
 use crate::error::{Result, StorageError};
 use crate::migrate;
 use crate::model::*;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::types::Value;
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params, params_from_iter};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -34,6 +35,18 @@ const SESSION_COLS: &str =
     "session_id, app_name, installer_path, fingerprint_family, started_at, ended_at, status";
 const LEDGER_COLS: &str =
     "entry_id, session_id, node_id, path, change_kind, old_hash, new_hash, source, observed_at";
+// Removals can have no node. Classify the persisted path formats in that case, including
+// HKLM32 (a distinct view). The typed node wins when it exists.
+const LEDGER_DOMAIN: &str = r"COALESCE(
+    (SELECT CASE n.node_type
+        WHEN 'registry_key' THEN 'registry' WHEN 'registry_value' THEN 'registry'
+        WHEN 'service' THEN 'system' WHEN 'task' THEN 'system' ELSE 'file' END
+     FROM system_nodes n WHERE n.node_id = change_ledger.node_id),
+    CASE WHEN source = 'registry_callback' OR lower(path) GLOB 'hkcu\*'
+        OR lower(path) GLOB 'hklm\*' OR lower(path) GLOB 'hklm32\*'
+        OR lower(path) GLOB 'hkey_*\*' OR lower(path) GLOB '\registry\*' THEN 'registry'
+    WHEN lower(path) GLOB 'service:*' OR lower(path) GLOB 'task:*' THEN 'system'
+    ELSE 'file' END)";
 
 fn node_row(r: &Row<'_>) -> rusqlite::Result<Node> {
     Ok(Node {
@@ -79,6 +92,17 @@ fn ledger_row(r: &Row<'_>) -> rusqlite::Result<LedgerEntry> {
             source: col(r, 7)?,
         },
         observed_at: r.get(8)?,
+        domain: col(r, 9)?,
+    })
+}
+fn quarantine_row(r: &Row<'_>) -> rusqlite::Result<QuarantineRecord> {
+    Ok(QuarantineRecord {
+        quarantine_id: r.get(0)?,
+        rule_id: r.get(1)?,
+        session_id: r.get(2)?,
+        status: col(r, 3)?,
+        manifest_path: r.get(4)?,
+        manifest_json: r.get(5)?,
     })
 }
 fn rule_row(r: &Row<'_>) -> rusqlite::Result<PolicyRule> {
@@ -104,7 +128,7 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA synchronous = NORMAL;
+             PRAGMA synchronous = FULL;
              PRAGMA busy_timeout = 5000;",
         )?;
         Ok(())
@@ -117,13 +141,138 @@ impl Store {
         Self::configure(&conn)?;
         let current = migrate::current_version(&conn)?;
         if current > 0 && current < migrate::latest_version() {
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-            let mut bak: PathBuf = path.as_os_str().to_owned().into();
+            let mut bak = PathBuf::from(path);
             bak.set_extension(format!("pre-v{current}.bak"));
-            std::fs::copy(path, bak)?;
+            if !bak
+                .symlink_metadata()
+                .is_ok_and(|m| m.is_file() && !m.is_symlink())
+            {
+                let stage = bak.with_extension(format!("backup-{}.tmp", std::process::id()));
+                std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&stage)?;
+                let saved = Self::snapshot_to(&conn, &stage)
+                    .and_then(|()| std::fs::hard_link(&stage, &bak).map_err(Into::into));
+                let _ = std::fs::remove_file(&stage);
+                saved?;
+            }
         }
         migrate::migrate(&mut conn)?;
         Ok(Self { conn })
+    }
+
+    /// A reader for an existing, already-migrated desktop profile. Never creates or migrates it.
+    pub fn open_reader(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")?;
+        Ok(Self { conn })
+    }
+
+    /// A writer for an already-open profile. The desktop must hold its profile and job locks.
+    pub fn open_writer(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;",
+        )?;
+        Ok(Self { conn })
+    }
+
+    fn snapshot_to(conn: &Connection, dest: &Path) -> Result<()> {
+        let dest_text = dest.to_str().ok_or_else(|| StorageError::InvalidValue {
+            field: "backup path",
+            value: dest.display().to_string(),
+        })?;
+        conn.execute("VACUUM INTO ?1", [dest_text])?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dest)?
+            .sync_all()?;
+        Ok(())
+    }
+
+    /// Make a consistent, flushed SQLite snapshot in a new file in a caller-owned staging directory.
+    pub fn backup_to(&self, dest: &Path) -> Result<()> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)?;
+        Self::snapshot_to(&self.conn, dest)
+    }
+
+    /// Verify integrity of an offline backup without loading it as an active desktop database.
+    pub fn verify_backup(path: &Path) -> Result<()> {
+        let store = Self::open_reader(path)?;
+        let result: String = store
+            .conn
+            .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))?;
+        let version: Option<u32> =
+            store
+                .conn
+                .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+                    r.get(0)
+                })?;
+        if result != "ok" || !version.is_some_and(|v| (1..=migrate::latest_version()).contains(&v))
+        {
+            return Err(StorageError::InvalidValue {
+                field: "backup database",
+                value: result,
+            });
+        }
+        Ok(())
+    }
+
+    /// Persist a user's explicit link without altering historical attribution edges.
+    pub fn link_program(&self, session_id: i64, program_id: &str, label: &str) -> Result<()> {
+        self.conn.execute("INSERT INTO application_sessions(session_id, program_id, program_label) VALUES (?1, ?2, ?3)
+            ON CONFLICT(session_id) DO UPDATE SET program_id=excluded.program_id, program_label=excluded.program_label",
+            params![session_id, program_id, label])?;
+        Ok(())
+    }
+
+    /// The explicit registration linked to one session.
+    pub fn program_link(&self, session_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT program_id FROM application_sessions WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Bounded session summaries, newest first.
+    pub fn recent_sessions(&self, limit: usize) -> Result<Vec<Session>> {
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {SESSION_COLS} FROM installation_sessions ORDER BY session_id DESC LIMIT ?1"
+        ))?;
+        Ok(st
+            .query_map([limit.clamp(1, 250) as i64], session_row)?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Explicit session-to-program links, never inferred from names.
+    pub fn program_links(&self) -> Result<std::collections::BTreeMap<i64, String>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT session_id, program_id FROM application_sessions")?;
+        Ok(st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Find the session's latest observed bytes only if it observed the file being created, and no
+    /// later ledger event outside the session superseded it. A missing hash is review-only.
+    pub fn cleanup_hash(&self, session_id: i64, path: &str) -> Result<Option<String>> {
+        let row = self.conn.query_row(
+            "SELECT q.new_hash FROM change_ledger q WHERE q.session_id = ?1 AND q.path = ?2
+             AND q.entry_id = (SELECT MAX(recent.entry_id) FROM change_ledger recent WHERE recent.path = ?2)
+             AND q.change_kind IN ('created','modified')
+             AND EXISTS (SELECT 1 FROM change_ledger birth WHERE birth.session_id = ?1 AND birth.path = ?2 AND birth.change_kind = 'created')",
+            params![session_id, path], |r| r.get::<_, Option<String>>(0),
+        ).optional()?;
+        Ok(row.flatten())
     }
 
     /// In-memory database (tests, simulations).
@@ -175,6 +324,16 @@ impl Store {
         Ok(())
     }
 
+    /// Mark unfinished sessions failed after a desktop restart. Call only while holding the
+    /// profile's exclusive process lock, before starting any capture. Do not invent an ending
+    /// timestamp, comparison coverage or ledger rows for interrupted sessions.
+    pub fn recover_unfinished_sessions(&self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE installation_sessions SET status = 'failed', ended_at = NULL WHERE status = 'monitoring'",
+            [],
+        )?)
+    }
+
     /// Fetch one session.
     pub fn session(&self, session_id: i64) -> Result<Option<Session>> {
         Ok(self
@@ -195,6 +354,124 @@ impl Store {
         Ok(st
             .query_map([], session_row)?
             .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Commit a Watch's evidence, coverage and terminal session status together. `record` makes
+    /// synchronous writes on this store and returns its comparison summary. It must not start a
+    /// nested transaction. An error anywhere leaves the evidence and comparison uncommitted.
+    pub fn record_watch_comparison<E>(
+        &self,
+        record: impl FnOnce(&Self) -> std::result::Result<WatchSummary, E>,
+    ) -> std::result::Result<WatchSummary, E>
+    where
+        E: From<StorageError>,
+    {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(StorageError::from)?;
+        let summary = record(self)?;
+        let status = if summary.coverage.has_usable() {
+            SessionStatus::Completed
+        } else {
+            SessionStatus::Failed
+        };
+        let updated = tx
+            .execute(
+                "UPDATE installation_sessions SET ended_at = CURRENT_TIMESTAMP, status = ?2
+             WHERE session_id = ?1 AND status = 'monitoring'",
+                params![summary.session_id, status.as_str()],
+            )
+            .map_err(StorageError::from)?;
+        if updated == 0 {
+            return Err(StorageError::NotFound(format!(
+                "open Watch session {}",
+                summary.session_id
+            ))
+            .into());
+        }
+        tx.execute(
+            "INSERT INTO watch_comparisons(session_id, summary_json) VALUES (?1, ?2)",
+            params![
+                summary.session_id,
+                serde_json::to_string(&summary).map_err(StorageError::from)?
+            ],
+        )
+        .map_err(StorageError::from)?;
+        tx.commit().map_err(StorageError::from)?;
+        Ok(summary)
+    }
+
+    /// Read the saved comparison; older, cancelled and non-Watch sessions have no row.
+    pub fn watch_comparison(&self, session_id: i64) -> Result<Option<WatchSummary>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT summary_json FROM watch_comparisons WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        json.map(|text| serde_json::from_str(&text).map_err(StorageError::from))
+            .transpose()
+    }
+
+    /// Newest saved comparisons by session ID, including those with no observations. Bounded to
+    /// 1–50 runs. The watch table, not ledger presence, defines the result set.
+    pub fn recent_watch_runs(&self, limit: u32) -> Result<Vec<WatchRun>> {
+        let mut statement = self.conn.prepare(
+            "SELECT s.app_name, s.ended_at, w.summary_json
+             FROM watch_comparisons w JOIN installation_sessions s USING (session_id)
+             ORDER BY w.session_id DESC LIMIT ?1",
+        )?;
+        statement
+            .query_map([limit.clamp(1, 50)], |r| {
+                Ok((r.get::<_, String>(0)?, r.get(1)?, r.get::<_, String>(2)?))
+            })?
+            .map(|row| {
+                let (app_name, ended_at, json) = row?;
+                Ok(WatchRun {
+                    app_name,
+                    ended_at,
+                    summary: serde_json::from_str(&json)?,
+                })
+            })
+            .collect()
+    }
+
+    // ---- portable inventory ----
+
+    /// Add a portable application or update its display name.
+    pub fn save_portable_program(&self, program: &PortableProgram) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO portable_programs(executable, name) VALUES (?1, ?2)
+             ON CONFLICT(executable) DO UPDATE SET name = excluded.name",
+            params![program.executable, program.name],
+        )?;
+        Ok(())
+    }
+
+    /// User-added portable applications, sorted by name.
+    pub fn portable_programs(&self) -> Result<Vec<PortableProgram>> {
+        let mut st = self.conn.prepare(
+            "SELECT name, executable FROM portable_programs ORDER BY name COLLATE NOCASE, executable",
+        )?;
+        Ok(st
+            .query_map([], |r| {
+                Ok(PortableProgram {
+                    name: r.get(0)?,
+                    executable: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Forget an inventory entry. Does not access the file at `executable`.
+    pub fn forget_portable_program(&self, executable: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "DELETE FROM portable_programs WHERE executable = ?1",
+            [executable],
+        )? > 0)
     }
 
     // ---- nodes ----
@@ -269,6 +546,53 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Page through all nodes recorded for a session. Filter on the full path, treating wildcard
+    /// characters literally. Only the requested page of nodes is materialized.
+    pub fn session_nodes_page(
+        &self,
+        session_id: i64,
+        path_contains: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<SessionNodePage> {
+        let total = self.conn.query_row(
+            "SELECT COUNT(*) FROM system_nodes WHERE first_detected_in = ?1",
+            [session_id],
+            |r| r.get(0),
+        )?;
+        let filter = path_contains.filter(|s| !s.is_empty());
+        let selection = "FROM system_nodes WHERE first_detected_in = ?1
+                         AND (?2 IS NULL OR instr(lower(path), lower(?2)) > 0)";
+        let matching = if filter.is_some() {
+            self.conn.query_row(
+                &format!("SELECT COUNT(*) {selection}"),
+                params![session_id, filter],
+                |r| r.get(0),
+            )?
+        } else {
+            total
+        };
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} {selection} ORDER BY path COLLATE NOCASE, node_id LIMIT ?3 OFFSET ?4"
+        ))?;
+        let nodes = statement
+            .query_map(
+                params![
+                    session_id,
+                    filter,
+                    i64::try_from(limit.clamp(1, 100)).unwrap_or(100),
+                    i64::try_from(offset).unwrap_or(i64::MAX).min(matching),
+                ],
+                node_row,
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(SessionNodePage {
+            total,
+            matching,
+            nodes,
+        })
+    }
+
     // ---- DAG ----
 
     fn would_create_cycle(&self, parent: i64, child: i64) -> Result<bool> {
@@ -333,9 +657,25 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Read-side lookup: prefer exact spelling; never pick between case-only duplicates.
+    fn node_for_trace(&self, path: &str) -> Result<Option<Node>> {
+        if let Some(exact) = self.node_by_path(path)? {
+            return Ok(Some(exact));
+        }
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {NODE_COLS} FROM system_nodes WHERE path = ?1 COLLATE NOCASE LIMIT 2"
+        ))?;
+        let mut nodes = st.query_map([path], node_row)?;
+        let node = nodes.next().transpose()?;
+        if nodes.next().transpose()?.is_some() {
+            return Err(StorageError::AmbiguousPath(path.into()));
+        }
+        Ok(node)
+    }
+
     /// Trace an artifact back to its installation session, with edges and ledger.
     pub fn provenance_for_path(&self, path: &str) -> Result<Option<Provenance>> {
-        let Some(node) = self.node_by_path(path)? else {
+        let Some(node) = self.node_for_trace(path)? else {
             return Ok(None);
         };
         let session = match node.first_detected_in {
@@ -344,7 +684,20 @@ impl Store {
         };
         let origins = self.edges_as_child(node.node_id)?;
         let dependents = self.edges_as_parent(node.node_id)?;
-        let ledger = self.ledger_for_path(path)?;
+        // Ledger evidence attached to a different case-only sibling belongs to that node. For
+        // observations without a node ID, keep exact spelling or use the fold if it's unambiguous.
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger
+             WHERE path = ?1 COLLATE NOCASE AND (node_id = ?2 OR (node_id IS NULL AND (
+                 path = ?1 OR NOT EXISTS (
+                     SELECT 1 FROM system_nodes n
+                     WHERE n.path = ?1 COLLATE NOCASE AND n.node_id <> ?2
+                 )
+             ))) ORDER BY entry_id"
+        ))?;
+        let ledger = st
+            .query_map(params![node.path, node.node_id], ledger_row)?
+            .collect::<rusqlite::Result<_>>()?;
         let confidence = origins
             .iter()
             .filter(|e| e.relationship_type == RelationshipType::CreatedBy)
@@ -392,6 +745,22 @@ impl Store {
             dependents,
             sessions,
         })
+    }
+
+    /// Policy context as scalars, without allocating a graph for every candidate.
+    pub fn policy_metrics(&self, node: i64, session: Option<i64>) -> Result<(f64, bool, i64)> {
+        Ok(self.conn.prepare_cached(
+            "WITH dependents(id) AS (
+                 SELECT child_node_id FROM node_relationships WHERE parent_node_id = ?1 AND relationship_type IN ('depends_on','shared_with')
+                 UNION
+                 SELECT parent_node_id FROM node_relationships WHERE child_node_id = ?1 AND relationship_type = 'shared_with'
+             ) SELECT MAX(0.3, COALESCE((SELECT MAX(confidence_score) FROM node_relationships
+                    WHERE child_node_id = ?1 AND relationship_type = 'created_by'), 0.3)),
+                 EXISTS(SELECT 1 FROM node_relationships WHERE parent_node_id = ?1 AND relationship_type = 'shared_with')
+                  OR EXISTS(SELECT 1 FROM node_relationships WHERE child_node_id = ?1 AND relationship_type = 'shared_with')
+                  OR EXISTS(SELECT 1 FROM dependents d JOIN system_nodes n ON n.node_id = d.id WHERE n.first_detected_in IS NOT ?2),
+                 (SELECT COUNT(*) FROM dependents)",
+        )?.query_row(params![node, session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
     }
 
     /// Dependencies that only `session_id` relies on and nobody shares: removal candidates for review.
@@ -461,18 +830,22 @@ impl Store {
 
     /// Append to the immutable change ledger.
     pub fn append_ledger(&self, e: &NewLedgerEntry) -> Result<i64> {
-        self.conn.execute(
+        Self::insert_ledger(&self.conn, e)
+    }
+
+    fn insert_ledger(conn: &Connection, e: &NewLedgerEntry) -> Result<i64> {
+        conn.execute(
             "INSERT INTO change_ledger(session_id, node_id, path, change_kind, old_hash, new_hash, source)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![e.session_id, e.node_id, e.path, e.change_kind.as_str(), e.old_hash, e.new_hash, e.source.as_str()],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
 
     /// Ledger of a session, oldest first.
     pub fn ledger_for_session(&self, session_id: i64) -> Result<Vec<LedgerEntry>> {
         let mut st = self.conn.prepare(&format!(
-            "SELECT {LEDGER_COLS} FROM change_ledger WHERE session_id = ?1 ORDER BY entry_id"
+            "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger WHERE session_id = ?1 ORDER BY entry_id"
         ))?;
         Ok(st
             .query_map([session_id], ledger_row)?
@@ -485,27 +858,117 @@ impl Store {
         limit: usize,
         path_contains: Option<&str>,
     ) -> Result<Vec<LedgerEntry>> {
-        let like = path_contains
-            .map(|f| {
-                let esc = f
-                    .replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_");
-                format!("%{esc}%")
-            })
-            .unwrap_or_else(|| "%".to_string());
-        let mut st = self.conn.prepare(&format!(
-            "SELECT {LEDGER_COLS} FROM change_ledger WHERE path LIKE ?1 ESCAPE '\\' ORDER BY entry_id DESC LIMIT ?2"
-        ))?;
-        Ok(st
-            .query_map(params![like, limit as i64], ledger_row)?
+        self.query_ledger(
+            limit,
+            LedgerQuery {
+                path_contains,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Newest matching entries first. A cursor restricts the query to strictly older entry IDs,
+    /// so appends do not shift later pages. Filters apply before the page limit.
+    ///
+    /// Page sizes are clamped to 1–1000. Without a session filter, unassigned entries are included.
+    pub fn ledger_page(
+        &self,
+        limit: usize,
+        path_contains: Option<&str>,
+        session_id: Option<i64>,
+        before_id: Option<i64>,
+    ) -> Result<LedgerPage> {
+        self.ledger_page_in_domain(limit, path_contains, session_id, before_id, None)
+    }
+
+    /// Like [`Self::ledger_page`], with an optional registry, file, or system domain filter.
+    pub fn ledger_page_in_domain(
+        &self,
+        limit: usize,
+        path_contains: Option<&str>,
+        session_id: Option<i64>,
+        before_id: Option<i64>,
+        domain: Option<ChangeDomain>,
+    ) -> Result<LedgerPage> {
+        self.ledger_query(
+            limit,
+            LedgerQuery {
+                path_contains,
+                session_id,
+                before_id,
+                domain,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Typed ledger page shared by the inspector and observation exports.
+    pub fn ledger_query(&self, limit: usize, query: LedgerQuery<'_>) -> Result<LedgerPage> {
+        let limit = limit.clamp(1, 1000);
+        let mut entries = self.query_ledger(limit + 1, query)?;
+        let next_before_id = if entries.len() > limit {
+            entries.truncate(limit);
+            entries.last().map(|entry| entry.entry_id)
+        } else {
+            None
+        };
+        Ok(LedgerPage {
+            entries,
+            next_before_id,
+        })
+    }
+
+    fn query_ledger(&self, limit: usize, query: LedgerQuery<'_>) -> Result<Vec<LedgerEntry>> {
+        // Add only fixed clauses and bind every value. Avoid optional OR predicates here so
+        // SQLite can use idx_ledger_session (with its rowid suffix) and the entry_id range.
+        let mut sql = format!(
+            "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger WHERE 1 = 1"
+        );
+        let mut args = Vec::with_capacity(6);
+        if let Some(id) = query.session_id {
+            sql.push_str(" AND session_id = ?");
+            args.push(Value::Integer(id));
+        }
+        if let Some(id) = query.before_id {
+            sql.push_str(" AND entry_id < ?");
+            args.push(Value::Integer(id));
+        }
+        if let Some(filter) = query.path_contains {
+            let escaped = filter
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            sql.push_str(" AND path LIKE ? ESCAPE '\\'");
+            args.push(Value::Text(format!("%{escaped}%")));
+        }
+        if let Some(domain) = query.domain {
+            sql.push_str(" AND domain = ?");
+            args.push(Value::Text(domain.as_str().into()));
+        }
+        if let Some(kind) = query.change_kind {
+            sql.push_str(" AND change_kind = ?");
+            args.push(Value::Text(kind.as_str().into()));
+        }
+        if let Some(from) = query.from_utc {
+            sql.push_str(" AND observed_at >= ?");
+            args.push(Value::Text(from.into()));
+        }
+        if let Some(until) = query.until_utc {
+            sql.push_str(" AND observed_at < ?");
+            args.push(Value::Text(until.into()));
+        }
+        sql.push_str(" ORDER BY entry_id DESC LIMIT ?");
+        args.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
+        let mut statement = self.conn.prepare(&sql)?;
+        Ok(statement
+            .query_map(params_from_iter(args), ledger_row)?
             .collect::<rusqlite::Result<_>>()?)
     }
 
     /// Ledger of a path, oldest first.
     pub fn ledger_for_path(&self, path: &str) -> Result<Vec<LedgerEntry>> {
         let mut st = self.conn.prepare(&format!(
-            "SELECT {LEDGER_COLS} FROM change_ledger WHERE path = ?1 COLLATE NOCASE ORDER BY entry_id"
+            "SELECT {LEDGER_COLS}, {LEDGER_DOMAIN} AS domain FROM change_ledger WHERE path = ?1 COLLATE NOCASE ORDER BY entry_id"
         ))?;
         Ok(st
             .query_map([path], ledger_row)?
@@ -516,12 +979,167 @@ impl Store {
 
     /// Record a quarantine manifest.
     pub fn record_quarantine(&self, q: &QuarantineRecord) -> Result<()> {
-        self.conn.execute(
+        self.record_quarantine_with_ledger(q, &[])
+    }
+
+    /// Persist the record and all of its ledger rows together. If any insert fails, no rows
+    /// are committed and the caller can put the staged files back.
+    pub fn record_quarantine_with_ledger(
+        &self,
+        q: &QuarantineRecord,
+        entries: &[NewLedgerEntry],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO quarantine_manifests(quarantine_id, rule_id, session_id, status, manifest_path, manifest_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![q.quarantine_id, q.rule_id, q.session_id, q.status.as_str(), q.manifest_path, q.manifest_json],
         )?;
+        tx.execute("INSERT INTO quarantine_batch_index SELECT ?1, json_extract(?2, '$.created_unix_ms')
+            WHERE json_valid(?2) AND json_extract(?2, '$.version') = 1 AND json_extract(?2, '$.quarantine_id') = ?1
+              AND json_type(?2, '$.created_unix_ms') = 'integer' AND json_type(?2, '$.items') = 'array'",
+            params![q.quarantine_id, q.manifest_json])?;
+        if tx.changes() != 0 {
+            tx.execute("INSERT INTO quarantine_file_index
+                SELECT ?1, CAST(j.key AS INTEGER), json_extract(j.value,'$.original_path'), json_extract(j.value,'$.size')
+                FROM json_each(?2,'$.items') j WHERE j.type = 'object' AND json_extract(j.value,'$.type') = 'file'
+                AND json_type(j.value,'$.original_path') = 'text' AND json_type(j.value,'$.size') = 'integer'
+                AND json_extract(j.value,'$.size') >= 0", params![q.quarantine_id, q.manifest_json])?;
+        }
+        for entry in entries {
+            Self::insert_ledger(&tx, entry)?;
+        }
+        Ok(tx.commit()?)
+    }
+
+    /// Record an authorized operation. Switching to a different unfinished operation is forbidden.
+    pub fn begin_quarantine_operation(
+        &self,
+        id: &str,
+        operation: QuarantineOperation,
+    ) -> Result<()> {
+        let n = self.conn.execute(
+            "INSERT INTO quarantine_operations(quarantine_id, operation) VALUES (?1, ?2)
+             ON CONFLICT(quarantine_id) DO UPDATE SET operation = excluded.operation WHERE operation = excluded.operation",
+            params![id, operation.as_str()],
+        )?;
+        if n == 0 {
+            return Err(StorageError::InvalidValue {
+                field: "quarantine operation",
+                value: "a different operation is already pending".into(),
+            });
+        }
         Ok(())
+    }
+
+    /// Read any authorized but unfinished mutation without changing the batch state.
+    pub fn quarantine_operation(&self, id: &str) -> Result<Option<QuarantineOperation>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT operation FROM quarantine_operations WHERE quarantine_id = ?1",
+                [id],
+                |r| col(r, 0),
+            )
+            .optional()?)
+    }
+
+    /// Clear intent after a failure verified to precede any restore or purge changes.
+    pub fn clear_quarantine_operation(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM quarantine_operations WHERE quarantine_id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    /// Bounded summaries with no manifest JSON materialization. Status can include in-flight work.
+    pub fn batch_summaries(&self, limit: usize, offset: usize) -> Result<Vec<BatchSummary>> {
+        let mut st = self.conn.prepare("SELECT q.quarantine_id, q.session_id, COALESCE(o.operation, q.status),
+             (SELECT COUNT(*) FROM quarantine_file_index f WHERE f.quarantine_id = q.quarantine_id),
+             CASE WHEN b.quarantine_id IS NOT NULL THEN COALESCE((SELECT SUM(f.size) FROM quarantine_file_index f WHERE f.quarantine_id = q.quarantine_id), 0) END
+             FROM quarantine_manifests q LEFT JOIN quarantine_batch_index b USING(quarantine_id)
+             LEFT JOIN quarantine_operations o USING(quarantine_id) ORDER BY q.rowid DESC LIMIT ?1 OFFSET ?2")?;
+        Ok(st
+            .query_map(
+                params![
+                    limit.clamp(1, 101) as i64,
+                    i64::try_from(offset).unwrap_or(i64::MAX)
+                ],
+                |r| {
+                    Ok(BatchSummary {
+                        quarantine_id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        status: r.get(2)?,
+                        files: r.get(3)?,
+                        file_bytes: r.get(4)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Logical bytes and batch counts by final status, excluding unfinished operations.
+    pub fn batch_totals(&self) -> Result<Vec<(String, i64, i64)>> {
+        let mut st = self.conn.prepare("SELECT q.status, COUNT(*), SUM(COALESCE((SELECT SUM(size)
+            FROM quarantine_file_index f WHERE f.quarantine_id = q.quarantine_id), 0))
+            FROM quarantine_manifests q JOIN quarantine_batch_index b USING(quarantine_id)
+            WHERE NOT EXISTS (SELECT 1 FROM quarantine_operations o WHERE o.quarantine_id = q.quarantine_id)
+            GROUP BY q.status")?;
+        Ok(st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Read only the requested range of an indexed batch.
+    pub fn batch_index_page(
+        &self,
+        id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Option<BatchIndexPage>> {
+        let head: Option<(String, i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(o.operation, q.status), b.created_unix_ms,
+            (SELECT COUNT(*) FROM quarantine_file_index f WHERE f.quarantine_id = q.quarantine_id)
+            FROM quarantine_manifests q JOIN quarantine_batch_index b USING(quarantine_id)
+            LEFT JOIN quarantine_operations o USING(quarantine_id) WHERE q.quarantine_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((status, created_unix_ms, total)) = head else {
+            return Ok(None);
+        };
+        let total_files = usize::try_from(total).unwrap_or(usize::MAX);
+        let mut st = self.conn.prepare(
+            "SELECT original_path, size FROM quarantine_file_index
+            WHERE quarantine_id = ?1 ORDER BY ordinal LIMIT ?2 OFFSET ?3",
+        )?;
+        let files = st
+            .query_map(
+                params![
+                    id,
+                    limit.clamp(1, 100) as i64,
+                    i64::try_from(offset).unwrap_or(i64::MAX)
+                ],
+                |r| {
+                    Ok(BatchIndexFile {
+                        original_path: r.get(0)?,
+                        size: r.get(1)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let next = offset.saturating_add(files.len());
+        Ok(Some(BatchIndexPage {
+            status,
+            created_unix_ms,
+            total_files,
+            files,
+            next_offset: (next < total_files).then_some(next),
+        }))
     }
 
     /// Change a quarantine's status.
@@ -530,16 +1148,61 @@ impl Store {
         quarantine_id: &str,
         status: QuarantineStatus,
     ) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE quarantine_manifests SET status = ?2 WHERE quarantine_id = ?1",
-            params![quarantine_id, status.as_str()],
-        )?;
-        if n == 0 {
+        self.set_quarantine_status_with_ledger(quarantine_id, status, &[])
+    }
+
+    /// Persist a state change with its ledger rows. A retry after commit adds no duplicates.
+    pub fn set_quarantine_status_with_ledger(
+        &self,
+        quarantine_id: &str,
+        status: QuarantineStatus,
+        entries: &[NewLedgerEntry],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let current: Option<QuarantineStatus> = tx
+            .query_row(
+                "SELECT status FROM quarantine_manifests WHERE quarantine_id = ?1",
+                [quarantine_id],
+                |r| col(r, 0),
+            )
+            .optional()?;
+        if current == Some(status) {
+            tx.execute(
+                "DELETE FROM quarantine_operations WHERE quarantine_id = ?1",
+                [quarantine_id],
+            )?;
+            return Ok(tx.commit()?);
+        }
+        if current.is_none() {
             return Err(StorageError::NotFound(format!(
                 "quarantine {quarantine_id}"
             )));
         }
-        Ok(())
+        tx.execute(
+            "UPDATE quarantine_manifests SET status = ?2 WHERE quarantine_id = ?1",
+            params![quarantine_id, status.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM quarantine_operations WHERE quarantine_id = ?1",
+            [quarantine_id],
+        )?;
+        for entry in entries {
+            Self::insert_ledger(&tx, entry)?;
+        }
+        Ok(tx.commit()?)
+    }
+
+    /// Find the record for a single batch. The manifest path is for display, not authority.
+    pub fn quarantine_record(&self, quarantine_id: &str) -> Result<Option<QuarantineRecord>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT quarantine_id, rule_id, session_id, status, manifest_path, manifest_json
+             FROM quarantine_manifests WHERE quarantine_id = ?1",
+                [quarantine_id],
+                quarantine_row,
+            )
+            .optional()?)
     }
 
     /// All quarantine records, newest first.
@@ -548,16 +1211,7 @@ impl Store {
             "SELECT quarantine_id, rule_id, session_id, status, manifest_path, manifest_json
              FROM quarantine_manifests ORDER BY created_at DESC, rowid DESC",
         )?;
-        let rows = st.query_map([], |r| {
-            Ok(QuarantineRecord {
-                quarantine_id: r.get(0)?,
-                rule_id: r.get(1)?,
-                session_id: r.get(2)?,
-                status: col(r, 3)?,
-                manifest_path: r.get(4)?,
-                manifest_json: r.get(5)?,
-            })
-        })?;
+        let rows = st.query_map([], quarantine_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }

@@ -344,19 +344,20 @@ async fn capture_streams_progress_and_ends_done() {
     for i in 0..30 {
         write(&d.path().join(format!("f{i}.txt")), b"data");
     }
-    let seen: Mutex<Vec<Progress>> = Mutex::new(Vec::new());
+    let seen = Arc::new(Mutex::<Vec<Progress>>::new(Vec::new()));
+    let events = seen.clone();
     let snap = capture_with_progress(
         d.path(),
         &CaptureOptions::default(),
         None,
         &Cancel::new(),
-        &|p| {
-            seen.lock().unwrap().push(p);
-        },
+        Arc::new(move |p| {
+            events.lock().unwrap().push(p);
+        }),
     )
     .await
     .unwrap();
-    let seen = seen.into_inner().unwrap();
+    let seen = seen.lock().unwrap();
     assert_eq!(seen.first().unwrap().phase, Phase::Walking);
     let last = seen.last().unwrap();
     assert_eq!(last.phase, Phase::Done);
@@ -394,6 +395,7 @@ async fn services_and_tasks_attributed_with_dependency_link() {
         path: "\\Foo\\Update".into(),
         command: Some("C:\\Program Files\\Foo\\svc.exe /update".into()),
         author: None,
+        definition_hash: None,
     };
     assert_eq!(
         mon.attribute_services(&diff_services(&[], &[svc])).unwrap(),
@@ -428,18 +430,21 @@ fn execute_quarantine_restore_purge_with_ledger() {
         decisions: vec![
             exor_engine::policy::Decision {
                 path: f1.to_string_lossy().into(),
+                node_type: NodeType::File,
                 action: PolicyAction::Quarantine,
                 rule: None,
                 reason: "t".into(),
             },
             exor_engine::policy::Decision {
                 path: f2.to_string_lossy().into(),
+                node_type: NodeType::File,
                 action: PolicyAction::Keep,
                 rule: None,
                 reason: "t".into(),
             },
             exor_engine::policy::Decision {
-                path: "service:X".into(),
+                path: f2.to_string_lossy().into(),
+                node_type: NodeType::RegistryKey,
                 action: PolicyAction::Quarantine,
                 rule: None,
                 reason: "t".into(),
@@ -452,9 +457,9 @@ fn execute_quarantine_restore_purge_with_ledger() {
     let q = d.path().join("q");
     let out = quarantine_decided(&store, &q, sess, &report).unwrap();
     assert!(!f1.exists() && f2.exists());
-    assert_eq!(out.skipped, vec!["service:X".to_string()]);
+    assert_eq!(out.skipped, vec![f2.to_string_lossy().into_owned()]);
     let id = out.manifest.quarantine_id.clone();
-    restore_by_id(&store, &id, false).unwrap();
+    restore_by_id(&store, &q, &id).unwrap();
     assert_eq!(std::fs::read(&f1).unwrap(), b"one");
     let kinds: Vec<_> = store
         .ledger_for_session(sess)
@@ -471,11 +476,11 @@ fn execute_quarantine_restore_purge_with_ledger() {
     );
     // second round, purge
     let out2 = quarantine_decided(&store, &q, sess, &report).unwrap();
-    purge_by_id(&store, &out2.manifest.quarantine_id).unwrap();
+    purge_by_id(&store, &q, &out2.manifest.quarantine_id).unwrap();
     assert!(!f1.exists());
     assert_eq!(store.quarantines().unwrap().len(), 2);
-    assert!(recover_interrupted(&q).unwrap().is_empty());
-    assert!(restore_by_id(&store, "nope", false).is_err());
+    assert_eq!(recover_interrupted(&store, &q).unwrap().rolled_back, 0);
+    assert!(restore_by_id(&store, &q, "nope").is_err());
     // empty plan is an error, not a silent no-op
     let empty = exor_engine::policy::SimulationReport {
         decisions: vec![],
@@ -487,9 +492,10 @@ fn execute_quarantine_restore_purge_with_ledger() {
 }
 
 #[tokio::test]
-async fn install_watch_records_files_services_tasks_in_one_session() {
+async fn install_watch_records_files_and_services_with_registry_opted_out() {
     use exor_engine::collectors::{ServiceInfo, TaskInfo};
-    use exor_engine::watch::{InstallWatch, SystemProbe};
+    use exor_engine::registry::{RegistryKeyState, RegistryScope, RegistryScopes};
+    use exor_engine::watch::{InstallWatch, ScopeCoverage, SystemProbe, WatchPlan};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Mock(AtomicUsize);
@@ -510,6 +516,9 @@ async fn install_watch_records_files_services_tasks_in_one_session() {
         fn tasks(&self) -> Result<Vec<TaskInfo>, String> {
             Err("denied".into())
         }
+        fn registry_keys(&self, _: &RegistryScope) -> Result<Vec<RegistryKeyState>, String> {
+            Err("must not be called without any scopes".into())
+        }
     }
 
     let dir = tempfile::tempdir().unwrap();
@@ -520,16 +529,36 @@ async fn install_watch_records_files_services_tasks_in_one_session() {
         Arc::clone(&store),
         "Foo",
         None,
-        &[dir.path().to_path_buf()],
+        WatchPlan {
+            folders: &[dir.path().to_path_buf()],
+            registry: &RegistryScopes::default(),
+            services: true,
+            tasks: true,
+            strict: false,
+        },
         Arc::new(Mock(AtomicUsize::new(0))),
         &cancel,
     )
     .await
     .unwrap();
     let sid = w.session_id();
+    let captured = ScopeCoverage {
+        requested: 1,
+        usable: 1,
+    };
+    let denied = ScopeCoverage {
+        requested: 1,
+        usable: 0,
+    };
+    assert_eq!(w.coverage().services, captured);
+    assert_eq!(w.coverage().tasks, denied);
     write(&dir.path().join("foo.dll"), b"new");
     let s = w.finish(&cancel).await.unwrap();
     assert_eq!(s.session_id, sid);
+    assert_eq!(s.registry_keys_changed, 0);
+    assert_eq!(s.coverage.registry, ScopeCoverage::default());
+    assert_eq!(s.coverage.services, captured);
+    assert_eq!(s.coverage.tasks, denied);
     assert_eq!(
         (s.files_changed, s.services_changed, s.tasks_changed),
         (1, 1, 0)
@@ -556,25 +585,21 @@ async fn install_watch_records_files_services_tasks_in_one_session() {
 
 #[tokio::test]
 async fn install_watch_abandon_and_failed_baseline_close_the_session() {
-    use exor_engine::watch::{InstallWatch, NullProbe};
+    use exor_engine::registry::RegistryScopes;
+    use exor_engine::watch::{InstallWatch, NullProbe, WatchPlan};
     let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
     let cancel = exor_engine::Cancel::new();
     let dir = tempfile::tempdir().unwrap();
-    // a watch folder the installer will create later is fine: it baselines as empty
-    let later = dir.path().join("Foo");
-    InstallWatch::begin(
-        Arc::clone(&store),
-        "Later",
-        None,
-        std::slice::from_ref(&later),
-        Arc::new(NullProbe),
-        &cancel,
-    )
-    .await
-    .unwrap()
-    .abandon()
-    .unwrap();
-    // a cancelled baseline fails and closes its session
+    let root = dir.path().to_path_buf();
+    let registry = RegistryScopes::default();
+    let plan = || WatchPlan {
+        folders: std::slice::from_ref(&root),
+        registry: &registry,
+        services: false,
+        tasks: false,
+        strict: false,
+    };
+    // A cancelled baseline fails and closes its session.
     let stop = exor_engine::Cancel::new();
     stop.cancel();
     assert!(
@@ -582,7 +607,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
             Arc::clone(&store),
             "Bad",
             None,
-            &[dir.path().to_path_buf()],
+            plan(),
             Arc::new(NullProbe),
             &stop
         )
@@ -593,7 +618,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
         Arc::clone(&store),
         "Ok",
         None,
-        &[],
+        plan(),
         Arc::new(NullProbe),
         &cancel,
     )
@@ -609,4 +634,7 @@ async fn install_watch_abandon_and_failed_baseline_close_the_session() {
         "{all:?}"
     );
     assert!(all.iter().any(|s| s.session_id == sid));
+    for session in all {
+        assert!(st.watch_comparison(session.session_id).unwrap().is_none());
+    }
 }

@@ -1,16 +1,18 @@
 //! Client for the registry-callback minifilter driver (`driver/exordrv.c`).
 //!
-//! Connects to the driver's communication port and forwards parsed messages. The blocking
-//! `FilterGetMessage` runs on the tokio blocking pool; after the consumer drops its receiver the
-//! thread exits at the next message or when the driver unloads.
+//! Only used in the lab. Receive uses an overlapped operation drained on stop; queue overflow
+//! terminates the sample explicitly rather than treating a lossy stream as complete.
 
 use crate::{WinError, proto};
-use exor_engine::events::{EventSource, RawEvent};
+use exor_engine::Cancel;
+use exor_engine::events::{LiveEnd, LiveEventSource, RawEvent};
 use tokio::sync::mpsc;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Storage::InstallableFileSystems::{
     FILTER_MESSAGE_HEADER, FilterConnectCommunicationPort, FilterGetMessage,
 };
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 use windows::core::HSTRING;
 
 struct Port(HANDLE);
@@ -45,46 +47,100 @@ fn connect() -> Result<Port, WinError> {
     Ok(Port(h))
 }
 
-fn run(tx: &mpsc::Sender<RawEvent>) -> Result<(), WinError> {
-    let port = connect()?;
-    let header = std::mem::size_of::<FILTER_MESSAGE_HEADER>();
-    // u64 backing keeps the FILTER_MESSAGE_HEADER at the 8-byte alignment it requires.
-    let mut storage = vec![0u64; 16 * 1024];
-    let size_bytes = storage.len() * 8;
-    while !tx.is_closed() {
-        // SAFETY: `storage` is a live, 8-byte aligned buffer of `size_bytes` bytes, large enough for the header plus payload.
-        unsafe {
-            FilterGetMessage(
-                port.0,
-                storage.as_mut_ptr().cast::<FILTER_MESSAGE_HEADER>(),
-                size_bytes as u32,
-                None,
-            )
-        }
-        .map_err(|e| WinError::Win32 {
-            call: "FilterGetMessage",
-            message: e.message(),
-            code: e.code().0 as u32,
-        })?;
-        // SAFETY: reinterpreting initialised u64 storage as bytes is always valid; length is exact.
-        let bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), size_bytes) };
-        if let Ok(ev) = proto::parse_registry_message(&bytes[header..])
-            && tx.blocking_send(ev).is_err()
-        {
-            return Ok(());
-        }
+fn werr(call: &'static str, e: windows::core::Error) -> WinError {
+    WinError::Win32 {
+        call,
+        code: e.code().0 as u32,
+        message: e.message(),
     }
-    Ok(())
 }
 
-impl EventSource for DriverRegistrySource {
-    fn start(self: Box<Self>) -> mpsc::Receiver<RawEvent> {
+fn run(tx: &mpsc::Sender<RawEvent>, stop: &Cancel) -> Result<LiveEnd, WinError> {
+    let port = connect()?;
+    // SAFETY: no foreign pointer is supplied; a manual-reset event is owned by this worker.
+    let event = unsafe { CreateEventW(None, true, false, None) }
+        .map(Port)
+        .map_err(|e| werr("CreateEventW", e))?;
+    let header = std::mem::size_of::<FILTER_MESSAGE_HEADER>();
+    let mut storage = vec![0u64; 16 * 1024];
+    let capacity = storage.len() * 8;
+    while !tx.is_closed() && !stop.is_cancelled() {
+        // SAFETY: the live event is used only by this worker, with no outstanding I/O.
+        unsafe { ResetEvent(event.0) }.map_err(|e| werr("ResetEvent", e))?;
+        let mut ov = OVERLAPPED {
+            hEvent: event.0,
+            ..Default::default()
+        };
+        // SAFETY: `storage` is aligned and kept live along with `ov` until I/O is drained.
+        let started = unsafe {
+            FilterGetMessage(
+                port.0,
+                storage.as_mut_ptr().cast(),
+                capacity as u32,
+                Some(&mut ov),
+            )
+        };
+        let pending = match started {
+            Ok(()) => false,
+            Err(e) if e.code().0 as u32 == 0x8007_03e5 => true,
+            Err(e) => return Err(werr("FilterGetMessage", e)),
+        };
+        let mut used = 0u32;
+        if pending {
+            loop {
+                // SAFETY: a live event handle; timeout limits time until checking stop.
+                let wait = unsafe { WaitForSingleObject(event.0, 250) };
+                if wait == WAIT_OBJECT_0 {
+                    // SAFETY: the OVERLAPPED belongs to this port, and the byte-count out pointer is live.
+                    unsafe { GetOverlappedResult(port.0, &ov, &mut used, true) }
+                        .map_err(|e| werr("GetOverlappedResult", e))?;
+                    break;
+                }
+                if wait != WAIT_TIMEOUT || tx.is_closed() || stop.is_cancelled() {
+                    // SAFETY: cancel and drain precisely this operation before releasing its buffers.
+                    unsafe {
+                        let _ = CancelIoEx(port.0, Some(&ov));
+                        let _ = GetOverlappedResult(port.0, &ov, &mut used, true);
+                    }
+                    return Ok(if wait == WAIT_TIMEOUT {
+                        LiveEnd::Stopped
+                    } else {
+                        LiveEnd::Unavailable("Waiting for the registry port failed".into())
+                    });
+                }
+            }
+        } else {
+            // SAFETY: synchronous completion still stores its byte count in this OVERLAPPED.
+            unsafe { GetOverlappedResult(port.0, &ov, &mut used, false) }
+                .map_err(|e| werr("GetOverlappedResult", e))?;
+        }
+        if used as usize <= header || used as usize > capacity {
+            return Ok(LiveEnd::InvalidRecord);
+        }
+        // SAFETY: I/O is complete; `used` cannot exceed the initialized backing allocation.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), used as usize) };
+        let Ok(event) = proto::parse_registry_message(&bytes[header..]) else {
+            return Ok(LiveEnd::InvalidRecord);
+        };
+        match tx.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => return Ok(LiveEnd::Stopped),
+            Err(mpsc::error::TrySendError::Full(_)) => return Ok(LiveEnd::Backpressure),
+        }
+    }
+    Ok(LiveEnd::Stopped)
+}
+
+impl LiveEventSource for DriverRegistrySource {
+    fn start_live(
+        self: Box<Self>,
+        stop: Cancel,
+    ) -> (mpsc::Receiver<RawEvent>, tokio::task::JoinHandle<LiveEnd>) {
         let (tx, rx) = mpsc::channel(4096);
-        tokio::task::spawn_blocking(move || {
-            // On failure the channel closes; call `DriverRegistrySource::probe` first to learn why.
-            let _ = run(&tx);
+        let done = tokio::task::spawn_blocking(move || {
+            run(&tx, &stop).unwrap_or_else(|e| LiveEnd::Unavailable(e.to_string()))
         });
-        rx
+        (rx, done)
     }
 }

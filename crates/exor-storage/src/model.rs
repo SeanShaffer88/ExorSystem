@@ -49,6 +49,10 @@ str_enum! {
     ChangeKind { Created => "created", Modified => "modified", Deleted => "deleted", Renamed => "renamed", Quarantined => "quarantined", Restored => "restored" }
 }
 str_enum! {
+    /// Domain of a recorded observation. Does not describe whether it is safe to remove.
+    ChangeDomain { File => "file", Registry => "registry", System => "system" }
+}
+str_enum! {
     /// Ledger evidence origin.
     ChangeSource { UsnJournal => "usn_journal", RegistryCallback => "registry_callback", SnapshotDiff => "snapshot_diff", Manifest => "manifest", Policy => "policy" }
 }
@@ -104,6 +108,77 @@ pub struct Session {
     pub ended_at: Option<String>,
     /// Status.
     pub status: Option<SessionStatus>,
+}
+
+/// Scope counts for one source. A skipped source is different from an opted-out source.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScopeCoverage {
+    /// Number of folders or subtrees requested, or 0/1 for each system probe.
+    pub requested: usize,
+    /// Usable baselines at start; successfully compared snapshot pairs at finish.
+    pub usable: usize,
+}
+
+/// Baseline or comparison coverage, independent of how many changes were observed.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WatchCoverage {
+    /// Folder scopes.
+    pub folders: ScopeCoverage,
+    /// Registry subtree scopes.
+    pub registry: ScopeCoverage,
+    /// Service listing scope.
+    pub services: ScopeCoverage,
+    /// Scheduled-task scope.
+    pub tasks: ScopeCoverage,
+}
+
+impl WatchCoverage {
+    /// Whether at least one scope has evidence at this stage.
+    pub fn has_usable(&self) -> bool {
+        [self.folders, self.registry, self.services, self.tasks]
+            .iter()
+            .any(|scope| scope.usable > 0)
+    }
+}
+
+/// Saved result of a Watch comparison. Counts are only meaningful for compared scopes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WatchSummary {
+    /// Session that now holds the evidence, or a failed session if there were no comparable scopes.
+    pub session_id: i64,
+    /// Successfully compared scopes out of those requested.
+    pub coverage: WatchCoverage,
+    /// Files added, changed or removed in comparable watched folders.
+    pub files_changed: usize,
+    /// Service changes recorded.
+    pub services_changed: usize,
+    /// Scheduled-task changes recorded.
+    pub tasks_changed: usize,
+    /// Registry key changes recorded.
+    pub registry_keys_changed: usize,
+    /// Reasons for skipped scopes at either end of the watch.
+    pub warnings: Vec<String>,
+}
+
+/// A recent saved comparison and its display context. Only sessions with actual comparisons enter
+/// this list, including zero-change runs and failed comparisons with no comparable scopes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchRun {
+    /// Name entered for the session.
+    pub app_name: String,
+    /// Time the comparison was saved, as UTC text.
+    pub ended_at: Option<String>,
+    /// Saved coverage and counts.
+    pub summary: WatchSummary,
+}
+
+/// A portable application a user chose to list in the inventory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortableProgram {
+    /// The display name supplied by the user.
+    pub name: String,
+    /// Absolute path of the executable. ExorSystem never launches it.
+    pub executable: String,
 }
 
 /// Node to insert or update.
@@ -196,6 +271,91 @@ pub struct LedgerEntry {
     pub entry: NewLedgerEntry,
     /// Observation time (UTC text).
     pub observed_at: Option<String>,
+    /// Recorded node kind, or path/source classification for observations without a node.
+    pub domain: ChangeDomain,
+}
+
+/// A bounded page of changes in descending entry order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerPage {
+    /// Matching changes, including evidence without a current node.
+    pub entries: Vec<LedgerEntry>,
+    /// Exclusive cursor for the next page, only present if older matches exist.
+    pub next_before_id: Option<i64>,
+}
+
+/// Filters for one bounded page of the change ledger. All filters apply before pagination.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LedgerQuery<'a> {
+    /// Literal substring of the recorded path.
+    pub path_contains: Option<&'a str>,
+    /// Installation to include, or all (including unassigned observations).
+    pub session_id: Option<i64>,
+    /// Exclusive newest bound for older pages.
+    pub before_id: Option<i64>,
+    /// One evidence domain, or all domains.
+    pub domain: Option<ChangeDomain>,
+    /// One observation kind, or all kinds.
+    pub change_kind: Option<ChangeKind>,
+    /// Inclusive UTC timestamp lower bound in SQLite timestamp form.
+    pub from_utc: Option<&'a str>,
+    /// Exclusive UTC timestamp upper bound in SQLite timestamp form.
+    pub until_utc: Option<&'a str>,
+}
+
+/// A bounded, path-ordered page of nodes first detected in one session.
+#[derive(Debug)]
+pub struct SessionNodePage {
+    /// Number of nodes first detected in the session, before filtering.
+    pub total: i64,
+    /// Number of nodes matching the literal path filter.
+    pub matching: i64,
+    /// Nodes on the requested page.
+    pub nodes: Vec<Node>,
+}
+
+str_enum! {
+    /// Durable intent for an unfinished destructive operation.
+    QuarantineOperation { Restoring => "restoring", Purging => "purging" }
+}
+
+/// Small indexed batch summary; the on-disk manifest is still the authority for disk actions.
+#[derive(Debug, Serialize)]
+pub struct BatchSummary {
+    /// Batch identifier.
+    pub quarantine_id: String,
+    /// Session that requested the batch, if known.
+    pub session_id: Option<i64>,
+    /// Effective status, including interrupted operations.
+    pub status: String,
+    /// Number of recorded files.
+    pub files: i64,
+    /// Sum of recorded logical sizes; unknown if there is no usable index.
+    pub file_bytes: Option<i64>,
+}
+
+/// Indexed original file path and logical byte length.
+#[derive(Debug, Serialize)]
+pub struct BatchIndexFile {
+    /// Original recorded path, not a live destination check.
+    pub original_path: String,
+    /// Size in logical bytes at the time of the move.
+    pub size: i64,
+}
+
+/// Indexed read-only page of a batch.
+#[derive(Debug, Serialize)]
+pub struct BatchIndexPage {
+    /// Effective status, including interrupted operations.
+    pub status: String,
+    /// Creation time in Unix milliseconds.
+    pub created_unix_ms: i64,
+    /// Total recorded files in this batch.
+    pub total_files: usize,
+    /// Page of original paths and lengths.
+    pub files: Vec<BatchIndexFile>,
+    /// Offset to request next when more records exist.
+    pub next_offset: Option<usize>,
 }
 
 /// Stored quarantine record.

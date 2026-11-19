@@ -4,8 +4,9 @@
 //! never on a runtime thread) until data arrives or a 1 s timeout lets the loop notice the
 //! consumer is gone. No sleep-polling. Requires administrator rights on the volume.
 
-use crate::{WinError, usn::parse_usn_buffer};
-use exor_engine::events::{EventSource, RawEvent};
+use crate::{WinError, usn::checked_usn_buffer};
+use exor_engine::Cancel;
+use exor_engine::events::{LiveEnd, LiveEventSource, RawEvent};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use tokio::sync::mpsc;
@@ -135,13 +136,13 @@ fn dir_path(vol: &Handle, frn: u64, cache: &mut HashMap<u64, String>) -> Option<
     Some(s)
 }
 
-fn run(volume: char, tx: &mpsc::Sender<RawEvent>) -> Result<(), WinError> {
+fn run(volume: char, tx: &mpsc::Sender<RawEvent>, stop: &Cancel) -> Result<LiveEnd, WinError> {
     let vol = open_volume(volume)?;
     let journal = query_journal(&vol)?;
     let mut next = journal.NextUsn; // only changes from now on
     let mut cache: HashMap<u64, String> = HashMap::new();
     let mut buf = vec![0u8; 64 * 1024];
-    while !tx.is_closed() {
+    while !tx.is_closed() && !stop.is_cancelled() {
         let req = READ_USN_JOURNAL_DATA_V1 {
             StartUsn: next,
             ReasonMask: u32::MAX,
@@ -167,15 +168,21 @@ fn run(volume: char, tx: &mpsc::Sender<RawEvent>) -> Result<(), WinError> {
             )
         }
         .map_err(|e| werr("FSCTL_READ_USN_JOURNAL", &e))?;
-        let (n, records) = parse_usn_buffer(&buf[..(returned as usize).min(buf.len())]);
+        let Some((n, records)) = buf.get(..returned as usize).and_then(checked_usn_buffer) else {
+            return Ok(LiveEnd::InvalidRecord);
+        };
+        if n < next {
+            return Ok(LiveEnd::JournalGap);
+        }
         next = n;
         for r in records {
             let Some(reason) = r.fs_reason() else {
                 continue;
             };
-            let dir = dir_path(&vol, r.parent_frn, &mut cache)
-                .unwrap_or_else(|| format!("{volume}:\\?{:x}", r.parent_frn));
-            let ts_ms = u64::try_from(r.filetime).unwrap_or(0) / 10_000;
+            let Some(dir) = dir_path(&vol, r.parent_frn, &mut cache) else {
+                return Ok(LiveEnd::InvalidRecord);
+            };
+            let ts_ms = crate::filetime_to_unix_ms(u64::try_from(r.filetime).unwrap_or(0));
             let ev = RawEvent::Fs {
                 usn: u64::try_from(r.usn).unwrap_or(0),
                 path: format!("{dir}\\{}", r.name),
@@ -183,21 +190,30 @@ fn run(volume: char, tx: &mpsc::Sender<RawEvent>) -> Result<(), WinError> {
                 process: None,
                 ts_ms,
             };
-            if tx.blocking_send(ev).is_err() {
-                return Ok(());
+            match tx.try_send(ev) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => return Ok(LiveEnd::Stopped),
+                Err(mpsc::error::TrySendError::Full(_)) => return Ok(LiveEnd::Backpressure),
             }
         }
     }
-    Ok(())
+    Ok(LiveEnd::Stopped)
 }
 
-impl EventSource for UsnJournalSource {
-    fn start(self: Box<Self>) -> mpsc::Receiver<RawEvent> {
+impl LiveEventSource for UsnJournalSource {
+    fn start_live(
+        self: Box<Self>,
+        stop: Cancel,
+    ) -> (mpsc::Receiver<RawEvent>, tokio::task::JoinHandle<LiveEnd>) {
         let (tx, rx) = mpsc::channel(4096);
-        tokio::task::spawn_blocking(move || {
-            // On failure the channel simply closes; call `UsnJournalSource::probe` first to learn why.
-            let _ = run(self.volume, &tx);
+        let done = tokio::task::spawn_blocking(move || match run(self.volume, &tx, &stop) {
+            Ok(end) => end,
+            Err(WinError::Win32 {
+                code: 0x8007_049b | 0x8007_049a | 0x8007_049d,
+                ..
+            }) => LiveEnd::JournalGap,
+            Err(e) => LiveEnd::Unavailable(e.to_string()),
         });
-        rx
+        (rx, done)
     }
 }

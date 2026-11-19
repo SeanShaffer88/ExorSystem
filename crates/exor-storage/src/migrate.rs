@@ -25,6 +25,21 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "ledger_quarantine",
         sql: include_str!("../migrations/0002_ledger_quarantine.sql"),
     },
+    Migration {
+        version: 3,
+        name: "inventory_and_lookup",
+        sql: include_str!("../migrations/0003_inventory_and_lookup.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "watch_comparisons",
+        sql: include_str!("../migrations/0004_watch_comparisons.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "review_and_index",
+        sql: include_str!("../migrations/0005_review_and_index.sql"),
+    },
 ];
 
 /// Highest version known to this build.

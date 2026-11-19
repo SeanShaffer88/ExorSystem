@@ -3,10 +3,12 @@
 //! Enumerating live services needs the SCM (`exor-win`); everything else — snapshot diffing and
 //! reading task definitions from `%SystemRoot%\System32\Tasks` — is plain, testable Rust.
 
+use crate::Cancel;
 use crate::error::{EngineError, Result, io_err};
 use crate::trie::ChangeType;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
 
 /// A Windows service or kernel-driver service.
@@ -31,6 +33,10 @@ pub struct TaskInfo {
     pub command: Option<String>,
     /// Author field, if any.
     pub author: Option<String>,
+    /// Fingerprint of the whole readable definition, including arguments and triggers. Raw
+    /// XML (which can contain arguments or account details) is not stored.
+    #[serde(default)]
+    pub definition_hash: Option<String>,
 }
 
 /// One service difference.
@@ -51,14 +57,14 @@ pub struct TaskChange {
     pub change: ChangeType,
 }
 
-fn diff_by_key<T: Clone + PartialEq>(
+pub(crate) fn diff_by_key<T: Clone>(
     old: &[T],
     new: &[T],
     key: impl Fn(&T) -> String,
     same: impl Fn(&T, &T) -> bool,
 ) -> Vec<(T, ChangeType)> {
-    let o: BTreeMap<String, &T> = old.iter().map(|x| (key(x).to_lowercase(), x)).collect();
-    let n: BTreeMap<String, &T> = new.iter().map(|x| (key(x).to_lowercase(), x)).collect();
+    let o: BTreeMap<String, &T> = old.iter().map(|x| (key(x), x)).collect();
+    let n: BTreeMap<String, &T> = new.iter().map(|x| (key(x), x)).collect();
     let mut out = Vec::new();
     for (k, v) in &n {
         match o.get(k) {
@@ -80,7 +86,7 @@ pub fn diff_services(old: &[ServiceInfo], new: &[ServiceInfo]) -> Vec<ServiceCha
     diff_by_key(
         old,
         new,
-        |s| s.name.clone(),
+        |s| s.name.to_lowercase(),
         |a, b| {
             a.name.eq_ignore_ascii_case(&b.name)
                 && a.display_name == b.display_name
@@ -98,9 +104,12 @@ pub fn diff_tasks(old: &[TaskInfo], new: &[TaskInfo]) -> Vec<TaskChange> {
     diff_by_key(
         old,
         new,
-        |t| t.path.clone(),
+        |t| t.path.to_lowercase(),
         |a, b| {
-            a.path.eq_ignore_ascii_case(&b.path) && a.command == b.command && a.author == b.author
+            a.path.eq_ignore_ascii_case(&b.path)
+                && a.command == b.command
+                && a.author == b.author
+                && a.definition_hash == b.definition_hash
         },
     )
     .into_iter()
@@ -131,13 +140,16 @@ pub fn parse_task_xml(rel_path: &str, xml: &str) -> TaskInfo {
         path,
         command: tag(xml, "Command"),
         author: tag(xml, "Author"),
+        definition_hash: Some(crate::hashing::hash_bytes(xml.as_bytes())),
     }
 }
 
 fn decode(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
         let units: Vec<u16> = rest
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
         String::from_utf16_lossy(&units)
@@ -147,29 +159,76 @@ fn decode(bytes: &[u8]) -> String {
     }
 }
 
-/// Read every task definition under a Tasks folder (blocking; unreadable files are skipped).
+/// Read task definitions under a Tasks folder (blocking). An unreadable definition fails the
+/// snapshot so it cannot look like a removed task when the snapshots are compared.
 pub fn read_tasks_dir(root: &Path) -> Result<Vec<TaskInfo>> {
-    fn rec(base: &Path, dir: &Path, out: &mut Vec<TaskInfo>) -> Result<()> {
-        for entry in std::fs::read_dir(dir).map_err(io_err(dir))? {
-            let entry = entry.map_err(io_err(dir))?;
-            let p = entry.path();
-            let ft = entry.file_type().map_err(io_err(&p))?;
-            if ft.is_dir() {
-                rec(base, &p, out)?;
-            } else if ft.is_file()
-                && let Ok(bytes) = std::fs::read(&p)
-                && let Ok(rel) = p.strip_prefix(base)
+    read_tasks_cancellable(root, &Cancel::new())
+}
+
+/// Capture bounded, readable task definitions. No raw arguments, principals or triggers are
+/// persisted. An unreadable definition invalidates the scope instead of appearing deleted.
+pub fn read_tasks_cancellable(root: &Path, cancel: &Cancel) -> Result<Vec<TaskInfo>> {
+    const ENTRIES: usize = 4_096;
+    const SINGLE: u64 = 1024 * 1024;
+    let mut remaining = 32 * 1024 * 1024;
+    let mut pending = vec![(root.to_path_buf(), 0)];
+    let mut inspected = 0;
+    let mut out = Vec::new();
+    while let Some((dir, depth)) = pending.pop() {
+        cancel.check()?;
+        if depth > 32 || !crate::quarantine::plain_dirs(&dir)? {
+            return Err(EngineError::Watch(
+                "Task folder exceeds depth or path limits".into(),
+            ));
+        }
+        for entry in std::fs::read_dir(&dir).map_err(io_err(&dir))? {
+            cancel.check()?;
+            inspected += 1;
+            if inspected > ENTRIES {
+                return Err(EngineError::Watch(
+                    "Task definition count exceeds capture limit".into(),
+                ));
+            }
+            let p = entry.map_err(io_err(&dir))?.path();
+            let meta = std::fs::symlink_metadata(&p).map_err(io_err(&p))?;
+            if crate::walker::redirected(&meta) {
+                return Err(EngineError::Watch("A task definition is redirected".into()));
+            }
+            if meta.is_dir() {
+                pending.push((p, depth + 1));
+            } else if meta.is_file()
+                && let Ok(rel) = p.strip_prefix(root)
             {
-                out.push(parse_task_xml(&rel.to_string_lossy(), &decode(&bytes)));
+                let limit = SINGLE.min(remaining);
+                if meta.len() > limit {
+                    return Err(EngineError::Watch(
+                        "Task definition bytes exceed capture limit".into(),
+                    ));
+                }
+                let mut bytes = Vec::new();
+                std::fs::File::open(&p)
+                    .map_err(io_err(&p))?
+                    .take(limit + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(io_err(&p))?;
+                if bytes.len() as u64 != meta.len() {
+                    return Err(EngineError::Watch(
+                        "Task definition changed during capture".into(),
+                    ));
+                }
+                let xml = decode(&bytes);
+                if !xml.contains("<Task") || !(xml.contains("</Task>") || xml.contains("<Task/>")) {
+                    return Err(EngineError::Watch(
+                        "Unsupported task definition format".into(),
+                    ));
+                }
+                remaining -= meta.len();
+                let mut task = parse_task_xml(&rel.to_string_lossy(), &xml);
+                task.definition_hash = Some(crate::hashing::hash_bytes(&bytes));
+                out.push(task);
             }
         }
-        Ok(())
     }
-    let mut out = Vec::new();
-    rec(root, root, &mut out).map_err(|e| match e {
-        EngineError::Io { .. } => e,
-        other => other,
-    })?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
@@ -233,12 +292,32 @@ mod tests {
         assert_eq!(tasks[0].command.as_deref(), Some("\"C:\\Foo\\up.exe\""));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_task_definition_does_not_return_a_partial_snapshot() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("Locked");
+        std::fs::write(&locked, "<Task/>").unwrap();
+        std::fs::write(dir.path().join("Readable"), "<Task/>").unwrap();
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(locked)
+            .unwrap();
+        assert!(read_tasks_dir(dir.path()).is_err());
+        drop(handle);
+        assert_eq!(read_tasks_dir(dir.path()).unwrap().len(), 2);
+    }
+
     #[test]
     fn task_diff() {
         let t = |p: &str, c: &str| TaskInfo {
             path: p.into(),
             command: Some(c.into()),
             author: None,
+            definition_hash: None,
         };
         let d = diff_tasks(&[t("\\A", "x")], &[t("\\A", "y"), t("\\B", "z")]);
         assert_eq!(d.len(), 2);

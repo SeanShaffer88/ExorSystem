@@ -53,7 +53,7 @@ pub fn templates() -> Vec<RuleTemplate> {
         },
         RuleTemplate {
             name: "standard",
-            description: "Quarantine items inferred or confirmed (confidence 0.7+); review the rest.",
+            description: "Quarantine files inferred or confirmed (confidence 0.7+); review the rest.",
             rules: vec![
                 keep_shared(),
                 keep_windows(),
@@ -71,7 +71,7 @@ pub fn templates() -> Vec<RuleTemplate> {
         },
         RuleTemplate {
             name: "thorough",
-            description: "Quarantine everything attributed to the session, even by heuristic; shared items stay.",
+            description: "Quarantine files attributed to the session, even by heuristic; shared items stay.",
             rules: vec![
                 keep_shared(),
                 keep_windows(),
