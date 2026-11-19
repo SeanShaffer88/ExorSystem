@@ -31,6 +31,7 @@ export function UninstallWizard(props: { program: Pick<InstalledProgram, "id" | 
   const [planError, setPlanError] = useState("");
   const [busy, setBusy] = useState<Task | null>(null);
   const [confirmedRun, setConfirmedRun] = useState(false);
+  const [trustUnverified, setTrustUnverified] = useState(false);
   const [movePlan, setMovePlan] = useState<PlanHeader | null>(null);
   const planTrigger = useRef<HTMLButtonElement>(null);
   const wasReviewing = useRef(false);
@@ -113,17 +114,23 @@ export function UninstallWizard(props: { program: Pick<InstalledProgram, "id" | 
           <Icon name={run.exit_code === 0 ? "check" : "alert"}/><div><strong>{run.exit_code === 0 ? "Vendor process exited" : "Uninstall not confirmed"}</strong><p>{run.summary}</p><small>Exit code: {run.exit_code ?? "unknown"}. Check Windows to confirm the app was removed.</small></div>
         </div> : failedQueuedRun ? <p>Check Windows before retrying. Return to the queue to review a new invocation.</p> : <>
           <p>The vendor controls what its uninstaller removes. ExorSystem re-checks the live registration and refuses a changed invocation. It will not retry with administrator rights.</p>
-          <label className="check confirm-check"><input type="checkbox" checked={confirmedRun} disabled={!!busy} onChange={(e) => setConfirmedRun(e.target.checked)}/> Run this program’s own uninstaller</label>
+          <label className="check confirm-check"><input type="checkbox" checked={confirmedRun} disabled={!!busy || plan?.signature.status === "rejected"} onChange={(e) => setConfirmedRun(e.target.checked)}/> Run this program’s own uninstaller</label>
+          {plan && plan.signature.status === "rejected" && <div className="notice review-notice" role="alert"><Icon name="alert"/><div><strong>ExorSystem will not run this uninstaller</strong><p>{plan.signature.detail} Use Windows Settings → Apps, or reinstall the program first.</p></div></div>}
+          {plan && (plan.signature.status === "unsigned" || plan.signature.status === "untrusted") && <>
+            <div className="notice review-notice" role="status"><Icon name="alert"/><div><strong>Signature not verified</strong><p>{plan.signature.detail} Only continue if you trust where this program came from.</p></div></div>
+            <label className="check confirm-check"><input type="checkbox" checked={trustUnverified} disabled={!!busy} onChange={(e) => setTrustUnverified(e.target.checked)}/> I trust this uninstaller even though its signature is not verified</label>
+          </>}
         </>}
         <div className="wizard-controls">
-          {!run && !failedQueuedRun && <button type="button" className="quiet-button" disabled={!!busy} onClick={() => { setError(""); setConfirmedRun(false); setStep(0); }}><Icon name="back" size={15}/> Back</button>}
+          {!run && !failedQueuedRun && <button type="button" className="quiet-button" disabled={!!busy} onClick={() => { setError(""); setConfirmedRun(false); setTrustUnverified(false); setStep(0); }}><Icon name="back" size={15}/> Back</button>}
           {!queued && !busy && !run && error && <button type="button" className="quiet-button" onClick={() => toReview(true)}>Skip to leftover review</button>}
           {queued && (run || failedQueuedRun) ? <button type="button" className="primary" onClick={close}>Return to queue</button>
             : run ? <button type="button" className="primary" onClick={() => toReview()}>Continue to leftover review <Icon name="arrow" size={15}/></button>
-            : <button type="button" className="primary" disabled={!!busy || !plan || !confirmedRun} onClick={() => {
+            : <button type="button" className="primary" disabled={!!busy || !plan || !confirmedRun || plan.signature.status === "rejected" || (plan.signature.status !== "signed" && !trustUnverified)} onClick={() => {
             if (!plan) return;
-            setConfirmedRun(false);
-            void perform("uninstall", async () => { setRun(await api.runUninstaller(program.id, plan)); onUninstallComplete(); });
+            const trusted = plan.signature.status !== "signed" && trustUnverified;
+            setConfirmedRun(false); setTrustUnverified(false);
+            void perform("uninstall", async () => { setRun(await api.runUninstaller(program.id, plan, trusted)); onUninstallComplete(); });
           }}>Run uninstaller</button>}
         </div>
       </>}

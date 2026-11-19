@@ -117,6 +117,7 @@ name = "exor-win"
 version = "0.3.0"
 dependencies = [
  "exor-engine",
+ "tempfile",
  "thiserror",
  "tokio",
  "windows",

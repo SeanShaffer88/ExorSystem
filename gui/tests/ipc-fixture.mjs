@@ -43,7 +43,7 @@ export async function mockDesktop(page) {
     let removed = false;
     let invocationChanged = true;
     let invocationCount = 0;
-    const argv = { executable: `${moveable}\\uninstall.exe`, args: ['--interactive', 'two words'] };
+    const argv = { executable: `${moveable}\\uninstall.exe`, args: ['--interactive', 'two words'], signature: { status: 'signed', publisher: 'Fixture Vendor', catalog: false, detail: 'The uninstaller is signed by Fixture Vendor.' } };
     const batches = [
       { quarantine_id: 'fixture-held', session_id: null, status: 'quarantined', files: desktopSlices ? 27 : 2, file_bytes: 4 * 1024 ** 2 },
       { quarantine_id: 'fixture-deleted', session_id: 9, status: 'purged', files: 3, file_bytes: 100 * 1024 ** 2 },
@@ -339,7 +339,10 @@ export async function mockDesktop(page) {
               }
               const attempt = (queuePreviews.get(queued.id) ?? 0) + 1;
               queuePreviews.set(queued.id, attempt);
-              const plan = { executable: `${queued.install_location}\\Vendor.exe`, args: ['--interactive', `preview ${attempt}`] };
+              // window.queueSignature maps a program id to a signature status; signed by default.
+              const status = window.queueSignature?.[queued.id] ?? 'signed';
+              const detail = { signed: 'The uninstaller is signed by Fixture Vendor.', unsigned: 'The uninstaller has no digital signature.', untrusted: 'Windows could not verify the uninstaller\'s signature.', rejected: 'The uninstaller was changed after it was signed.' }[status];
+              const plan = { executable: `${queued.install_location}\\Vendor.exe`, args: ['--interactive', `preview ${attempt}`], signature: { status, publisher: status === 'signed' ? 'Fixture Vendor' : null, catalog: false, detail } };
               queuePlans.set(queued.id, plan);
               return plan;
             }
@@ -350,8 +353,12 @@ export async function mockDesktop(page) {
             if (queueRows.some(({ program }) => program.id === args.programId)) {
               if (queueRunning || args.quiet !== false || !queuePlans.has(args.programId) ||
                   JSON.stringify(args.expected) !== JSON.stringify(queuePlans.get(args.programId))) throw new Error('incorrect queued invocation');
+              const signature = queuePlans.get(args.programId).signature.status;
               queuePlans.delete(args.programId);
               if (window.queueStale === args.programId) throw new Error('The registered uninstaller changed.');
+              // Same rule as the native command: rejected never runs, unverified needs confirmation.
+              if (signature === 'rejected') throw new Error('ExorSystem will not run it.');
+              if (signature !== 'signed' && args.confirmUnverified !== true) throw new Error('Confirm that you trust this uninstaller before running it.');
               queueRunning = true;
               try {
                 const code = await new Promise(resolve => { window.finishQueuedUninstaller = resolve; });
