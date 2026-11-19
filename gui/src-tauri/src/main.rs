@@ -342,12 +342,28 @@ async fn run_uninstaller(
         "info",
         format!("Running the uninstaller for {}…", p.name),
     );
-    let status = tauri::async_runtime::spawn_blocking(move || {
-        std::process::Command::new(exe).args(args).status()
+    // A per-user (HKCU) entry can be written by any program the user runs, so it is never run
+    // with ExorSystem's administrator rights: it runs as the desktop user, or not at all.
+    let per_user = p.scope == programs::Scope::User;
+    let started = tauri::async_runtime::spawn_blocking(move || -> Result<Option<i32>, String> {
+        if per_user {
+            #[cfg(windows)]
+            {
+                let line = leftovers::join_command(&exe, &args);
+                return exor_win::run_unelevated(&line)
+                    .map(|c| Some(i32::from_ne_bytes(c.to_ne_bytes())))
+                    .map_err(|e| e.to_string());
+            }
+        }
+        std::process::Command::new(exe)
+            .args(args)
+            .status()
+            .map(|s| s.code())
+            .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| {
+    .map_err(|e| e.to_string())?;
+    let code = started.map_err(|e| {
         dock::log(
             &app,
             "error",
@@ -355,8 +371,8 @@ async fn run_uninstaller(
         );
         format!("could not start the uninstaller: {e}")
     })?;
-    let code = status.code();
-    let summary = if status.success() {
+    let success = code == Some(0);
+    let summary = if success {
         format!(
             "The uninstaller for {} finished. Next, look for leftovers.",
             p.name
@@ -368,11 +384,7 @@ async fn run_uninstaller(
             code.map_or("unknown".into(), |c| c.to_string())
         )
     };
-    dock::log(
-        &app,
-        if status.success() { "info" } else { "warn" },
-        summary.clone(),
-    );
+    dock::log(&app, if success { "info" } else { "warn" }, summary.clone());
     Ok(UninstallRun {
         exit_code: code,
         summary,
@@ -933,6 +945,15 @@ fn run() -> Result<(), String> {
         ),
         Ok(_) => {}
         Err(e) => eprintln!("ExorSystem: quarantine recovery failed: {e}"),
+    }
+    // Files moved but never recorded (a crash between the two steps) must stay restorable.
+    match execute::reconcile_unrecorded(&store, &quarantine_root) {
+        Ok(ids) if !ids.is_empty() => eprintln!(
+            "ExorSystem: listed {} unrecorded quarantine(s) again",
+            ids.len()
+        ),
+        Ok(_) => {}
+        Err(e) => eprintln!("ExorSystem: could not list unrecorded quarantines: {e}"),
     }
     tauri::Builder::default()
         .plugin(

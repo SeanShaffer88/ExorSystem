@@ -11,7 +11,12 @@ mod registry_source;
 #[cfg(windows)]
 mod services_source;
 #[cfg(windows)]
+mod unelevated;
+#[cfg(windows)]
 mod usn_source;
+
+#[cfg(windows)]
+pub use unelevated::run_unelevated;
 
 #[cfg(windows)]
 pub use programs_source::enumerate_programs;
@@ -38,4 +43,7 @@ pub enum WinError {
     /// Malformed driver message.
     #[error("malformed driver message: {0}")]
     Proto(&'static str),
+    /// An action was refused for safety, with the reason in plain words.
+    #[error("{0}")]
+    Refused(String),
 }

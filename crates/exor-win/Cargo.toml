@@ -23,6 +23,8 @@ windows = { workspace = true, features = [
     "Win32_System_Ioctl",
     "Win32_System_Registry",
     "Win32_System_Services",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # Unsafe is required for Win32 FFI here (and only here); every unsafe block carries a SAFETY note.

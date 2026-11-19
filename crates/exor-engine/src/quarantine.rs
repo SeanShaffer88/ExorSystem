@@ -271,6 +271,24 @@ pub fn restore(manifest_path: &Path, overwrite: bool) -> Result<QuarantineManife
     Ok(m)
 }
 
+/// Every readable manifest under `root` with its path, sorted by path. Unreadable ones are skipped.
+pub fn list_manifests(root: &Path) -> Result<Vec<(PathBuf, QuarantineManifest)>> {
+    let mut out = Vec::new();
+    if !root.exists() {
+        return Ok(out);
+    }
+    for e in std::fs::read_dir(root).map_err(io_err(root))? {
+        let mp = e.map_err(io_err(root))?.path().join("manifest.json");
+        if mp.is_file()
+            && let Ok(m) = load_manifest(&mp)
+        {
+            out.push((mp, m));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
 /// Manifests under `root` left `in_progress` by a crash or power loss.
 pub fn find_incomplete(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
