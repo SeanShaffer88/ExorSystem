@@ -4,7 +4,13 @@ All notable changes. Format: Keep a Changelog; versions follow SemVer.
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-11-18
+### Added
+- Read-only rechecks of the published NSIS, MSI, and portable ZIP against GitHub digests and the retained-candidate evidence. A separate opt-in launch observer records minimal evidence on disposable Windows 10/11 clients. See [PR #33](https://github.com/SeanShaffer88/ExorSystem/pull/33) and the [verification matrix](AUDIT.md#v030-release-evidence). No client run is claimed and the published packages are unchanged.
+
+### Documentation
+- Refresh the README, roadmap, architecture, and release guides. Keep the live-source lab separate from the released desktop, and link static and native evidence separately from the [documentation index](docs/README.md).
+
+## [0.3.0] - 2026-11-19
 
 See the [0.3.0 release notes](docs/releases/v0.3.0.md), including the profile backup and schema v5 upgrade.
 

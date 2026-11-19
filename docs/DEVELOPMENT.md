@@ -1,32 +1,71 @@
 # Development environment
 
+Use the [documentation index](README.md) for the desktop guide, release runbook, and verification status.
+
 ## Toolchain (Windows)
+
 | Need | Detail |
 |---|---|
-| Rust | `rust-toolchain.toml` pins 1.97.0, target `x86_64-pc-windows-msvc`, static CRT via `.cargo/config.toml` |
-| Visual Studio Build Tools 2022 | workload **Desktop development with C++** (MSVC v143 x64/x86 tools) |
-| Windows SDK | 10.0.26100 or newer (for headers, `mt.exe` package checks and optional `signtool`) |
-| WDK | the Windows Driver Kit matching the installed SDK build; only needed for `driver/` |
-| WebView2 runtime | present on Windows 11; installer fallback on Windows 10 |
-| Node | 22 LTS for `gui/` (`npm ci`) |
+| Rust | [`rust-toolchain.toml`](../rust-toolchain.toml) pins 1.97.0 and `x86_64-pc-windows-msvc`. MSVC uses static CRT via [`.cargo/config.toml`](../.cargo/config.toml). |
+| Visual Studio Build Tools 2022 | **Desktop development with C++** and the MSVC v143 x64/x86 tools. |
+| Windows SDK | 10.0.26100 or newer for headers and `mt.exe` package inspection. |
+| WebView2 Runtime | Required to run the Windows desktop. Record the actual runtime version and install behavior for client evidence; CI build success does not prove either. |
+| Node.js | Node 22 for `gui/`; use `npm ci` to install the locked dependencies. |
+| Python and PowerShell | Python 3.11+ for license/asset checks. Use x64 PowerShell 7.2+ for the optional Windows client launch observer. |
+| WDK | Only for the separate `driver/` lab, not the driverless desktop or desktop packaging. |
 
-CI-style checks on any OS: `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`.
+## Workspace checks
+
+From the repository root, use the same fmt and locked gates as Linux/Windows CI:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+python3 scripts/check-licenses.py
+```
+
+The root workspace covers engine, storage, filesystem primitives, and Windows sources. The Tauri shell has its own Cargo workspace; from `gui/src-tauri`, run `cargo fmt --check` and `cargo clippy --locked -- -D warnings` with the Windows toolchain. Windows-only collectors and native placement tests do not run on Linux.
+
+## Run the desktop
+
+On Windows, from a **non-elevated** terminal:
+
+```powershell
+cd gui
+npm ci
+npm run tauri dev
+```
+
+Close any other instance using the same `%LOCALAPPDATA%\ExorSystem` profile. Tauri dev uses the normal profile; use a disposable Windows account to avoid modifying real records. The `asInvoker` desktop refuses an elevated token before opening storage. Never elevate the desktop to connect to a collector.
 
 ## Frontend smoke test
-From `gui/`, run `npm ci`, `npm run build`, `npx playwright-core install --only-shell chromium`, then `npm run test:ui`. Linux may need Chromium system libraries (`npx playwright-core install-deps chromium`). The test loads the built UI with mocked Tauri responses and checks the dashboard, read-only command preview, uninstall and quarantine confirmations, cleanup totals, registry watch, saved comparison coverage (including unknown, skipped, and zero-change states), diff details, history paging, relationship navigation, scrollable application details, and the attached log’s WebView and launchers. The desktop-slices suite also covers preset reload, early and late stops, recent and interrupted sessions, filter/export parity, full-session item paging, and read-only previews before restore confirmation at compact and wide sizes. The browser suites do not launch a real uninstaller, save native JSON files, or access the Windows registry. Rust tests exercise the watch with mock snapshots, and the Windows-only registry probe test reads standard key metadata without changing the registry. Windows Rust tests use a pair of temporary native windows to check maximized bounds and restore placement without WebView2. For optional end-to-end native checks, use the [Windows client checklist](../ROADMAP.md#optional-windows-client-testing).
 
-To explore the [dashboard](DASHBOARD.md) without a Windows host, use `npm run dev` and open Vite in the browser. Only that development page without Tauri IPC uses the labeled, in-memory demo fixture.
+From `gui/`:
 
-## Windows privileges and profile
-The `asInvoker` desktop uses the normal user token and refuses an elevated startup before opening storage. Run `npm run tauri dev` from a **non-elevated** terminal. A separate already-open desktop using the same `%LOCALAPPDATA%\ExorSystem` profile must be closed first. Engine/storage tests do not require elevation, and the normal watch does not need a driver.
+```sh
+npm ci
+npm run build
+npx playwright-core install --only-shell chromium
+npm run test:ui
+```
+
+Linux may need Chromium system libraries (`npx playwright-core install-deps chromium`). The build type-checks the frontend and checks all 36 theme palettes for WCAG AA contrast. The four browser suites load the built UI with mocked Tauri IPC and exercise Watch/History, docking, cleanup approval, export, backup, and Activity log behavior. They do not run vendor uninstallers, use native IPC/WebView2, or write real app exports. Windows Rust placement tests use temporary native windows; they are not WebView2 tests either.
+
+For the standalone [dashboard demo](DASHBOARD.md#browser-preview), run `npm run dev` and open the Vite URL. **Demo data** marks the in-memory fixture; it does not inspect Windows or exercise the real profile.
 
 ## Build-only packages
-See the [Windows release runbook](WINDOWS-RELEASE.md) for `scripts/release.ps1`, package checks, the disposable fixture, and interactive evidence. Use **Windows candidate packages (no publish)** for test artifacts. The separate **Release** workflow [tags and promotes the retained artifact](WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) after CI and package verification, without requiring interactive client results.
 
-Repeat the [static checks against the published assets](WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) without building or running them. Run the verifier's fixture tests with `python -B -m unittest discover -s scripts/tests -v` (Python 3.11+). The separate [launch observer](WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client) requires a disposable Windows 10/11 client; the Windows Server job only checks its syntax and confirms it refuses a server run.
+Use [Windows candidate packages (no publish)](WINDOWS-RELEASE.md#1-build-a-candidate-without-publishing) to retain the tested installer and ZIP artifacts. To publish, the separate [Release workflow](WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) promotes the exact candidate bytes after CI and static verification. Do not rebuild or reuse a release tag for validation.
 
-## Optional live-source lab
-See [the isolated lab runbook](LIVE-COLLECTION.md) and [driver development](../driver/README.md). Do not launch the desktop as Administrator to connect to a collector.
+## Verify published packages or collect client evidence
+
+Use the [published-asset check](WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) for existing releases. Test its verifier locally with `python -B -m unittest discover -s scripts/tests -v` (Python 3.11+). It checks file hashes/provenance and package structure without launch. The [optional launch observer](WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client) requires a disposable Windows 10/11 x64 client; Windows Server CI only checks its syntax and server refusal. See the [evidence matrix](../AUDIT.md) before reporting results.
 
 ## IPC and the UI thread
-Long work (`scan`) runs on Tauri's async runtime and streams `ScanEvent`s through a Tauri v2 `Channel`; progress is throttled to 100 ms so the webview never floods. `cancel_scan` stops the walk and hashing cooperatively.
+
+The shell gates heavy operations and offers independent read-only WAL queries. Scan/Watch run off the UI thread, with throttled progress over Tauri Channels and cooperative cancellation. Closing stops cancellable operations and waits at safe boundaries for other work; it does not kill vendor uninstallers. Workspace commands belong to `main`, not the `log` WebView. See [architecture](ARCHITECTURE.md) for boundaries and [remediation limits](AUDIT-REMEDIATION.md#limits-to-keep-visible) for caps.
+
+## Optional live-source lab
+
+Use the [isolated lab runbook](LIVE-COLLECTION.md) and [driver development guide](../driver/README.md). That work is not part of ordinary desktop development, release verification, or client launch smoke tests.

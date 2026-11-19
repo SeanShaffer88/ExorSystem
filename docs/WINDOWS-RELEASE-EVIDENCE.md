@@ -1,6 +1,8 @@
 # Optional Windows client evidence template
 
-Use this template when running optional interactive Windows 10/11 checks. Attach `PACKAGE-CHECKS.json`, `SHA256SUMS.txt`, and relevant logs to a PR or issue. Avoid personal file paths, account identifiers, and registry value data in screenshots or logs.
+Copy this template for an optional interactive run from the [Windows runbook](WINDOWS-RELEASE.md). Attach `PACKAGE-CHECKS.json`, `SHA256SUMS.txt`, and relevant redacted logs. Use a separate record for each target build; keep package and OS differences visible. Avoid personal file paths, account identifiers, and registry value data in reports or screenshots.
+
+**Starting point:** [v0.3.0 published-package verification passed](../AUDIT.md#v030-release-evidence). The interactive result cells below are intentionally **Not run**.
 
 For a published build, link `packages.json` from [static published package verification](WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) separately from any `launch.json` from the [client launch observer](WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client). A static pass fills no client cells. A launch-observer pass fills only the launch/exit cell for that OS and format; it does not attest installer actions, SQLite integrity, UAC, or rendered WebView2 content.
 
@@ -8,6 +10,7 @@ For a published build, link `packages.json` from [static published package verif
 - Source commit / app version:
 - Passing CI run / successful Windows candidate Actions run ID and link:
 - Tester / UTC date:
+- Previous package version and pre-upgrade profile snapshot, if testing upgrade:
 - Windows 10 x64 edition, build and VM snapshot:
 - Windows 11 x64 edition, build and VM snapshot:
 - Account type, WebView2 versions and display setup:

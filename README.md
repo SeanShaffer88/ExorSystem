@@ -1,60 +1,53 @@
 # ExorSystem
 
-Open-source Windows system management and installation governance suite: a FOSS Total Uninstall replacement built as an intelligent **System State & Provenance Engine**.
-
-ExorSystem records observed system changes in a directed graph with confidence scores, so you can ask where an item came from and review the evidence before deciding what to remove.
+**Compare what an installation changed before deciding what to clean up.** ExorSystem is an open-source Windows desktop app for installation snapshots, system-change evidence, guided uninstall review, and recoverable file quarantine. The desktop runs as a normal user and does not require a driver.
 
 ## Downloads
 
-Get the Windows x64 NSIS installer, MSI, or portable ZIP from [GitHub Releases](https://github.com/SeanShaffer88/ExorSystem/releases). Compare the package's SHA-256 with the `SHA256SUMS.txt` attached to the same release before running it.
+Get [ExorSystem v0.3.0 for Windows x64](https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.3.0) as an **NSIS installer** (`-Setup.exe`), **MSI**, or **portable ZIP**. Compare the download with the release's `SHA256SUMS.txt` before running it. Extract the portable ZIP to a local folder and open `ExorSystem.exe` from Explorer. Installers may prompt for UAC; **open the desktop normally**, not as Administrator.
 
-**Upgrading from v0.2.0:** Close ExorSystem and back up `%LOCALAPPDATA%\ExorSystem`, including SQLite files and quarantine batches, before opening v0.3.0. The profile upgrades to schema v5. See the [0.3.0 release notes](docs/releases/v0.3.0.md) for rollback guidance.
+**Before upgrading:** Close ExorSystem and back up the entire `%LOCALAPPDATA%\ExorSystem` profile, including quarantine. v0.3.0 upgrades the database to schema v5 on first launch. Its automatic pre-migration SQLite copy does **not** include held files. Keep any legacy `data` folder from v0.1.0; it is not imported. See the [upgrade and rollback notes](docs/releases/v0.3.0.md#before-you-upgrade).
 
-**Upgrading from v0.1.0:** The newer desktop runs without administrator rights and starts with a per-user profile. Back up your old executable-adjacent `data` folder, including any quarantine batches, before upgrading. The new version does not import or restore those batches automatically. See [Data](#data) and the [0.2.0 release notes](docs/releases/v0.2.0.md).
+[CI verified the published packages](AUDIT.md#v030-release-evidence) without installing or launching them. The interactive Windows 10/11 client matrix is **Not run**.
 
-## Layers
+## What you can do
 
-| Layer | Path | Tech | Status |
-|---|---|---|---|
-| GUI | `gui/` | Tauri v2 + React/TypeScript, keyboard-first, plain-language reports | dockable workspace, split inspector, guided uninstall, activity log |
-| User-space engine | `crates/exor-engine` | Rust + tokio, BLAKE3 | implemented, 100% safe Rust, tested |
-| Storage | `crates/exor-storage` | SQLite, WAL | implemented, tested |
-| Windows sources | `crates/exor-win` | windows-rs: registry snapshots, inventory, USN journal, driver client | see [verification matrix](AUDIT.md) |
-| Kernel driver | `driver/` | C, minifilter framework, `CmRegisterCallbackEx` | source only, not compiled |
+- **Compare an install.** In **Registry monitor**, choose specific folders and optionally registry Software subtrees. Take a baseline, make a change or run the installer yourself, and compare. Services and scheduled tasks are independent, read-only opt-ins. See which scopes were compared or skipped. Snapshots can miss short-lived changes and do not identify the process responsible.
+- **Trace recorded evidence.** Open a Watch result in **Change inspector**. Filter changes by installation, path, kind, or UTC dates, and export matching observations as JSON. Follow recorded relationships or save an installation report. A relationship's confidence score is not proof of ownership.
+- **Review installed apps and leftovers.** Browse classic Windows programs, current-user MSIX apps, and explicitly added portable apps. Preview supported vendor uninstall commands before running them. Use Windows Settings for per-user or unsupported uninstallers. Registry, service, and task findings are review-only.
+- **Quarantine exact files.** Review the file list before approving a reversible move. Restore held files without overwriting an existing destination, make a verified profile backup, or separately confirm permanent deletion. Quarantine does not replace a backup.
+- **Arrange your workspace.** Dock tools in Main, Right, or Bottom, save a layout, and keep Watch open alongside the inspector. Activity log is a separate window on Windows. Themes and keyboard controls are available; native accessibility and mixed-DPI behavior still need client testing.
 
-See the [dashboard guide](docs/DASHBOARD.md), [architecture](docs/ARCHITECTURE.md), the [roadmap and release checks](ROADMAP.md), the [verification matrix](AUDIT.md), and [changelog](CHANGELOG.md).
+Start with the [dashboard guide](docs/DASHBOARD.md#watch-an-install). To try Watch without an installer, use [a disposable file-only fixture](docs/WINDOWS-RELEASE.md#3-verify-watch-and-history-with-real-files-and-registry-keys).
 
-## Features
+## Documentation
 
-- **Dockable workspace**: arrange tools as tabs in Main, Right or Bottom. Resize splits, apply a layout preset, or keep Watch beside the evidence you are reviewing. On Windows, open Activity log as a separate window below the workspace. Overview shows inventory, recent changes, and cleanup metrics. Storage totals reflect recorded file sizes, not measured free space.
-- **Program inventory**: classic Windows programs, current-user MSIX apps, and portable apps added explicitly in Settings. MSIX and portable entries are listed without uninstall actions.
-- **Guided leftover review**: preview the registered command, confirm the vendor uninstall, and separately review possible leftover folders, registry keys, services and tasks. ExorSystem runs without elevation and launches only supported live machine-wide registrations; use Windows Settings for per-user or incompatible uninstallers. System findings are read-only.
-- **BOM & inference graph**: confidence `1.0` manifest-confirmed, `0.7` inferred from timing, `0.3` heuristic/unknown. Edges are cycle-checked.
-- **Noise filtering**: background telemetry, browser caches, indexer and Defender writes dropped in real time, with burst de-duplication.
-- **Differential engine**: async parallel directory walk, Merkle path-trie diff (identical subtrees skipped), BLAKE3 hashing with incremental reuse.
-- **Install watch**: take a before picture, run the installer, then take an after picture. Compare selected folders and [specific registry subtrees](ROADMAP.md#watch-an-install), with separately opt-in service and scheduled-task checks. See which scopes were compared, skipped, or not requested. Registry snapshots are read-only and need no driver.
-- **Optional themes**: 36 dark and light palettes with live preview and a temporary Undo; all pass WCAG AA contrast.
-- **Cleanup policy simulator**: JSONLogic rules, pure dry run; most protective rule wins (keep, then review, then quarantine). Templates: conservative, standard, thorough.
-- **Evidence-preserving quarantine**: BLAKE3-verified file batches, no-overwrite restore, explicit permanent delete, and manifests kept as evidence. Interrupted batches are recovered when safe; conflicts retain the held files. No VSS snapshots.
-- **Provenance & change history**: trace recorded artifacts and review an installation's observations in the append-only ledger. The split change inspector shows before/after evidence; its timeline supports session and path filters, older pages, and evidence source labels. Trace recorded dependencies in the relationship graph.
-- **Governance extras**: shared-component impact maps, orphaned-dependency review, installer family fingerprinting (silent switches), update batching by risk, portable-app transition plan, accessibility-first summaries.
-- **Mock harnesses**: seeded USN/registry event generators so the whole pipeline runs under `cargo test` without a driver.
+| If you want to… | Start here |
+|---|---|
+| Use Watch, History, cleanup, or backup | [Dashboard guide](docs/DASHBOARD.md) |
+| Build or test a release, or collect native evidence | [Windows runbook](docs/WINDOWS-RELEASE.md) · [Evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md) |
+| See what shipped or what is still open | [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Verification matrix](AUDIT.md) |
+| Work on the code | [Development](docs/DEVELOPMENT.md) · [Architecture](docs/ARCHITECTURE.md) |
+
+See the [full documentation index](docs/README.md) for release notes and the separate experimental live-source lab.
 
 ## Build and test
 
-```
-cargo test --locked                     # engine + storage + parsers (any OS)
-cargo clippy --all-targets --locked -- -D warnings
-cd gui && npm ci && npm run build       # frontend
-cd gui && npm run tauri build           # desktop app (Windows, WebView2)
+From the repository root, with the [pinned toolchain](docs/DEVELOPMENT.md):
+
+```sh
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+npm --prefix gui ci
+npm --prefix gui run build
 ```
 
-See [development](docs/DEVELOPMENT.md) for the pinned Rust/Node toolchain and browser smoke checks. See the [Windows release runbook](docs/WINDOWS-RELEASE.md) for build-only packages, stable promotion, [download verification](docs/WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them), and optional client testing. The [optional live sources](docs/LIVE-COLLECTION.md) are not used by the desktop.
+The frontend builds separately from the desktop. To run the browser demo, use `npm --prefix gui run dev` and open the Vite URL. Its **Demo data** badge marks fixture data, not Windows observations. For the Windows desktop, see [development setup](docs/DEVELOPMENT.md#run-the-desktop) or the [package build instructions](docs/WINDOWS-RELEASE.md#1-build-a-candidate-without-publishing).
 
 ## Data
 
-Everything is local and offline. On Windows, all three package formats store the database and quarantine under `%LOCALAPPDATA%\ExorSystem` for the launching user. The desktop does not run as Administrator. Older `data` directories beside the executable are left untouched and not imported; Settings reports one if it is present. No telemetry.
+All three package formats use the current Windows user's `%LOCALAPPDATA%\ExorSystem` for the SQLite profile and quarantine. The desktop has no telemetry. It stores recorded paths, file fingerprints, and comparison coverage; Watch does not record registry values. Reports and exports can include local paths, so review them before sharing. The Activity log is session-only and is not the evidence ledger. Windows prerequisites and vendor uninstallers are separate from the app's local evidence store.
 
 ## License
 
-MIT. See `LICENSE`, `CREDITS.md`.
+[MIT](LICENSE). See [credits and dependency licensing](CREDITS.md).

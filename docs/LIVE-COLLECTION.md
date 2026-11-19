@@ -1,6 +1,6 @@
 # Optional live collection: evaluation and lab checks
 
-**Decision: keep both live sources out of the desktop.** Default Watch uses read-only before/after snapshots and runs without elevation. Neither the release workflow nor the candidate workflow builds, installs, or loads the registry driver. Snapshot evidence is not upgraded to live attribution merely because live parsers exist.
+**Both live sources remain outside v0.3.0 desktop Watch.** Watch uses read-only before/after snapshots and runs without elevation. The candidate workflow does not build or load the registry driver; promotion and post-publication checks do not execute the packages. Snapshot evidence is not live attribution. See the [desktop architecture](ARCHITECTURE.md#driverless-install-watch) for the shipped path.
 
 ## What the review found
 
@@ -31,4 +31,4 @@ The probe prints only matching fixture operation counts, for up to 30 seconds. I
 - [ ] Microsoft-assigned altitude and review of both the callback and minifilter registration/INF. The source uses a development placeholder.
 - [ ] Production signing and validation on the supported security configuration. Do not weaken Secure Boot or Memory Integrity on end-user systems.
 
-The source review and probe are available; native live-source captures and the distribution gates have **not** been completed.
+The source review, automated parser checks, and lab probe are available. Native capture and distribution gates are **Not run**. Record lab results separately; a passing [desktop package check](../AUDIT.md#v030-release-evidence) cannot fill these rows.

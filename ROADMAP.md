@@ -1,52 +1,45 @@
 # ExorSystem roadmap
 
-ExorSystem records system changes and helps people review the evidence before cleanup. The [audit](AUDIT.md) separates automated coverage from checks that require a Windows desktop or driver lab.
+Latest stable: [v0.3.0](https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.3.0). ExorSystem compares selected snapshots and records evidence for review; it does not monitor every system event or automatically remove everything associated with an installation.
 
 ## Shipped on main
 
-- **Foundation** ([PR #5](https://github.com/SeanShaffer88/ExorSystem/pull/5)): file, service and task observations; policy preview; recoverable file quarantine; automated checks and Windows packaging. [v0.1.0](https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.1.0) published NSIS, MSI and portable ZIP builds with SHA-256 hashes.
-- **Inventory and leftover review** ([PR #19](https://github.com/SeanShaffer88/ExorSystem/pull/19)): classic Windows programs, current-user MSIX packages, and opt-in portable entries. Registry, service and task suggestions are read-only. Provenance can find an unambiguous ASCII case-insensitive match without merging older records.
-- **Driverless Watch and History** ([PR #20](https://github.com/SeanShaffer88/ExorSystem/pull/20), [PR #21](https://github.com/SeanShaffer88/ExorSystem/pull/21)): opt-in registry subtree snapshots, persistent Watch controls across tabs, and a link to the completed watch's History. History includes removals, evidence sources, literal path search, session filtering and paging.
-- **Unelevated desktop and release verification** ([PR #22](https://github.com/SeanShaffer88/ExorSystem/pull/22)): per-user storage, guarded uninstall and quarantine, a build-only package workflow, and a Windows 10/11 test fixture. The [Windows Server package run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44247905086) passed for NSIS, MSI, and portable ZIP. Full interactive client testing remains open.
-- **Workspace dashboard** ([PR #24](https://github.com/SeanShaffer88/ExorSystem/pull/24)): inventory, guided uninstall and script preview, split Change inspector, cleanup outcomes and relationship graph. A file-only Watch → inspector smoke test on a real Windows PC observed additions, modifications and removals, with different fingerprints on the edited file. This is partial smoke evidence, not a Windows 10/11 client matrix.
-- **Watch coverage** ([PR #25](https://github.com/SeanShaffer88/ExorSystem/pull/25)): opt-in scopes, explicit baseline and comparison coverage, and exclusion of incomplete captures rather than treating them as removals. File-only Watch skips registry, service, and task checks.
-- **Dockable workspace** ([PR #26](https://github.com/SeanShaffer88/ExorSystem/pull/26)): move and resize panels, save layouts, use a compact dock switcher, and retain Watch/Scan progress while switching tools. The activity log is separate from the read-only Script preview.
-- **Stable package promotion** ([PR #23](https://github.com/SeanShaffer88/ExorSystem/pull/23), [PR #27](https://github.com/SeanShaffer88/ExorSystem/pull/27)): publish a retained candidate using its original SHA-256-verified packages rather than rebuilding. Passing CI and package verification are required; interactive testing is optional.
+| Milestone | What shipped |
+|---|---|
+| v0.1.0 foundation | File, service, and task observations; policy preview; recoverable quarantine; [first Windows x64 packages](https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.1.0). |
+| v0.2.0 driverless desktop | Per-user unelevated profile, classic/MSIX/portable inventory, opt-in registry snapshots, guided leftover review, a dockable workspace, and promotion of tested candidate artifacts without rebuilding. See the [v0.2.0 notes](docs/releases/v0.2.0.md). |
+| v0.3.0 Watch and evidence | Saved scope presets and comparison coverage, bounded capture with cancellation, recent comparisons, dated History filters and JSON export, and the bottom-attached Activity log. [PR #29](https://github.com/SeanShaffer88/ExorSystem/pull/29) · [PR #30](https://github.com/SeanShaffer88/ExorSystem/pull/30) |
+| v0.3.0 cleanup and profile safety | Exact single-use cleanup plans, reviewed same-volume file moves, verified profile backups and archive rotation, and separate main/log permissions. Back up the whole profile before the schema v5 upgrade. [PR #31](https://github.com/SeanShaffer88/ExorSystem/pull/31) · [v0.3.0 notes](docs/releases/v0.3.0.md) |
+| Packaged Windows verification tooling | [PR #33](https://github.com/SeanShaffer88/ExorSystem/pull/33) added a repeatable read-only check of the **published** NSIS, MSI, portable ZIP, and their evidence files. It also added the optional disposable-client launch observer. The tooling is on `main`; no package was rebuilt or changed for it. |
 
-## v0.3.0 release scope
+## Next milestones
 
-- **Audited desktop boundaries:** exact cleanup plans, verified profile backup and archive rotation, bounded capture and exports, separate main/log permissions. See the [remediation verification matrix](docs/AUDIT-REMEDIATION.md) for unverified Windows scenarios.
+These are open work, not release dates or claims of current support.
 
-- **Retain comparison context:** History and installation reports show what a Watch compared, including skipped scopes and comparisons with zero changes. Scope coverage is saved with the observations; old sessions without coverage remain unknown. This is a local profile upgrade, not a change to v0.2.0 packages or a native Windows test result.
-
-- **Workspace refinements:** scrollable Applications details and a separate Activity log attached below the Windows desktop. Closing the log returns its space to the maximized workspace.
-- **Driverless desktop workflow:** saved Watch scopes, capture cancellation, restart recovery, recent comparisons, change-type filtering and filtered JSON export, inventory sorting and full-session evidence browsing, recorded quarantine previews and explicit restore review. See the [dashboard guide](docs/DASHBOARD.md) for steps and limits.
+1. **Collect native Windows 10/11 results.** Run the [client checklist](#optional-windows-client-testing) with each exact package. Keep installation and upgrade evidence, launch smoke, native WebView2 behavior, and end-to-end workflow results separate.
+2. **Make older Watch sessions easier to find.** Extend the existing Recent comparisons, session picker, and row filters with a searchable, paged session archive. Preserve the distinction between cancelled or incomplete runs, unknown coverage, and completed comparisons with zero changes. Do not infer new observations from old records.
+3. **Validate the optional live sources in a lab.** Measure journal gaps, cancellation, registry delivery and disconnect behavior before considering any opt-in integration. This does not block the driverless desktop; see the [separate gates](#driver-work-is-separate).
 
 ## Watch an install
 
-- Enter full paths to the folders you want to watch. No folders are selected by default. Select Services or Scheduled tasks only if you want their read-only metadata checked.
-- To opt in to registry tracking, enter up to eight specific Software subtrees, one per line. Use `HKCU\Software\Example` for the calling user, `HKLM\Software\Example` for the 64-bit machine view, or `HKLM32\Software\Example` for the 32-bit machine view. Leave it blank to skip the registry. Whole hives and whole Software roots are not accepted.
-- Wait for the baseline before making changes. You can switch tabs and return to compare or cancel. The results distinguish checks that were not requested, skipped, partly covered, or compared. Unreadable scopes are skipped with a reason, not treated as empty.
-- After **Compare snapshots**, choose **View recorded changes** to open the **Change inspector** filtered to the watch session. Use **Timeline** to see all observation types. Key paths and last-write metadata show what changed between checks, not which process changed it. Registry value names and contents are not collected, and short-lived changes between snapshots may be missed.
+Use [Registry monitor → Watch an install](docs/DASHBOARD.md#watch-an-install) for the current steps, scope syntax, and coverage results. Watch only compares selected scopes between two reads; skipped scopes are not empty results and no capture attributes changes to a process.
 
 ## Before publishing a Windows build
 
-Pass Linux/Windows CI and the **Windows candidate packages (no publish)** workflow. Use [Release](docs/WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) to verify and promote the retained packages from a commit reachable from `main`, without rebuilding or reusing a tag. Interactive client sign-off is not required.
+Pass Linux/Windows CI and the **Windows candidate packages (no publish)** workflow. The [Release workflow](docs/WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) promotes retained packages from a commit reachable from `main`, without rebuilding or reusing a tag. After publishing, rerun the [published-package verifier](docs/WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) with the exact tag. Native client sign-off is optional, not a stable publishing gate.
 
 ### v0.3.0 release evidence
 
-[The v0.3.0 promotion run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44432420633) published the retained NSIS installer, MSI, portable ZIP, and two verification files from source `b34188983fdfe2d5e502380ce02873131d388c8e` without rebuilding. [CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44415431971) and the [candidate package checks](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44415431944) passed for that commit. See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for the full-profile backup and rollback steps before upgrading.
-
-The [post-publication check](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44434655724) downloaded and verified all five v0.3.0 assets against GitHub’s recorded sizes and digests, the candidate report, and the checksum file. It did not run an installer or desktop. Use the [published-package verifier](docs/WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) to repeat those checks. The [audit](AUDIT.md#v020-automated-evidence) preserves historical v0.2.0 evidence.
+The [v0.3.0 evidence record](AUDIT.md#v030-release-evidence) links the exact source, CI, candidate, promotion, and published-asset verification. The static checks **passed**; no installer or desktop ran in that verification.
 
 ### Optional Windows client testing
 
-The interactive Windows 10/11 matrix for v0.3.0 is **Not run**. Start on a disposable client with the [first-launch observer](docs/WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client), then use the [Windows runbook](docs/WINDOWS-RELEASE.md) for the manual checks. Record the exact commit, package SHA-256, OS build, and separate results in the [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md).
+The interactive Windows 10/11 matrix for v0.3.0 is **Not run**. Record the exact tag, package SHA-256, OS build, and outcome in the [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md). Use a clean disposable VM snapshot per format, not a live user profile.
 
-- [ ] Verify installation/extraction, normal launch, WebView2, elevation behavior, upgrade/removal and data location on both Windows 10 and 11 x64 for each installer format where applicable.
-- [ ] Verify real Watch → History, inventory and uninstall/review, quarantine/restore/purge, and Windows-specific failure drills with disposable fixture data.
-- [ ] Verify dock moves and splitters, persistence, Watch/Scan continuity, keyboard navigation, Narrator, high contrast, 100%/150% DPI, and Activity log on both clients.
+- [ ] Run the [first-launch observer](docs/WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client) and separately test install/extract, normal and elevated behavior, WebView2, removal, upgrade, and profile location with all three formats where applicable.
+- [ ] Verify Watch → History, inventory and uninstall review, file quarantine/restore/purge, and backup/rollback with fixture data. Record actual interruption drills separately from simulations.
+- [ ] Verify docking, focus, keyboard navigation, Narrator, high contrast, and 100%/150% mixed-monitor DPI on both clients.
 
 ## Driver work is separate
 
-The normal desktop release does not require a driver. Keep the [live-source lab gates](docs/LIVE-COLLECTION.md#distribution-gates-open) separate from desktop publishing. Real USN and registry callback capture, WDK build/load, Microsoft altitude assignment, and signing remain open. Neither live source is enabled in the v0.3.0 desktop release.
+Neither live source is enabled in v0.3.0 desktop Watch. [Native live capture, WDK build/load, a Microsoft-assigned altitude, and signing](docs/LIVE-COLLECTION.md#distribution-gates-open) remain open. Do not elevate the desktop to use a collector.

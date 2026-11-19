@@ -1,11 +1,14 @@
-# README screenshot capture list (real runs on Windows only)
+# Windows screenshot checklist
 
-1. `overview.png`: Overview with application inventory, recent observations, and storage totals.
-2. `applications.png`: Installed application details with linked evidence and the uninstall wizard’s plan step.
-3. `inspector.png`: Registry and file system panes, plus before/after evidence for a changed file.
-4. `relationships.png`: One-hop graph from a recorded artifact with a dependency or shared edge.
-5. `cleanup.png`: Cleanup summary with held, purged, and restored batches, or the simulator with policy decisions.
+Capture the installed or extracted desktop on a disposable Windows 10/11 x64 client using verified [release downloads](WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them). Use the [Windows fixture](WINDOWS-RELEASE.md#3-verify-watch-and-history-with-real-files-and-registry-keys), not real app or user data. These filenames are a capture plan, not bundled images or test results.
 
-6. `docks.png`: Investigation layout with Watch, Change inspector, and the separate Activity log attached below. Capture the compact dock switcher and the Applications detail view separately.
+| File | What to show |
+|---|---|
+| `overview.png` | Overview with inventory, recent observations, and recorded storage totals. |
+| `applications.png` | Applications details and the uninstall wizard's read-only plan, using a disposable app. |
+| `inspector.png` | Watch coverage, separate registry and file panes, and before/after detail on a changed file. |
+| `relationships.png` | A recorded artifact with an origin or dependency, including its evidence label. |
+| `cleanup.png` | Exact-file review or a held/restored batch, with recorded sizes distinguished from freed disk space. |
+| `docks.png` | Investigation layout with Watch and Change inspector, and the Windows Activity log below the main window. Capture the compact dock switcher separately. |
 
-Capture at 100% and 150% DPI. Use fixture paths or redact user data. Browser demo screenshots are not native release evidence.
+Check 100% and 150% scaling and both monitors when available. For evidence, record the package hash, OS build, WebView2 version, and display setup in the [client template](WINDOWS-RELEASE-EVIDENCE.md). Redact personal paths, account identifiers, and unrelated installed apps. A screenshot is not a test of keyboard navigation, Narrator, or installation; label browser demo captures as demo rather than native release evidence.
