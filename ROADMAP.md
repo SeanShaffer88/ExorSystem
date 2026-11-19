@@ -33,13 +33,15 @@ ExorSystem records system changes and helps people review the evidence before cl
 
 Pass Linux/Windows CI and the **Windows candidate packages (no publish)** workflow. Use [Release](docs/WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) to verify and promote the retained packages from a commit reachable from `main`, without rebuilding or reusing a tag. Interactive client sign-off is not required.
 
-### v0.2.0 release evidence
+### v0.3.0 release evidence
 
-[v0.2.0](https://github.com/SeanShaffer88/ExorSystem/releases/tag/v0.2.0) was published on **2026-11-18**. The [promotion run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44284479160) tagged `c3aa8c0c0c2d8ac20d107f62b91c38b5eb67b142` and published the retained NSIS installer, MSI, and portable ZIP without rebuilding. The release attaches `SHA256SUMS.txt` and `PACKAGE-CHECKS.json`; [CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786809) and [static package verification](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44272786871) passed for that source commit. Back up legacy data as described in the [release notes](docs/releases/v0.2.0.md) before upgrading.
+[The v0.3.0 promotion run](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44432420633) published the retained NSIS installer, MSI, portable ZIP, and two verification files from source `b34188983fdfe2d5e502380ce02873131d388c8e` without rebuilding. [CI](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44415431971) and the [candidate package checks](https://github.com/SeanShaffer88/ExorSystem/actions/runs/44415431944) passed for that commit. See the [v0.3.0 release notes](docs/releases/v0.3.0.md) for the full-profile backup and rollback steps before upgrading.
+
+Use the [published-package verifier](docs/WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) to repeat integrity and provenance checks on the actual downloads. It never launches or publishes a package. The [audit](AUDIT.md#v020-automated-evidence) preserves historical v0.2.0 evidence.
 
 ### Optional Windows client testing
 
-The full interactive matrix has **not run** for the v0.2.0 packages. Use the [Windows runbook](docs/WINDOWS-RELEASE.md), not a live user profile. If you run client tests, record the exact commit, package SHA-256, OS build, results, and logs in the [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md).
+The interactive Windows 10/11 matrix for v0.3.0 is **Not run**. Start on a disposable client with the [first-launch observer](docs/WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client), then use the [Windows runbook](docs/WINDOWS-RELEASE.md) for the manual checks. Record the exact commit, package SHA-256, OS build, and separate results in the [evidence template](docs/WINDOWS-RELEASE-EVIDENCE.md).
 
 - [ ] Verify installation/extraction, normal launch, WebView2, elevation behavior, upgrade/removal and data location on both Windows 10 and 11 x64 for each installer format where applicable.
 - [ ] Verify real Watch → History, inventory and uninstall/review, quarantine/restore/purge, and Windows-specific failure drills with disposable fixture data.
@@ -47,4 +49,4 @@ The full interactive matrix has **not run** for the v0.2.0 packages. Use the [Wi
 
 ## Driver work is separate
 
-The normal desktop release does not require a driver. Keep the [live-source lab gates](docs/LIVE-COLLECTION.md#distribution-gates-open) separate from desktop publishing. Real USN and registry callback capture, WDK build/load, Microsoft altitude assignment, and signing remain open. Neither live source is enabled in the v0.2.0 desktop release.
+The normal desktop release does not require a driver. Keep the [live-source lab gates](docs/LIVE-COLLECTION.md#distribution-gates-open) separate from desktop publishing. Real USN and registry callback capture, WDK build/load, Microsoft altitude assignment, and signing remain open. Neither live source is enabled in the v0.3.0 desktop release.

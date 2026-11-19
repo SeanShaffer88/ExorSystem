@@ -13,7 +13,7 @@ Use the **Windows candidate packages (no publish)** Actions workflow on the cand
 ./scripts/check-release.ps1 -ArtifactDir ./dist
 ```
 
-Use the **workflow artifact** for publication and any optional client testing. Keep `SHA256SUMS.txt` and `PACKAGE-CHECKS.json` with the three packages. The verification script checks their hashes, the NSIS PE header, the MSI x64 template, and the portable ZIP contents plus its executable's x64, `asInvoker`, and PerMonitorV2 manifest. It does **not** install or launch the packages. Local builds are useful for troubleshooting but are not a substitute for the exact workflow artifact you intend to release.
+Use the **workflow artifact** for publication and for testing an unpublished candidate. When testing an already released version, [verify the exact published downloads](#7-verify-the-published-downloads-without-launching-them) instead. Keep `SHA256SUMS.txt` and `PACKAGE-CHECKS.json` with the three packages. The verification script checks their hashes, the NSIS PE header, the MSI x64 template, and the portable ZIP contents plus its executable's x64, `asInvoker`, and PerMonitorV2 manifest. It does **not** install or launch the packages. Local builds are useful for troubleshooting but are not a substitute for the exact workflow artifact you intend to release.
 
 ## 2. Install, start, and remove each format
 
@@ -81,3 +81,52 @@ Use the separate **Release** workflow to publish. It does not run automatically,
 1. Pick a successful **Windows candidate packages (no publish)** run from this repository with a retained artifact. Its exact source commit must be reachable from `main` and have passing CI. If a squash merge made the candidate commit unreachable, run CI and build a candidate on the landed commit instead. If the artifact expired, rerun the candidate workflow and use the new run ID.
 2. In Actions → **Release** → **Run workflow**, select the default branch and enter `candidate_run_id` (the number in the run URL). Do not create the tag first or use this workflow just to build packages.
 3. The workflow downloads the artifact and checks its version, run ID, source commit, sizes, and SHA-256 hashes. It refuses to reuse an existing tag, creates `v{version}` at the candidate commit, and publishes the **same bytes**, checksums, and package report without rebuilding. Check the new release and tag target afterward. The release notes link the automated checks and do not imply a Windows client pass.
+
+## 7. Verify the published downloads without launching them
+
+**Published Windows package evidence (no launch)** is a read-only Actions workflow. It checks v0.3.0 on related PRs; for a repeat run, select the workflow on the default branch and enter an exact stable tag. It downloads the release assets, not a fresh build or the source archive. The job attaches `packages.json` as **ExorSystem-published-package-evidence** when the download or verification step runs. Keep that report with any later client evidence. A failed download is **Blocked**, not a pass. This workflow does not gate or run the Release workflow.
+
+For a local run, use Python 3.11+ and GitHub CLI (`gh`). The example uses PowerShell 7.2+ from the repository checkout. Fetch release JSON directly from the [official repository](https://github.com/SeanShaffer88/ExorSystem); a JSON file supplied by the same mirror as the downloads is not a trust anchor. Use a new local staging directory. If downloading via the release page instead of `gh release download`, put **only** the NSIS setup EXE, MSI, portable ZIP, `SHA256SUMS.txt`, and `PACKAGE-CHECKS.json` in `packages`.
+
+```powershell
+$repo = 'SeanShaffer88/ExorSystem'
+$tag = 'v0.3.0'
+$stage = Join-Path ([IO.Path]::GetTempPath()) ('exor-release-' + [guid]::NewGuid().ToString('N'))
+$packages = Join-Path $stage 'packages'
+$info = Join-Path $stage 'release.json'
+New-Item -ItemType Directory -Path $packages | Out-Null
+$release = gh api "repos/$repo/releases/tags/$tag"
+if ($LASTEXITCODE) { throw 'Could not fetch official release metadata.' }
+$ref = gh api "repos/$repo/git/ref/tags/$tag" --jq '.object.type + ":" + .object.sha'
+if ($LASTEXITCODE -or $ref -cne ('commit:' + ($release | ConvertFrom-Json).target_commitish)) {
+  throw 'The release source does not match the published tag.'
+}
+$release | Set-Content -LiteralPath $info -Encoding utf8
+gh release download $tag --repo $repo --dir $packages
+if ($LASTEXITCODE) { throw 'Could not download the five release assets.' }
+python -B ./scripts/verify-published-release.py $packages --release-info $info --tag $tag --output (Join-Path $stage 'packages.json')
+if ($LASTEXITCODE) { throw 'Stop: published package verification did not pass.' }
+```
+
+The verifier compares all five file sizes and SHA-256 digests with GitHub release metadata. It checks consistency with the candidate report, release notes, and published checksum file; inspects the NSIS launcher PE header, MSI compound-file header, and expected portable ZIP entries; and fingerprints the x64 desktop executable inside the ZIP. The candidate report is the evidence for the MSI x64 template and embedded manifest; this post-publication check does not rerun those SDK checks. It creates a new report without extracting, installing, launching, signing, or modifying any package. It requires the five-asset release layout used by the retained-candidate workflow; older releases without this metadata cannot pass.
+
+## 8. Observe first launch and exit on a disposable client
+
+This is an **optional, separate** smoke test for one OS/format pair. It needs an interactive Windows 10 or 11 x64 client VM, a normal unelevated account with **no existing** `%LOCALAPPDATA%\ExorSystem` profile, x64 PowerShell 7.2+, and Python 3.11+. Start from a clean snapshot, verify the downloads as in section 7, then manually install **one** verified installer or extract the verified ZIP through Explorer. Do not start ExorSystem yet; skip any installer option to launch it. Leave SmartScreen, UAC, and other security controls in place. Use ordinary local paths without junctions or symlinks.
+
+From that same account, with the section 7 variables still set:
+
+```powershell
+$exe = 'C:\Test Apps\ExorSystem\ExorSystem.exe' # Replace with the actual extracted desktop path.
+./scripts/windows-client-smoke.ps1 -ArtifactDir $packages -ReleaseInfo $info -Tag $tag `
+  -EvidenceDir (Join-Path $stage 'portable-launch') -Format Portable -DesktopExe $exe -DisposableClient
+```
+
+For an installer, use `-Format NSIS` or `-Format MSI` and the installed desktop `.exe` (not its shortcut, setup program, or uninstaller). Choose a new evidence directory each time. The observer rechecks the five downloads and requires the desktop executable to match the portable binary's size and SHA-256. When prompted, open that exact file normally from Explorer in the test session, then close its window when asked. The observer does not start, stop, or kill processes itself. It refuses Windows Server, elevated shells, and pre-existing profiles; it never deletes data or redirects the real Local AppData known folder.
+
+| Report | What a pass means |
+|---|---|
+| `packages.json` | The downloads match the release and pass the static checks in section 7. No client results. |
+| `launch.json` | After verifying the binary, the observer saw a new responsive window titled **ExorSystem** from that path in the test session, a new nonempty `exor.db` in the test profile, and process exit code `0` within the close timeout. |
+
+`-Format` records the operator's selection; it does not prove which installer registered the executable. A responsive window and exit code are not a WebView2 render test or a record of the close click. If a guard refuses the run, security or a missing runtime blocks launch, or an observation times out, record the actual outcome and reason in the [client evidence template](WINDOWS-RELEASE-EVIDENCE.md). A refused run may produce no `launch.json`. If the desktop stays open, close it normally or revert the VM after saving the evidence. Do not delete a profile to force a fresh run. Use sections 2–5 for actual install/upgrade/removal, WebView2 and IPC, Watch/History/cleanup, and accessibility/DPI results; leave unobserved checks **Not run**.

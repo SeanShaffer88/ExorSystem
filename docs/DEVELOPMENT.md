@@ -23,6 +23,8 @@ The `asInvoker` desktop uses the normal user token and refuses an elevated start
 ## Build-only packages
 See the [Windows release runbook](WINDOWS-RELEASE.md) for `scripts/release.ps1`, package checks, the disposable fixture, and interactive evidence. Use **Windows candidate packages (no publish)** for test artifacts. The separate **Release** workflow [tags and promotes the retained artifact](WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate) after CI and package verification, without requiring interactive client results.
 
+Repeat the [static checks against the published assets](WINDOWS-RELEASE.md#7-verify-the-published-downloads-without-launching-them) without building or running them. Run the verifier's fixture tests with `python -B -m unittest discover -s scripts/tests -v` (Python 3.11+). The separate [launch observer](WINDOWS-RELEASE.md#8-observe-first-launch-and-exit-on-a-disposable-client) requires a disposable Windows 10/11 client; the Windows Server job only checks its syntax and confirms it refuses a server run.
+
 ## Optional live-source lab
 See [the isolated lab runbook](LIVE-COLLECTION.md) and [driver development](../driver/README.md). Do not launch the desktop as Administrator to connect to a collector.
 
