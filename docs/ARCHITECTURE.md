@@ -1,58 +1,64 @@
 # Architecture
 
-```
-GUI (Tauri v2 + React)  --invoke-->  exorsystem-gui (src-tauri)
-                                          |
-                    +---------------------+---------------------+
-                    v                                           v
-            exor-engine (Rust, tokio, safe)             exor-storage (SQLite WAL)
-   walker/trie/snapshot  noise  policy  quarantine      schema, migrations, DAG, ledger
-   monitor  fingerprint  risk  portable  report
-                    ^
-                    | EventSource trait (mpsc<RawEvent>)
-        +-----------+--------------+
-        |                          |
-  exor-win (Windows)          MockEventSource (tests)
-  USN journal reader          seeded generators
-  registry driver client
-        ^
-        | \\ExorSystemPort (packed messages, parsed + bounds-checked in Rust)
-  driver/exordrv.c  CmRegisterCallbackEx (observe-only)
+## Released desktop
+
+```text
+React / TypeScript workspace (Tauri v2 `main` WebView)
+  |  allowlisted commands; progress Channels and log events
+  v
+exorsystem-gui (`gui/src-tauri`): user profile, Capture/Scan gate, review state
+  +-- exor-engine: snapshots, diff, provenance, policy, cleanup, backup, export
+  +-- exor-storage: SQLite WAL, migrations, graph, append-only ledger
+  +-- exor-win: read-only Windows metadata, native pickers and window helpers
+  +-- exor-fs (via the engine): file identity and no-replace filesystem operations
+
+Tauri `log` WebView: separate permissions for Activity log only
 ```
 
-## Decisions
-1. **Edge direction**: an edge reads `child <relationship> parent` (artifact `created_by` installer; app `depends_on` library). `parent_node_id` is the origin or dependency.
-2. **Schema**: `0001` is the blueprint schema verbatim. The two PRAGMAs run per connection (they cannot run inside a migration transaction). `0002` adds the change ledger, quarantine records and a unique edge index, which the blueprint's pillars require but its schema lacks. `0003` adds opt-in portable inventory and case-insensitive read indexes without changing node identity. `0004` adds per-session Watch comparison summaries; it does not change existing sessions or ledger rows.
-3. **Confidence ladder**: manifest 1.0, temporal 0.7, heuristic 0.3. Re-adding an edge keeps the highest score, so evidence only ever raises confidence.
-4. **Quarantine safety**: write an `in_progress` manifest before moving anything; persist the record and ledger in a single SQLite transaction, then finalize. On startup, a matching committed record finishes the manifest; otherwise verified, unblocked blobs go back to their original paths. A conflict keeps its blob and produces a warning. Restore/purge derive paths from the configured root and ID, do not use SQLite as path authority, and never overwrite an original.
-5. **Policy precedence**: when several rules match, the most protective wins (keep, review, quarantine). No match means review; non-file artifacts cannot be quarantined.
-6. **Case-insensitive paths** in the trie (Windows semantics on every platform). Provenance tries exact spelling, then a unique SQLite `NOCASE` match. Case-only variants are not merged.
-7. **Safety**: `exor-storage` and `exor-engine` forbid `unsafe`; all FFI is isolated in `exor-win` with a SAFETY note per block. No `unwrap`/`expect` outside tests (clippy-enforced).
-8. **USN reads** are kernel-side waits on the blocking pool with a 1 s timeout; no sleep polling.
-9. **Live registry visibility** is observe-only in the optional driver; live file visibility stays in user mode via the USN journal.
-10. **GUI data** is per-user: `%LOCALAPPDATA%\ExorSystem` on Windows (SQLite and `quarantine`). A profile lock serializes desktop instances. An `asInvoker` manifest and token check remove the elevated desktop boundary; old adjacent `data` is not imported.
+| Component | Responsibility |
+|---|---|
+| `gui/` | Dockable workspace, side-by-side change lists, exact cleanup review, and keyboard controls. The Vite demo and browser test IPC fixtures are not native evidence. |
+| `gui/src-tauri/` | Validates incoming commands, owns state and approval plans, and bounds concurrent work. The `main` capability serves the workspace; `log` can access only its log commands, not cleanup, profile, or vendor-uninstall operations. |
+| `crates/exor-engine/` | Safe Rust logic for file snapshots, BLAKE3 fingerprints, diffing, comparison coverage, program/session evidence, policy, quarantine, and archives. |
+| `crates/exor-storage/` | Safe Rust storage using SQLite WAL with transactional schema changes and ledger writes. |
+| `crates/exor-win/` and `crates/exor-fs/` | Platform adapters: registry/inventory/SCM reads, token and known-folder checks, native window placement, open-file identities and bounded filesystem publication primitives. |
+
+Desktop Watch is **before/after snapshots**, not continuous capture. The NTFS USN reader and registry port client live in `exor-win`; the optional C callback driver lives in [`driver/`](../driver/README.md). They use separate lab probes and are not used by desktop Watch. [Lab status and distribution gates](LIVE-COLLECTION.md).
+
+## Profile and provenance
+
+- The Windows `asInvoker` desktop rejects an already-elevated token. It uses the Local AppData known folder's `ExorSystem` directory, with a single-instance lock, SQLite database, and held files under `quarantine`. The old executable-adjacent `data` directory is not imported.
+- Migrations are forward-only. `0001` establishes the data model; `0002` adds the ledger and quarantine; `0003` adds portable inventory and lookup indexes; `0004` adds saved Watch comparison coverage. `0005` adds explicit application/session links, quarantine batch/file indexes and restore/purge intent, and indexes for History. Old rows do not gain invented coverage or session links. The SQLite pre-migration copy is not a full profile backup; see the [v0.3.0 upgrade instructions](releases/v0.3.0.md#before-you-upgrade).
+- Edges read `child <relationship> parent`, for example `artifact created_by installer` or `app depends_on library`. The graph rejects cycles and keeps the highest recorded confidence when re-adding an edge: manifest `1.0`, temporal `0.7`, heuristic `0.3`. Confidence is evidence strength, not verified ownership or cleanup authority. Lookup tries exact path spelling and then a unique ASCII-case-insensitive match; it does not merge case-only records.
 
 ## Program inventory and review
-The desktop shell merges classic uninstall entries, the current user's WinRT package list, and portable entries from SQLite. Only a live machine-wide classic registry entry can supply a supported uninstall command. Both the read-only command preview and the launch validate the live registration; the launch refuses a plan that differs from the reviewed executable and argument list. The desktop launches it without a shell or elevation; per-user or unsupported registrations are handled in Windows Settings. After a guided uninstall, the shell keeps a command-free copy in memory for leftover review; it is discarded on exit. The engine compares a bounded list of Software key names, SCM services, and task definitions. System findings are advisory and never flow to the filesystem quarantine command.
+
+The shell merges classic uninstall registrations, current-user MSIX packages, opted-in portable entries, and local session records. Only a supported live machine-wide classic registration can supply a vendor invocation. Preview and launch resolve the registration separately; launch rejects changes to the reviewed executable or arguments, and does not fall back to a shell or elevation. Use Windows Settings for per-user or unsupported uninstallers. A recently uninstalled app can be reviewed for leftovers until the session ends. Software key names, service executables, and task matches are read-only suggestions, not file movement authority.
 
 ## Driverless install watch
 
-The desktop uses before/after snapshots, not live USN or driver events. On Windows, the registry probe opens only selected Software subtrees with read access, using separate machine views. It records paths and key last-write stamps in memory, never value data. Each subtree is bounded by key count, depth and path storage; unreadable, linked, or over-limit trees are discarded for that sample. The engine compares complete pairs by path (ignoring ASCII case) and stamp. Only differences reach SQLite as `snapshot_diff` with heuristic attribution; removing a key does not create a cleanup candidate. The snapshots are not atomic or process-attributed.
+Watch reads only selected folders, bounded Software subtrees, and opted-in service or task metadata. An absent scope can be a valid snapshot input; a read/hash failure, incomplete task read, or unreadable, redirected, or over-limit registry scope is skipped instead of treated as empty. Registry capture records key paths and last-write stamps, not values. Differences from usable pairs are recorded as `snapshot_diff` with heuristic attribution. The snapshots are not atomic and do not attribute work to a process.
 
-Watch compares only explicitly selected folders, registry subtrees and system probes. The baseline and final IPC responses include requested and usable scope counts; the UI only displays a change count for a source with a comparable pair. An absent folder is valid snapshot input, but reported read/hash failures invalidate that folder's snapshot. A task definition read error also skips the task comparison. If there is no usable baseline or pair the session is marked failed. The baseline itself stays in memory. After all follow-up reads finish, the engine commits the comparison summary, observation rows, graph changes, and final status in one SQLite transaction. A comparison with no usable pairs records that outcome without observations; cancellation or a failed write does not save a comparison. The summary stores counts and skipped-scope diagnostics, not snapshots, registry values, or attribution.
+File comparisons use path tries and BLAKE3 hashes; ordinary capture can reuse hashes for unchanged metadata, while **Strict file comparison** hashes the content again. Comparison only uses usable pairs. The engine commits the coverage summary, ledger rows, graph changes, and final status together. A comparison with no usable pairs can save incomplete coverage without observations; stopping before commit or a failed write does not save a comparison. The baseline is in memory and cannot resume after restart.
 
-## Change history
+## Change history and exports
 
-History queries the append-only ledger directly, including observations without a known node. Session, literal path, and optional registry/file/system domain filters apply before paging. The domain comes from the node type or, for unlinked observations, the recorded path/source. No schema migration is needed. Selecting a session queries its saved Watch coverage separately from the ledger and path filters. Older sessions with no summary show unknown coverage. An exclusive `entry_id` cursor keeps older pages stable when new evidence arrives; the existing session index supports scoped reads without a migration. The inspector displays old and new file fingerprints when available and registry presence/last-write change evidence without value data. Timeline exposes every domain. The relationship graph uses recorded edges in both directions without inferring new app dependencies. Cleanup size totals come from stored manifests, not a fresh filesystem traversal.
+History reads the append-only ledger, including observations without a known node. The session, literal path, optional source domain, change kind, and UTC filters apply before paging. An exclusive `entry_id` cursor keeps older pages stable as new observations arrive. Saved coverage is read independently; older sessions without it remain unknown. The inspector shows recorded fingerprints and key-change evidence, not file contents or registry values. Timeline shows all domains; the relationship graph follows recorded links, not an exhaustive Windows dependency scan. JSON export uses the same requested filters across all domains and a bounded continuation cursor.
 
-## Known limitations
-See [audit](../AUDIT.md) and the [release checklist](../ROADMAP.md#before-publishing-a-windows-build).
+## Cleanup and archives
+
+Policy simulation is a dry run: when rules overlap, keep outranks review, which outranks quarantine. Applying cleanup is separate from a policy recommendation. Application/session eligibility and a read-only preflight produce the exact, expiring file list. Apply consumes the reviewed plan, rechecks scope and identity, and is not a generic file-list command. Registry, service, and task observations are never quarantine candidates.
+
+Quarantine stages the manifest before moving files, commits the record and ledger atomically, and checks disk state when recovering interrupted work. Windows reviewed moves use an opened file and preserve the same-volume requirement instead of copying across volumes. Restore never overwrites. A conflict retains its blob for review, and startup never resumes an interrupted purge. SQLite's file index is for browsing; the manifest and current disk checks govern the operation. Recorded byte totals are logical file lengths, not measured free space.
+
+A verified profile copy contains a SQLite snapshot, manifests, and held bytes. Restore publishes a **separate** copy, not a new active database. Archive rotation rechecks the exact held batch before locally deleting its bytes. History remains. See the [audit remediation](AUDIT-REMEDIATION.md) for limits and the [verification matrix](../AUDIT.md) for evidence boundaries.
 
 ## Window layout
-The main window has a tool launcher, workspace header and status bar. A panel catalog (`gui/src/docking/panels.ts`) identifies enabled tools; `PanelModule` maps a panel ID to its domain view and contextual links. The pure layout reducer owns unique tab placement, active tabs, focus, presets, and split sizes. `exor.workspace.layout.v1` stores only validated preferences in local storage, never file paths or Watch state. The main WebView uses HTML drag and drop for internal panel tabs (`dragDropEnabled: false` in Tauri); other drops are ignored. The dock keeps initialized frames as keyed siblings of the layout chrome, so a tab can move or be hidden without restarting its view. An explicit context link updates the destination's selection even when that panel is already mounted. Responsive rules use panel widths; the compact switcher exposes the same docks one at a time without overwriting sizes. See the [dashboard guide](DASHBOARD.md) for controls.
 
-Applications uses the dock’s block size to bound the sticky detail card. The card scrolls independently in a wide panel; at narrow widths, selecting a row shows its details in place of the inventory and returning restores the list’s page and keyboard focus.
+The [panel catalog](../gui/src/docking/panels.ts) and layout reducer own dock placement, focus, and sizing. The `exor.workspace.layout.v1` preference stores validated layout choices, not file paths or capture state. Initialized tool frames stay mounted across panel moves or hides, so a Watch or Scan is not restarted by rearranging the workspace. Explicit context links update a destination that is already open. Compact mode exposes one dock at a time without overwriting saved sizes. Applications scrolls its detail card independently or switches to a detail page in a narrow dock.
 
-The Windows `log` WebView is an owned top-level window under `main`. Desktop launchers toggle the attachment without changing dock selection. The desktop ignores old saved `activity` tabs; only the browser demo uses a log panel. The shell groups move/resize/scale events and places both windows on the GUI thread. The Win32 helper in `crates/exor-win` uses physical monitor work bounds and accounts for the main window’s invisible frame. A maximized window shares its work area with the attachment and reclaims it on close without changing its native maximized state or normal restore bounds. Closing a normal attachment does not maximize or enlarge the main window. Neither the log’s geometry nor open state is persisted.
+On Windows, `log` is an owned top-level window attached below `main`. Placement uses physical monitor work bounds; the main window reclaims maximized work area on log close without changing the saved normal bounds. The log's geometry/open state is not persisted. The status bar reads only the latest message and clear watermark via `log_status`; the log window reads the 1,000-line ring via `get_log`. Sequence numbers and a clear watermark prevent old events from resurrecting cleared messages. This ring is not the evidence ledger and accepts no commands from displayed text. See [workspace controls](DASHBOARD.md#arrange-the-workspace) and the [optional client checks](WINDOWS-RELEASE.md#5-accessibility-and-optional-client-evidence).
 
-The status bar and attached log read the same in-memory 1,000-line ring in `gui/src-tauri/src/dock.rs`. They subscribe to `log` and `log-cleared` before reading `get_log`, merging the snapshot and events by session-local sequence. A clear watermark prevents queued lines or an older snapshot from restoring cleared scrollback. The Activity log is not the evidence ledger and provides no command input.
+## Known limitations
+
+See the [audit](../AUDIT.md#baseline-limits-that-affect-release-decisions) for scope, permissions, backup, and validation limits. [Driver-lab gates](LIVE-COLLECTION.md#distribution-gates-open) are separate from [desktop publishing](WINDOWS-RELEASE.md#6-tag-and-publish-the-tested-candidate).

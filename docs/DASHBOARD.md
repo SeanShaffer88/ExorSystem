@@ -1,6 +1,6 @@
 # Desktop dashboard
 
-ExorSystem is a local evidence and cleanup workspace. The sidebar groups the tools by task; **Overview** shows installed inventory, session counts, recent observations, and cleanup outcomes. The dashboard does not need the driver or an elevated process.
+ExorSystem is a local evidence and cleanup workspace. The sidebar groups the tools by task; **Overview** shows installed inventory, session counts, recent observations, and cleanup outcomes. This guide follows the v0.3.0 desktop. It does not need the driver or an elevated process. Before upgrading an existing profile, read the [backup and rollback notes](releases/v0.3.0.md#before-you-upgrade).
 
 ## Arrange the workspace
 
@@ -25,10 +25,12 @@ ExorSystem is a local evidence and cleanup workspace. The sidebar groups the too
 
 ## Watch an install
 
-1. In **Registry monitor**, enter an application or test name. Add full folder paths, specific registry subtrees, or both. No folders are selected for you. Leave the optional installer path blank for a test; ExorSystem never launches an installer from Watch.
+1. In **Registry monitor**, enter an application or test name. Use **Add folder…** or enter up to eight full folder paths, one per line. To include registry metadata, enter up to eight specific Software subtrees. No folders are selected for you. Leave the optional installer path blank for a test; ExorSystem does not launch installers from Watch.
 2. Leave **Services** and **Scheduled tasks** unchecked for file- or registry-only work. If you opt in, these are read-only checks. Windows can deny access; do not run ExorSystem as Administrator to retry.
 3. Choose **Take baseline**. The coverage cards identify captured baselines and excluded scopes. If some were skipped, expand **Skipped scope details**; continue with the usable baselines, or cancel and choose narrower scopes. Then make your test changes or run your installer yourself.
-4. Choose **Compare snapshots**. If you enabled **Strict file comparison** before the baseline, Watch rehashes files even when size and modification time match. This reads more file data. **Not requested** and **Skipped** have no change count. A scope that was actually compared can report zero. **Partial** means only some of the selected folders or subtrees were comparable. **View recorded changes** opens that session in Change inspector. Use **Set up another watch** to reuse or edit your input.
+4. Choose **Compare snapshots**. **Strict file comparison**, selected before the baseline, rehashes content even when size and modification time match and distinguishes case-only paths. It reads more file data. **Not requested** and **Skipped** have no change count. A scope that was actually compared can report zero. **Partial** means only some of the selected folders or subtrees were comparable. **View recorded changes** opens that session in Change inspector. Use **Set up another watch** to reuse or edit your input.
+
+For registry scopes, use `HKCU\Software\Example` for your user, `HKLM\Software\Example` for the 64-bit machine view, or `HKLM32\Software\Example` for the 32-bit machine view. Enter one subtree per line. Whole hives and whole Software roots are not accepted. For a first try, use only a [disposable temporary folder](WINDOWS-RELEASE.md#3-verify-watch-and-history-with-real-files-and-registry-keys).
 
 A missing folder or registry subtree can appear or disappear between snapshots. A folder with reported read or hash failures, an unreadable task definition, or an incomplete registry subtree is excluded rather than diffed against an incomplete listing. For new comparisons, **Change inspector → Installation → Watch coverage** shows the same scope counts and skip details after restart, even when filters leave the change list empty. A result with no usable pairs also links to its saved coverage. Older sessions, cancelled watches, and failed writes have no saved comparison; a blank list does not establish coverage. The profile stores counts and skipped-scope details (which can include paths), not the snapshots or registry values. **Save report** in Applications includes the counts, not the skip diagnostics. **Compared** means a usable snapshot pair for the selected source, not proof that nothing else changed on Windows.
 
@@ -39,6 +41,10 @@ Use **Stop capture** while either snapshot is running. It is cooperative: the cu
 ## Export matching changes
 
 In **Change inspector**, set the installation, path, change-type and optional UTC dates (From inclusive, Before exclusive), then expand **Export matching changes** and choose **Save changes JSON**. The export applies those filters across all domains, regardless of inspector layout or page. It writes a new `ExorSystem changes.json` in your Windows Documents folder (adding a numbered suffix rather than overwriting). The versioned file records the applied filters and up to 1,000 matching observations in the part, with an exclusive cursor if older matches remain. **Save next older JSON part** continues with the same filters. It contains recorded paths and fingerprints: review it before sharing. Use the saved coverage panel or the installation report for scope coverage; a JSON file with no matches is not proof of coverage.
+
+### Reports and copied files
+
+For a recorded session in **Applications**, **Save report** writes a Markdown report to Documents without overwriting another file. **Export recorded files and plan** writes a separate folder and `portable-plan.json` for supported recorded files. It does not create a runnable app, change the originals, or apply registry entries. Check paths in any saved report, export, or plan before sharing it.
 
 ## Prepare a cleanup and review a batch
 
@@ -63,4 +69,4 @@ Under **Settings → Profile storage and backup**, measure file lengths, choose 
 
 ## Browser preview
 
-Run `npm ci` and `npm run dev` from `gui/` and open the Vite page in a regular browser. The **Demo data** badge identifies an in-memory fixture, with Activity log as a browser panel instead of a native window; actions there never launch Windows processes or inspect or change the host. The fixture is not included in production bundles or used by Tauri. Browser tests use a separate mocked IPC fixture to check the built interface. Use the [Windows release runbook](WINDOWS-RELEASE.md) for optional native tests on exact packages.
+Run `npm ci` and `npm run dev` from `gui/` and open the Vite page in a regular browser. The **Demo data** badge identifies an in-memory fixture, with Activity log as a browser panel instead of a native window; actions there never launch Windows processes or inspect or change the host. The fixture is not included in production bundles or used by Tauri. Browser tests use a separate mocked IPC fixture to check the built interface. Use the [Windows release runbook](WINDOWS-RELEASE.md) for optional native tests on exact packages. Neither the demo nor the browser suites fill a Windows 10/11 evidence row.

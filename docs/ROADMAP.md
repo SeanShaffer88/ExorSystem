@@ -1,3 +1,3 @@
 # Roadmap moved
 
-The [ExorSystem roadmap](../ROADMAP.md) now lives at the root of the repository. It includes [Watch an install](../ROADMAP.md#watch-an-install) and the [Windows release checklist](../ROADMAP.md#before-publishing-a-windows-build).
+The [ExorSystem roadmap](../ROADMAP.md) lives at the root. See the [next milestones](../ROADMAP.md#next-milestones), the [current Windows evidence](../ROADMAP.md#v030-release-evidence), or the [dashboard's Watch guide](DASHBOARD.md#watch-an-install). Use the [documentation index](README.md) to find the other guides.
