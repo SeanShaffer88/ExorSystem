@@ -107,8 +107,110 @@ pub fn split_command(cmd: &str) -> Option<(String, Vec<String>)> {
     Some((exe.to_string(), args))
 }
 
-/// Paths that must never be suggested: roots, top-level folders and the Windows directory.
-fn too_broad(p: &Path) -> bool {
+/// Folder names that are shared by many programs (or hold user data) and are never a leftover.
+const SHARED_NAMES: &[&str] = &[
+    "appdata",
+    "common files",
+    "default",
+    "desktop",
+    "documents",
+    "downloads",
+    "local",
+    "locallow",
+    "microsoft",
+    "microsoft shared",
+    "onedrive",
+    "packages",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "programs",
+    "public",
+    "roaming",
+    "temp",
+    "users",
+    "windowsapps",
+];
+
+/// Environment variables naming folders that must never be offered, nor any folder above them.
+const PROTECTED_VARS: &[&str] = &[
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "ProgramData",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "USERPROFILE",
+    "PUBLIC",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+];
+
+/// Folders inside a user profile that hold the user's own data.
+const PROFILE_FOLDERS: &[&str] = &[
+    "Contacts",
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Favorites",
+    "Links",
+    "Music",
+    "OneDrive",
+    "Pictures",
+    "Saved Games",
+    "Searches",
+    "Videos",
+];
+
+/// Lower-case, backslash-separated, without a `\\?\` prefix or trailing separators.
+fn norm_path(p: &Path) -> String {
+    let s = p.to_string_lossy().replace('/', "\\").to_lowercase();
+    let s = s.strip_prefix("\\\\?\\").unwrap_or(&s);
+    s.trim_end_matches('\\').to_string()
+}
+
+/// Folders (normalized) that a leftover may be neither equal to nor above: `extra` plus the
+/// well-known system and profile folders from the environment.
+fn protected_paths(extra: &[PathBuf]) -> Vec<String> {
+    let mut out: Vec<PathBuf> = extra.to_vec();
+    out.extend(
+        PROTECTED_VARS
+            .iter()
+            .filter_map(std::env::var_os)
+            .map(PathBuf::from),
+    );
+    if let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
+        out.extend(PROFILE_FOLDERS.iter().map(|f| home.join(f)));
+    }
+    out.iter()
+        .map(|p| norm_path(p))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// A folder named only after the vendor ("Google" for "Google Chrome" by "Google LLC",
+/// "Microsoft" for "Microsoft Teams") is shared by that vendor's programs and is not a leftover.
+fn is_vendor_folder(folder: &str, p: &InstalledProgram, name: &str) -> bool {
+    if folder == name {
+        return false;
+    }
+    let first_word = |s: &str| s.split_whitespace().next().map(norm).unwrap_or_default();
+    if let Some(publisher) = p.publisher.as_deref()
+        && (folder == norm(publisher) || folder == first_word(publisher))
+    {
+        return true;
+    }
+    p.name.split_whitespace().count() > 1 && folder == first_word(&p.name)
+}
+
+/// Paths that must never be suggested: roots, top-level folders, the Windows directory, shared
+/// folders such as `Common Files`, and any folder that is (or contains) a `protected` folder such
+/// as Program Files, AppData or the user's profile.
+fn too_broad(p: &Path, protected: &[String]) -> bool {
     let depth = p
         .components()
         .filter(|c| matches!(c, Component::Normal(_)))
@@ -121,8 +223,15 @@ fn too_broad(p: &Path) -> bool {
     {
         return true;
     }
-    let s = p.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
-    s.contains("\\windows\\") || s.ends_with("\\windows")
+    let s = norm_path(p);
+    if s.contains("\\windows\\") || s.ends_with("\\windows") {
+        return true;
+    }
+    if SHARED_NAMES.contains(&s.rsplit('\\').next().unwrap_or("")) {
+        return true;
+    }
+    let under = format!("{s}\\");
+    protected.iter().any(|q| *q == s || q.starts_with(&under))
 }
 
 fn is_link(meta: &std::fs::Metadata) -> bool {
@@ -156,11 +265,12 @@ fn in_application_root(path: &Path, roots: &[PathBuf]) -> bool {
 /// Folders left after uninstalling `p`. `roots` are the folders to look inside (Program Files,
 /// AppData and similar); only direct children are examined.
 pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> {
+    let protected = protected_paths(roots);
     let mut out: Vec<Leftover> = Vec::new();
     let mut add = |path: PathBuf, reason: &str, confidence: f64| {
         // The UI round-trips paths as strings; never offer a lossy path for an action.
         let Some(s) = path.to_str() else { return };
-        if !too_broad(&path)
+        if !too_broad(&path, &protected)
             && !out.iter().any(|l| l.path.eq_ignore_ascii_case(s))
             && plain_folder(&path)
         {
@@ -197,6 +307,7 @@ pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> 
                 if n.len() >= 4
                     && publisher.as_deref() != Some(n.as_str())
                     && (n == name || name.contains(&n) && n.len() * 2 >= name.len())
+                    && !is_vendor_folder(&n, p, &name)
                 {
                     let exact = n == name;
                     add(
@@ -343,7 +454,8 @@ pub fn quarantine_leftovers(
     session_id: Option<i64>,
     dirs: &[PathBuf],
 ) -> Result<(String, usize)> {
-    if let Some(bad) = dirs.iter().find(|d| too_broad(d)) {
+    let protected = protected_paths(&[]);
+    if let Some(bad) = dirs.iter().find(|d| too_broad(d, &protected)) {
         return Err(EngineError::Quarantine(format!(
             "{} is too broad to quarantine",
             bad.display()
@@ -412,16 +524,83 @@ mod tests {
 
     #[test]
     fn broad_paths_are_refused() {
-        assert!(too_broad(Path::new("/")));
-        assert!(too_broad(Path::new("/tmp")));
-        assert!(too_broad(Path::new(r"C:\Windows\System32")));
+        assert!(too_broad(Path::new("/"), &[]));
+        assert!(too_broad(Path::new("/tmp"), &[]));
+        assert!(too_broad(Path::new(r"C:\Windows\System32"), &[]));
         #[cfg(windows)]
         {
-            assert!(too_broad(Path::new("/tmp/a/b")), "no drive letter");
-            assert!(!too_broad(Path::new(r"C:\Program Files\Example")));
+            assert!(too_broad(Path::new("/tmp/a/b"), &[]), "no drive letter");
+            assert!(!too_broad(Path::new(r"C:\Program Files\Example"), &[]));
         }
         #[cfg(not(windows))]
-        assert!(!too_broad(Path::new("/tmp/a/b")));
+        assert!(!too_broad(Path::new("/tmp/a/b"), &[]));
+    }
+
+    #[test]
+    fn shared_and_protected_folders_are_refused() {
+        #[cfg(windows)]
+        let (local, home, own, shared) = (
+            r"C:\Users\Sam\AppData\Local",
+            r"C:\Users\Sam",
+            r"C:\Users\Sam\AppData\Local\Foo",
+            [r"C:\Program Files\Common Files", r"D:\Apps\Microsoft"],
+        );
+        #[cfg(not(windows))]
+        let (local, home, own, shared) = (
+            "/home/sam/.local",
+            "/home/sam",
+            "/home/sam/.local/Foo",
+            ["/opt/apps/Common Files", "/opt/apps/Microsoft"],
+        );
+        let prot = vec![norm_path(Path::new(local)), norm_path(Path::new(home))];
+        // a protected folder itself (in any spelling), and every folder above it
+        assert!(too_broad(Path::new(local), &prot));
+        assert!(too_broad(
+            Path::new(&format!("{}/", local.to_uppercase())),
+            &prot
+        ));
+        assert!(too_broad(Path::new(home), &prot));
+        assert!(too_broad(Path::new(local).parent().unwrap(), &prot));
+        // shared folders, wherever they are
+        for s in shared {
+            assert!(too_broad(Path::new(s), &[]), "{s}");
+        }
+        // a program's own folder inside a protected one is fine
+        assert!(!too_broad(Path::new(own), &prot));
+    }
+
+    #[test]
+    fn vendor_folders_are_not_leftovers() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("pf");
+        for n in [
+            "Google",
+            "Chrome",
+            "Mozilla",
+            "Mozilla Firefox",
+            "Microsoft",
+        ] {
+            std::fs::create_dir_all(root.join(n)).unwrap();
+        }
+        let names = |p: &InstalledProgram| -> Vec<String> {
+            find_leftovers(p, std::slice::from_ref(&root))
+                .into_iter()
+                .filter_map(|l| {
+                    Path::new(&l.path)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                })
+                .collect()
+        };
+        let mut chrome = prog("Google Chrome", None);
+        chrome.publisher = Some("Google LLC".into());
+        assert_eq!(names(&chrome), vec!["Chrome".to_string()]);
+        let mut firefox = prog("Mozilla Firefox", None);
+        firefox.publisher = Some("Mozilla".into());
+        assert_eq!(names(&firefox), vec!["Mozilla Firefox".to_string()]);
+        let mut teams = prog("Microsoft Teams", None);
+        teams.publisher = None;
+        assert!(!names(&teams).contains(&"Microsoft".to_string()));
     }
 
     #[test]
