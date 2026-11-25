@@ -1,4 +1,7 @@
-//! Read-only CLI alpha. No capture, privilege changes, process launch, or profile initialization.
+//! Read-only CLI alpha. No privilege changes, process launch, or profile initialization.
+//! `archive` and `history` read saved evidence; the commands in `system` read the live system.
+
+mod system;
 
 use exor_storage::{
     ChangeDomain, ChangeKind, LedgerEntry, LedgerQuery, SessionStatus, Store, WatchArchivePage,
@@ -12,7 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::str::FromStr;
 
-const HELP: &str = "ExorSystem CLI alpha — read saved evidence (JSON)\n\
+const HELP: &str = "ExorSystem CLI alpha — read saved evidence and the live system (JSON)\n\
 \n\
 Usage:\n  exor archive --db PATH [--search TEXT|#ID] [--status STATUS] [--limit N] [--before-id ID]\n\
   exor history --db PATH --session ID [--path TEXT] [--domain DOMAIN] [--kind KIND]\n\
@@ -22,7 +25,18 @@ Domain: file, registry, system\n\
 Kind: created, modified, deleted, renamed, quarantined, restored\n\
 Archive limits: 1–50 (default 20). History limits: 1–1000 (default 100).\n\
 Use next_before_id with the same command and filters to read an older page.\n\
-An empty History page does not establish comparison coverage.\n";
+An empty History page does not establish comparison coverage.\n\
+\n\
+Live system (read-only; refused when run as administrator):\n  \
+exor programs [--all]                 Programs Windows lists as installed\n  \
+exor leftovers --program ID           Folders a program may have left behind\n  \
+exor snapshot --root PATH [--out FILE] [--strict]\n                                        \
+Capture a folder; --out writes a snapshot file\n  \
+exor diff --before FILE --after FILE  Compare two snapshot files\n  \
+exor env [--script FILE]              PATH and toolchain-variable hygiene; --script\n                                        \
+writes a PowerShell fix script to review and run\n                                        \
+yourself\n\
+New files are never written over existing ones. programs, leftovers and env need Windows.\n";
 
 #[derive(Serialize)]
 struct Output {
@@ -166,7 +180,11 @@ fn parse(command: &str, mut args: impl Iterator<Item = OsString>) -> Result<Requ
     let (specific, default_limit, max_limit): (&[&str], _, _) = match command {
         "archive" => (&["--search", "--status"], 20, 50),
         "history" => (&["--session", "--path", "--domain", "--kind"], 100, 1000),
-        _ => return Err("expected the archive or history command".into()),
+        _ => {
+            return Err(
+                "expected archive, history, programs, leftovers, snapshot, diff or env".into(),
+            );
+        }
     };
     let mut options = Options::new();
     while let Some(arg) = args.next() {
@@ -218,8 +236,12 @@ fn parse(command: &str, mut args: impl Iterator<Item = OsString>) -> Result<Requ
 }
 
 fn write_output(output: Output) -> Result<(), String> {
+    write_json(&output)
+}
+
+fn write_json(value: &impl Serialize) -> Result<(), String> {
     let mut out = io::BufWriter::new(io::stdout().lock());
-    serde_json::to_writer(&mut out, &output).map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut out, value).map_err(|e| e.to_string())?;
     out.write_all(b"\n")
         .and_then(|()| out.flush())
         .map_err(|e| e.to_string())
@@ -231,10 +253,12 @@ fn main() -> ExitCode {
     let name = command.as_deref().and_then(|name| name.to_str());
     let help = match name {
         Some("--help" | "-h") => args.peek().is_none(),
-        Some("archive" | "history")
-            if args
-                .peek()
-                .is_some_and(|arg| arg == "--help" || arg == "-h") =>
+        Some(command)
+            if (matches!(command, "archive" | "history")
+                || system::COMMANDS.contains(&command))
+                && args
+                    .peek()
+                    .is_some_and(|arg| arg == "--help" || arg == "-h") =>
         {
             args.next();
             if args.peek().is_some() {
@@ -252,6 +276,22 @@ fn main() -> ExitCode {
     if matches!(name, Some("--version" | "-V")) && args.peek().is_none() {
         println!("exor {} (CLI alpha)", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
+    }
+    if let Some(command) = name.filter(|c| system::COMMANDS.contains(c)) {
+        let command = command.to_string();
+        return match system::run(&command, args)
+            .and_then(|value| write_json(&value).map_err(system::Failure::Failed))
+        {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(system::Failure::Usage(e)) => {
+                eprintln!("exor: {e}. See exor --help.");
+                ExitCode::from(2)
+            }
+            Err(system::Failure::Failed(e)) => {
+                eprintln!("exor: {e}");
+                ExitCode::FAILURE
+            }
+        };
     }
     let request = match parse(name.unwrap_or_default(), args) {
         Ok(request) => request,

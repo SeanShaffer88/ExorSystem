@@ -432,6 +432,23 @@ impl<C> Reviews<C> {
         Ok((draft.context, draft.plan))
     }
 
+    /// The included paths of a live review, for read-only checks before applying (such as which
+    /// programs hold them open). Doesn't count as viewing a page or consume the approval.
+    pub fn included_paths(&self, id: u64) -> Result<Vec<PathBuf>> {
+        let drafts = self.0.lock().map_err(|_| EngineError::Poisoned)?;
+        let draft = drafts
+            .pending
+            .get(&id)
+            .filter(|d| d.created.elapsed() < REVIEW_LIFETIME)
+            .ok_or_else(expired_review)?;
+        Ok(draft
+            .plan
+            .files
+            .iter()
+            .map(|f| f.path().to_path_buf())
+            .collect())
+    }
+
     /// Forget a review without touching any files.
     pub fn discard(&self, id: u64) {
         if let Ok(mut drafts) = self.0.lock() {

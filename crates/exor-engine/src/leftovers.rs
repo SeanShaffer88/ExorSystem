@@ -262,6 +262,22 @@ fn in_application_root(path: &Path, roots: &[PathBuf]) -> bool {
         .any(|root| real != root && real.starts_with(root))
 }
 
+/// The folders programs usually leave files in, from the environment: Program Files (both
+/// views), ProgramData, and the user's local and roaming AppData.
+pub fn default_roots() -> Vec<PathBuf> {
+    [
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+        "LOCALAPPDATA",
+        "APPDATA",
+    ]
+    .iter()
+    .filter_map(std::env::var_os)
+    .map(PathBuf::from)
+    .collect()
+}
+
 /// Folders left after uninstalling `p`. `roots` are the folders to look inside (Program Files,
 /// AppData and similar); only direct children are examined.
 pub fn find_leftovers(p: &InstalledProgram, roots: &[PathBuf]) -> Vec<Leftover> {

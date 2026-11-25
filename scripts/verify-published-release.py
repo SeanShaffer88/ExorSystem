@@ -26,6 +26,9 @@ TAG = re.compile(r"v(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
 FORMATS = {"nsis": "-Setup.exe", "msi": ".msi", "portable": "-Portable.zip"}
 EVIDENCE_FILES = ("PACKAGE-CHECKS.json", "SHA256SUMS.txt")
 PORTABLE_ENTRIES = {"ExorSystem.exe", "README.md", "LICENSE", "CHANGELOG.md", "CREDITS.md"}
+CLI_ENTRY = "exor.exe"
+# Releases after v0.3.0 also ship the read-only command line in the portable ZIP.
+LAST_WITHOUT_CLI = (0, 3, 0)
 MAX_METADATA = 2 * 1024 * 1024
 MAX_PACKAGE = 256 * 1024 * 1024
 MAX_PORTABLE_BYTES = 128 * 1024 * 1024
@@ -135,10 +138,25 @@ def pe_machine(source, length: int) -> int:
     return struct.unpack_from("<H", header, 4)[0]
 
 
-def inspect_portable(path: Path) -> dict:
+def portable_entries(tag: str) -> set:
+    """The exact portable ZIP contents for a release tag."""
+    version = tuple(int(part) for part in tag[1:].split("."))
+    return PORTABLE_ENTRIES | ({CLI_ENTRY} if version > LAST_WITHOUT_CLI else set())
+
+
+def x64_entry(archive: zipfile.ZipFile, name: str) -> bytes:
+    entry = archive.getinfo(name)
+    with archive.open(entry) as source:
+        binary = source.read(entry.file_size + 1)
+    if len(binary) != entry.file_size or pe_machine(io.BytesIO(binary), len(binary)) != 0x8664:
+        raise ValueError(f"the portable {name} is not the expected x64 PE")
+    return binary
+
+
+def inspect_portable(path: Path, expected: set = PORTABLE_ENTRIES) -> dict:
     with zipfile.ZipFile(path) as archive:
         entries = archive.infolist()
-        if len(entries) != len(PORTABLE_ENTRIES) or {i.filename for i in entries} != PORTABLE_ENTRIES:
+        if len(entries) != len(expected) or {i.filename for i in entries} != expected:
             raise ValueError("unexpected or duplicate portable ZIP entries")
         if any(
             i.is_dir() or i.flag_bits & 1 or stat.S_IFMT(i.external_attr >> 16) not in (0, stat.S_IFREG)
@@ -147,12 +165,12 @@ def inspect_portable(path: Path) -> dict:
             raise ValueError("portable ZIP entries must be regular, unencrypted files")
         if sum(i.file_size for i in entries) > MAX_PORTABLE_BYTES:
             raise ValueError("portable ZIP exceeds the uncompressed byte limit")
-        entry = archive.getinfo("ExorSystem.exe")
-        with archive.open(entry) as source:
-            binary = source.read(entry.file_size + 1)
-        if len(binary) != entry.file_size or pe_machine(io.BytesIO(binary), len(binary)) != 0x8664:
-            raise ValueError("the portable executable is not the expected x64 PE")
-    return {"name": "ExorSystem.exe", "bytes": len(binary), "sha256": hashlib.sha256(binary).hexdigest()}
+        binary = x64_entry(archive, "ExorSystem.exe")
+        cli = x64_entry(archive, CLI_ENTRY) if CLI_ENTRY in expected else None
+    report = {"name": "ExorSystem.exe", "bytes": len(binary), "sha256": hashlib.sha256(binary).hexdigest()}
+    if cli is not None:
+        report["command_line"] = {"name": CLI_ENTRY, "bytes": len(cli), "sha256": hashlib.sha256(cli).hexdigest()}
+    return report
 
 
 def verify_published(directory: Path, release_json: Path, tag: str) -> dict:
@@ -189,10 +207,10 @@ def verify_published(directory: Path, release_json: Path, tag: str) -> dict:
             "candidate_report_and_checksums_match": True,
             "nsis_launcher_pe_machine": f"0x{machine:04x}",
             "msi_header": "compound-file",
-            "portable_entries": sorted(PORTABLE_ENTRIES),
+            "portable_entries": sorted(portable_entries(tag)),
             "portable_pe_machine": "0x8664",
         },
-        "portable_binary": inspect_portable(directory / names["portable"]),
+        "portable_binary": inspect_portable(directory / names["portable"], portable_entries(tag)),
     }
 
 

@@ -352,17 +352,7 @@ fn prune_uninstalls(cache: &mut BTreeMap<String, (std::time::Instant, InstalledP
 
 /// Folders where programs usually leave files.
 fn leftover_roots() -> Vec<PathBuf> {
-    [
-        "ProgramFiles",
-        "ProgramFiles(x86)",
-        "ProgramData",
-        "LOCALAPPDATA",
-        "APPDATA",
-    ]
-    .iter()
-    .filter_map(std::env::var_os)
-    .map(PathBuf::from)
-    .collect()
+    leftovers::default_roots()
 }
 
 #[derive(Serialize)]
@@ -376,6 +366,21 @@ struct UninstallRun {
 struct UninstallPreview {
     executable: String,
     args: Vec<String>,
+    /// Authenticode verdict for `executable`, checked before anything runs.
+    signature: exor_engine::safety::SignatureCheck,
+}
+
+/// Check the uninstaller's digital signature without running it.
+fn uninstaller_signature(exe: &Path) -> exor_engine::safety::SignatureCheck {
+    #[cfg(windows)]
+    {
+        exor_win::verify_signature(exe)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = exe;
+        exor_engine::safety::SignatureCheck::unknown("Signatures can only be checked on Windows.")
+    }
 }
 
 fn uninstall_arguments(command: &str) -> Result<(PathBuf, Vec<String>), String> {
@@ -419,12 +424,18 @@ async fn live_uninstall(
         .registered_uninstall(quiet)
         .map_err(str::to_string)?;
     let cmd = cmd.to_string();
-    let (path, args) = tauri::async_runtime::spawn_blocking(move || uninstall_arguments(&cmd))
-        .await
-        .map_err(|e| e.to_string())??;
+    let (path, args, signature) = tauri::async_runtime::spawn_blocking(move || {
+        uninstall_arguments(&cmd).map(|(path, args)| {
+            let signature = uninstaller_signature(&path);
+            (path, args, signature)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let preview = UninstallPreview {
         executable: path.to_string_lossy().into_owned(),
         args,
+        signature,
     };
     Ok((program, path, preview))
 }
@@ -452,11 +463,25 @@ async fn run_uninstaller(
     program_id: String,
     quiet: bool,
     expected: UninstallPreview,
+    confirm_unverified: Option<bool>,
 ) -> Result<UninstallRun, String> {
     let _job = state.jobs.work(&app, "The vendor uninstaller", None)?;
     let (mut p, exe, actual) = live_uninstall(program_id, quiet).await?;
     if actual != expected {
         return Err("The registered uninstaller changed. Close this wizard and review its new preview before continuing.".into());
+    }
+    // An unsigned or untrusted uninstaller runs only after explicit confirmation; one that was
+    // changed after signing, or whose signer is revoked or distrusted, never runs.
+    if let Err(e) = actual
+        .signature
+        .may_run(confirm_unverified.unwrap_or(false))
+    {
+        dock::log(
+            &app,
+            "warn",
+            format!("Did not run the uninstaller for {}: {e}", p.name),
+        );
+        return Err(e);
     }
     let args = actual.args;
     dock::log(
