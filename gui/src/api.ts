@@ -1,6 +1,6 @@
 import { Channel } from "@tauri-apps/api/core";
 import { invoke, isDemo } from "./bridge";
-import type { AppInfo, HistoryDates, LeftoverFolder, PlanRequest, PlanHeader, PlanPage, QuarantinePage, Usage, VerifiedCopy, WatchEvent, WatchProgress, BatchPreview, ChangeDomain, ChangeExport, ChangeKind, TemplateInfo, HistoryPage, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallPreview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, ScanEvent, Session, SimulationView, WatchRun, WatchStart, WatchSummary, WatchSystem } from "./types";
+import type { AppInfo, HistoryDates, LeftoverFolder, PlanRequest, PlanHeader, PlanPage, QuarantinePage, Usage, VerifiedCopy, WatchEvent, WatchProgress, BatchPreview, ChangeDomain, ChangeExport, ChangeKind, TemplateInfo, HistoryPage, RiskView, PortableView, PortableProgram, LeftoverReview, UninstallPreview, UninstallRun, ProgramInventory, ProvenanceView, SessionItems, QuarantineResult, ScanEvent, Session, SimulationView, WatchArchiveFilters, WatchArchivePage, WatchRun, WatchStart, WatchSummary, WatchSystem } from "./types";
 
 function capture<T>(command: string, args: Record<string, unknown>, ready: () => void, progress?: (p: WatchProgress) => void) {
   const receive = (event: WatchEvent) => { if (event.event === "ready") ready(); else progress?.(event.data); };
@@ -11,7 +11,20 @@ function capture<T>(command: string, args: Record<string, unknown>, ready: () =>
 }
 
 let sessions: { deadline: number; request: Promise<Session[]> } | null = null;
-export function invalidateSessions() { sessions = null; }
+let sessionRevision = 0;
+const sessionListeners = new Set<() => void>();
+export const sessionChanges = {
+  subscribe: (listener: () => void) => {
+    sessionListeners.add(listener);
+    return () => { sessionListeners.delete(listener); };
+  },
+  getSnapshot: () => sessionRevision,
+};
+function invalidateSessions() {
+  sessions = null;
+  sessionRevision += 1;
+  for (const listener of sessionListeners) listener();
+}
 
 function listSessions() {
   if (sessions && sessions.deadline > Date.now()) return sessions.request;
@@ -63,6 +76,7 @@ export const api = {
   saveChanges: (filter: string | null, sessionId: number | null, changeKind: ChangeKind | null, dates?: HistoryDates, beforeId: number | null = null) =>
     invoke<ChangeExport>("save_changes", { filters: { filter, sessionId, changeKind, beforeId, ...dates } }),
   watchComparison: (sessionId: number) => invoke<WatchSummary | null>("watch_comparison", { sessionId }),
+  watchArchive: (filters: WatchArchiveFilters) => invoke<WatchArchivePage>("watch_archive", { filters }),
   recentWatchRuns: () => invoke<WatchRun[]>("recent_watch_runs"),
   exportReport: (sessionId: number, template: string) => invoke<string>("export_report", { sessionId, template }),
   makePortable: (sessionId: number) => invoke<PortableView>("make_portable", { sessionId }),

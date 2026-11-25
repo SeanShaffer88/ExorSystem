@@ -172,6 +172,52 @@ pub struct WatchRun {
     pub summary: WatchSummary,
 }
 
+/// Filters applied to the saved installation sessions before the Watch archive is paged.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WatchArchiveQuery<'a> {
+    /// Literal app-name substring (ASCII case-insensitive), or `#` followed by a session ID.
+    pub search: Option<&'a str>,
+    /// Stored lifecycle status, or all statuses if not specified.
+    pub status: Option<SessionStatus>,
+    /// Exclusive session-ID bound for older pages.
+    pub before_id: Option<i64>,
+}
+
+/// A compact description of an actual saved comparison, not a count of ledger rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WatchArchiveComparison {
+    /// Coverage saved at comparison time.
+    pub coverage: WatchCoverage,
+    /// Changes in compared scopes, or no count when no scopes were comparable.
+    pub recorded_changes: Option<usize>,
+}
+
+/// A session's archived display state, including older sessions without saved coverage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WatchArchiveRow {
+    /// Original installation session ID, used to open its evidence in History.
+    pub session_id: i64,
+    /// Application name supplied for this session.
+    pub app_name: String,
+    /// Recorded start timestamp (UTC text), if available.
+    pub started_at: Option<String>,
+    /// Recorded end timestamp (UTC text); a restart does not invent one.
+    pub ended_at: Option<String>,
+    /// Stored lifecycle status. Failed may include cancelled or interrupted runs.
+    pub status: Option<SessionStatus>,
+    /// Saved coverage only; absent is not the same as a saved zero-change result.
+    pub comparison: Option<WatchArchiveComparison>,
+}
+
+/// A bounded newest-first page of saved sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WatchArchivePage {
+    /// Matching sessions on this page.
+    pub rows: Vec<WatchArchiveRow>,
+    /// The exclusive bound of the next page, present only when older matches exist.
+    pub next_before_id: Option<i64>,
+}
+
 /// A portable application a user chose to list in the inventory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortableProgram {

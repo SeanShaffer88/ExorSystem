@@ -33,7 +33,7 @@ export function ProgramActions({ program, removed, sessionId, onUninstallComplet
         <button type="button" className="quiet-button" onClick={() => setWizard("review")}><Icon name="search"/> Review leftovers</button>
         {canLaunch && <button type="button" className="text-button" onClick={() => onTerminal(program.id)}><Icon name="terminal"/> Preview command</button>}
       </div>
-      {wizard && <UninstallWizard program={program} sessionId={sessionId} reviewOnly={wizard === "review"} onClose={() => setWizard(null)} onUninstallComplete={onUninstallComplete}/>}
+      {wizard && <UninstallWizard program={program} mode={wizard === "review" ? "leftovers" : "uninstall"} onClose={() => setWizard(null)} onUninstallComplete={onUninstallComplete}/>}
     </>}
     {sessionId !== null && <div className="session-actions button-row">
       <button type="button" className="quiet-button" onClick={() => onSimulate(sessionId)}>Preview cleanup</button>

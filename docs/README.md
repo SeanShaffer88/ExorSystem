@@ -10,11 +10,11 @@ The [project README](../README.md) explains what ExorSystem does and where to do
 
 ## Build, verify, or contribute
 
-- [Development setup](DEVELOPMENT.md) and [architecture](ARCHITECTURE.md).
+- [Development setup](DEVELOPMENT.md), [architecture](ARCHITECTURE.md), and [read-only CLI alpha](CLI.md).
 - [Windows release runbook](WINDOWS-RELEASE.md): build a candidate, promote its exact bytes, or verify a published release without launch. The optional launch observer and native checks require Windows 10/11 x64 clients.
 - [Verification record](../AUDIT.md) and [desktop remediation details](AUDIT-REMEDIATION.md): which checks passed and which are still open.
-- [Client evidence template](WINDOWS-RELEASE-EVIDENCE.md) and [screenshot checklist](SCREENSHOTS.md): how to record observations from a disposable test VM. Static package, browser-mock, and Windows Server results never fill a client row.
-- [Roadmap](../ROADMAP.md) and [changelog](../CHANGELOG.md).
+- [Native release sign-off](release-evidence/README.md), [client evidence template](WINDOWS-RELEASE-EVIDENCE.md) and [screenshot checklist](SCREENSHOTS.md): how to record observations from a disposable test VM. Static package, browser-mock, and Windows Server results never fill a client row.
+- [Roadmap](../ROADMAP.md), [40-item revision tracker](REVISION-TRACKER.md), [native audit validation plan](NATIVE-VALIDATION.md), and [changelog](../CHANGELOG.md).
 
 ## Optional lab only
 

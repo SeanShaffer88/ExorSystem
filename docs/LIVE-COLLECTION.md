@@ -11,6 +11,10 @@
 
 Before desktop integration, require explicit opt-in, visible permission/unsupported errors, bounded waits and cancellation, loss/disconnect reporting, scoped capture and a tested fallback to snapshots. Keep observations advisory: a live event must never authorize cleanup. An elevated receiver, if ever required, needs its own separately reviewed trust boundary; do not elevate the desktop to use it.
 
+## Planned opt-in ETW evaluation
+
+ETW is a separate driverless path in the [roadmap](../ROADMAP.md#driver-work-is-separate), not available in Watch. Before integration, measure process, file, and registry provider permissions and payloads on the target Windows client builds, including loss, process correlation, scope filtering, cancellation, and overhead. A permitted connection or delivered event does not establish full coverage or artifact ownership. If permission or coverage is insufficient, report the limit and offer the default snapshots without elevating the desktop. Keep the callback/USN lab and its native distribution gates separate.
+
 ## Repeatable checks, isolated from the desktop
 
 1. `cargo test -p exor-win --locked` covers parser fixtures and, on Windows, read-only operating-system probes. Run both Windows and Linux CI for changes to the wire layout or timestamps.
